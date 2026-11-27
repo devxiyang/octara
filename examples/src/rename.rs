@@ -81,8 +81,7 @@ fn button(id: &str, label: &str, press: impl Fn(&mut WriteCx<'_>) + 'static) -> 
 }
 
 #[ui]
-fn file_row(id: u32, file: RowSignal<u32, File>, model: Directory) -> El {
-    let draft_source = file.clone();
+fn file_row(id: u32, file: RowSignal<File>, model: Directory) -> El {
     row()
         .test_id(format!("rename-file-{id}"))
         .role(Role::ListItem)
@@ -96,9 +95,7 @@ fn file_row(id: u32, file: RowSignal<u32, File>, model: Directory) -> El {
             move |r| r.get(model.editing) == Some(id),
             move |b, editing| -> View {
                 if *editing {
-                    let source = draft_source.clone();
-                    let current = b.memo(move |r| source.read(r));
-                    let initial = b.sample(current).expect("mounted row has a file");
+                    let initial = b.sample(file);
                     let draft = b.signal(initial);
                     input()
                         .test_id(EDITOR)
@@ -128,10 +125,7 @@ fn file_row(id: u32, file: RowSignal<u32, File>, model: Directory) -> El {
                         })
                         .into_view()
                 } else {
-                    {
-                        let file = file.clone();
-                        text(move |r: &mut ReadCx<'_>| file.with(r, |file| file.map(|f| f.name.clone()).unwrap_or_default())).into_view()
-                    }
+                    text(move |r: &mut ReadCx<'_>| r.try_with(file, |file| file.name.clone()).unwrap_or_default()).into_view()
                 }
             },
         )))

@@ -1,94 +1,123 @@
-use super::{BuildCx, ReadCx, WriteCx};
-use crate::Signal;
-use std::rc::Rc;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+
+use super::{BuildCx, PreparedRead, ReadCx, Readable, Writable, WriteCx};
+use crate::arena::NodeKind;
+use crate::{ReactiveId, ReactiveWorld, ReadSignal, Signal};
 
 type Reader<T> = Box<dyn Fn(&mut ReadCx<'_>) -> T>;
 type Writer<T> = Box<dyn Fn(&mut WriteCx<'_>, T)>;
 
 struct Accessors<T> {
-    read: Reader<T>,
-    write: Writer<T>,
+    read: Option<Reader<T>>,
+    write: Option<Writer<T>>,
 }
 
-/// A copyable handle to a controlled value. A binding reads in a read context
-/// and submits a proposed value in a write context.
+/// A copyable input to a controlled value. Read it through a read context and
+/// submit proposals through a write context. A custom reader or writer
+/// cannot invoke itself while it is running.
 pub struct Binding<T>(Source<T>);
 
 enum Source<T> {
     Signal(Signal<T>),
-    Accessors(Signal<Rc<Accessors<T>>>),
+    Accessors(ReactiveId),
 }
 
+impl<T> Copy for Binding<T> {}
 impl<T> Clone for Binding<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Copy for Binding<T> {}
-
+impl<T> Copy for Source<T> {}
 impl<T> Clone for Source<T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<T> Copy for Source<T> {}
-
 impl<T> From<Signal<T>> for Binding<T> {
-    fn from(value: Signal<T>) -> Self {
-        Self(Source::Signal(value))
+    fn from(signal: Signal<T>) -> Self {
+        Self(Source::Signal(signal))
     }
 }
 
-impl<T: 'static> Binding<T> {
-    /// Whether this handle's value or custom accessor is still owned by the graph.
-    pub fn is_alive(self, write: &WriteCx<'_>) -> bool {
-        write.world.is_alive(match self.0 {
+impl<T> Binding<T> {
+    fn id(self) -> ReactiveId {
+        match self.0 {
             Source::Signal(signal) => signal.id(),
-            Source::Accessors(accessors) => accessors.id(),
-        })
+            Source::Accessors(id) => id,
+        }
+    }
+}
+
+#[doc(hidden)]
+pub enum PreparedBinding<T> {
+    Signal(ReadSignal<T>),
+    Owned(T),
+}
+
+impl<T: 'static> PreparedRead<T> for PreparedBinding<T> {
+    fn value<'a>(&'a self, world: &'a ReactiveWorld) -> Option<&'a T> {
+        match self {
+            Self::Signal(prepared) => prepared.value(world),
+            Self::Owned(value) => Some(value),
+        }
     }
 
-    /// Borrow a signal's value or the result of a custom reader.
-    pub fn with<R>(self, read: &mut ReadCx<'_>, f: impl FnOnce(&T) -> R) -> R {
+    fn into_value(self, world: &ReactiveWorld) -> Option<T>
+    where
+        T: Clone,
+    {
+        match self {
+            Self::Signal(prepared) => prepared.into_value(world),
+            Self::Owned(value) => Some(value),
+        }
+    }
+}
+
+impl<T: 'static> Readable<T> for Binding<T> {
+    type Prepared = PreparedBinding<T>;
+
+    fn prepare(self, read: &mut ReadCx<'_>) -> Self::Prepared {
         match self.0 {
-            Source::Signal(signal) => read.with(signal, f),
-            Source::Accessors(handle) => {
-                let accessors = read.with(handle, Rc::clone);
-                f(&(accessors.read)(read))
+            Source::Signal(signal) => PreparedBinding::Signal(signal.prepare(read)),
+            Source::Accessors(id) => {
+                read.track_id(id);
+                let reader = read.world.value_mut::<Accessors<T>>(id).read.take().expect("recursive binding reader");
+                let result = catch_unwind(AssertUnwindSafe(|| reader(read)));
+                read.world.value_mut::<Accessors<T>>(id).read = Some(reader);
+                PreparedBinding::Owned(result.unwrap_or_else(|panic| resume_unwind(panic)))
+            }
+        }
+    }
+}
+
+impl<T: 'static> Writable<T> for Binding<T> {
+    fn write(self, cx: &mut WriteCx<'_>, value: T) {
+        match self.0 {
+            Source::Signal(signal) => signal.write(cx, value),
+            Source::Accessors(id) => {
+                let writer = cx.world.value_mut::<Accessors<T>>(id).write.take().expect("recursive binding writer");
+                let result = catch_unwind(AssertUnwindSafe(|| writer(cx, value)));
+                cx.world.value_mut::<Accessors<T>>(id).write = Some(writer);
+                result.unwrap_or_else(|panic| resume_unwind(panic));
             }
         }
     }
 
-    pub fn get(self, read: &mut ReadCx<'_>) -> T
-    where
-        T: Clone,
-    {
+    fn edit<R>(self, cx: &mut WriteCx<'_>, edit: impl FnOnce(&mut T) -> (R, bool)) -> R {
         match self.0 {
-            Source::Signal(signal) => read.get(signal),
-            Source::Accessors(handle) => {
-                let accessors = read.with(handle, Rc::clone);
-                (accessors.read)(read)
-            }
-        }
-    }
-
-    /// Read the current value once at construction.
-    pub fn sample(self, build: &mut BuildCx<'_>) -> T
-    where
-        T: Clone,
-    {
-        build.read(|read| self.get(read))
-    }
-
-    /// Submit a value to the model. A custom writer controls acceptance.
-    pub fn set(self, write: &mut WriteCx<'_>, value: T) {
-        match self.0 {
-            Source::Signal(signal) => write.set(signal, value),
-            Source::Accessors(handle) => {
-                let accessors = write.with(handle, Rc::clone);
-                (accessors.write)(write, value);
+            Source::Signal(signal) => signal.edit(cx, edit),
+            Source::Accessors(_) => {
+                let PreparedBinding::Owned(mut value) = cx.read(|read| self.prepare(read)) else {
+                    unreachable!();
+                };
+                let (result, changed) = edit(&mut value);
+                if changed {
+                    self.write(cx, value);
+                }
+                result
             }
         }
     }
@@ -102,17 +131,24 @@ impl BuildCx<'_> {
         read: impl Fn(&mut ReadCx<'_>) -> T + 'static,
         write: impl Fn(&mut WriteCx<'_>, T) + 'static,
     ) -> Binding<T> {
-        Binding(Source::Accessors(self.signal(Rc::new(Accessors { read: Box::new(read), write: Box::new(write) }))))
+        let accessors = Accessors { read: Some(Box::new(read)), write: Some(Box::new(write)) };
+        Binding(Source::Accessors(self.world.alloc_value(NodeKind::ValueSource, self.scope, self.window, accessors)))
+    }
+}
+
+impl WriteCx<'_> {
+    /// Whether this binding's source still belongs to a live scope.
+    pub fn is_binding_alive<T>(&self, binding: Binding<T>) -> bool {
+        self.world.is_alive(binding.id())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ReactiveWorld;
 
     #[test]
-    fn binding_reads_and_writes_through_its_owning_scope() {
+    fn contexts_read_and_write_both_forms_of_binding() {
         let mut world = ReactiveWorld::new();
         let root = world.root_scope();
         let value = world.build(root, None).signal(8);
@@ -122,21 +158,53 @@ mod tests {
             .binding(move |read| read.get(value) + 1, move |write, proposed| write.set(value, proposed.clamp(0, 10)));
         let direct = Binding::from(value);
 
-        let before = world.live_nodes();
-        assert_eq!(custom.sample(&mut world.build(scope, None)), 9);
-        assert_eq!(world.live_nodes(), before);
+        let live = world.live_nodes();
+        assert_eq!(world.build(scope, None).sample(custom), 9);
+        assert_eq!(world.live_nodes(), live);
+        assert_eq!(world.read().with2(custom, direct, |a, b| (*a, *b)), (9, 8));
 
-        let memo = world.build(scope, None).memo(move |read| custom.get(read));
+        let memo = world.build(scope, None).memo(move |read| read.get(custom));
         let mut write = world.write(scope, None);
-        direct.set(&mut write, 4);
+        write.set(direct, 4);
         assert_eq!(write.get(memo), 5);
-        custom.set(&mut write, 70);
+        assert!(!write.mutate(custom, |_| false));
+        assert_eq!(write.get(direct), 4);
+        write.update(custom, |value| *value += 1);
+        assert_eq!(write.get(direct), 6);
+        assert!(!write.set_if_changed(custom, 7));
+        write.set(custom, 70);
         assert_eq!(write.get(value), 10);
         assert_eq!(write.get(memo), 11);
 
         world.dispose(scope);
         assert_eq!(world.live_nodes(), 1);
-        assert_eq!(direct.get(&mut world.read()), 10);
+        assert!(world.write(root, None).is_binding_alive(direct));
+        assert!(!world.write(root, None).is_binding_alive(custom));
+        assert_eq!(world.read().get(direct), 10);
         assert!(world.validate_integrity());
+    }
+
+    #[test]
+    fn panicking_accessors_are_restored_before_unwinding() {
+        let mut world = ReactiveWorld::new();
+        let scope = world.root_scope();
+        let mut build = world.build(scope, None);
+        let value = build.signal(-1);
+        let binding = build.binding(
+            move |read| {
+                let current = read.get(value);
+                assert!(current >= 0);
+                current
+            },
+            move |write, next| {
+                assert!(next >= 0);
+                write.set(value, next);
+            },
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| world.read().get(binding))).is_err());
+        let mut write = world.write(scope, None);
+        assert!(catch_unwind(AssertUnwindSafe(|| write.set(binding, -2))).is_err());
+        write.set(binding, 4);
+        assert_eq!(write.get(binding), 4);
     }
 }

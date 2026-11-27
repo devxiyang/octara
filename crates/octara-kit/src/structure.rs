@@ -106,12 +106,12 @@ const MIN_PANE: f32 = 120.0;
 #[ui]
 #[track_caller]
 pub fn split(build: &mut BuildCx<'_>, id: &str, width: Binding<f32>, leading: impl IntoView, trailing: impl IntoView) -> El {
-    let bounded = build.binding(move |r| width.get(r), move |w, size: f32| width.set(w, size.max(MIN_PANE)));
+    let bounded = build.binding(move |r| r.get(width), move |w, size: f32| w.set(width, size.max(MIN_PANE)));
     let handle = splitter(build, &format!("{id}-divider"), bounded);
     row()
         .test_id(id.to_owned())
         .size(rel(1.0))
-        .child(el().h(rel(1.0)).shrink(0.0).style_with(move |r, s| s.w(width.get(r))).child(leading))
+        .child(el().h(rel(1.0)).shrink(0.0).style_with(move |r, s| s.w(r.get(width))).child(leading))
         .child(handle)
         .child(el().h(rel(1.0)).grow(1.0).basis(0.0).min_w(0.0).child(trailing))
 }

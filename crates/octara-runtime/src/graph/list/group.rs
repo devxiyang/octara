@@ -24,22 +24,22 @@ impl<G: Display, K: Display> Display for FlatKey<G, K> {
 }
 
 /// A header or a live input for a member. Keeping a row input avoids copying member values.
-pub enum FlatItem<G, K, T> {
+pub enum FlatItem<G, T> {
     Header(GroupInfo<G>),
-    Item(RowSignal<K, T>),
+    Item(RowSignal<T>),
 }
 
-impl<G: Clone, K: Clone, T> Clone for FlatItem<G, K, T> {
+impl<G: Clone, T> Clone for FlatItem<G, T> {
     fn clone(&self) -> Self {
         match self {
             Self::Header(info) => Self::Header(info.clone()),
-            Self::Item(row) => Self::Item(row.clone()),
+            Self::Item(row) => Self::Item(*row),
         }
     }
 }
 
-impl<G, K, T> FlatItem<G, K, T> {
-    pub fn item(&self) -> Option<&RowSignal<K, T>> {
+impl<G, T> FlatItem<G, T> {
+    pub fn item(&self) -> Option<&RowSignal<T>> {
         match self {
             Self::Header(_) => None,
             Self::Item(item) => Some(item),
@@ -54,7 +54,7 @@ impl<G, K, T> FlatItem<G, K, T> {
     }
 }
 
-type FlatList<G, K, T> = ReadList<FlatKey<G, K>, FlatItem<G, K, T>>;
+type FlatList<G, K, T> = ReadList<FlatKey<G, K>, FlatItem<G, T>>;
 
 pub struct Groups<G, K, T> {
     headers: ReadList<G, GroupInfo<G>>,
@@ -250,10 +250,11 @@ impl<K: Clone + Eq + Hash + 'static, T: 'static> ReadList<K, T> {
             for delta in &flat_deltas {
                 match delta {
                     ListDelta::Insert(FlatKey::Item(key)) => {
-                        flat_data.rows.insert(FlatKey::Item(key.clone()), FlatItem::Item(self.row(key.clone())));
+                        let row = self.row_signal(world, key);
+                        flat.data_mut(world).rows.insert(FlatKey::Item(key.clone()), FlatItem::Item(row));
                     }
                     ListDelta::Remove(key) => {
-                        flat_data.rows.remove(key);
+                        flat.data_mut(world).rows.remove(key);
                     }
                     _ => {}
                 }

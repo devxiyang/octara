@@ -187,8 +187,6 @@ pub fn todo(cx: &mut BuildCx<'_>, n: usize) -> El {
                 )),
         )
         .child(col().test_id("todos").grow(1.0).min_h(0).overflow_y(Overflow::Scroll).child(each(visible, move |b, &id, todo| {
-            let checked = todo.clone();
-            let title = todo.clone();
             row()
                 .test_id(format!("todo-{id}"))
                 .shrink(0.0)
@@ -196,16 +194,16 @@ pub fn todo(cx: &mut BuildCx<'_>, n: usize) -> El {
                 .align(AlignItems::Center)
                 .child(
                     checkbox(b.binding(
-                        move |r| checked.with(r, |row| row.is_some_and(|row| row.done)),
+                        move |r| r.try_with(todo, |row| row.done).unwrap_or_default(),
                         move |w, done| w.update_row(todos, &id, |todo| todo.done = done),
                     ))
                     .test_id(format!("toggle-{id}")),
                 )
                 .child(
-                    text(move |r: &mut ReadCx<'_>| title.with(r, |row| row.map(|row| row.title.clone()).unwrap_or_default()))
+                    text(move |r: &mut ReadCx<'_>| r.try_with(todo, |row| row.title.clone()).unwrap_or_default())
                         .test_id(format!("title-{id}"))
                         .text_color(move |r: &mut ReadCx<'_>| {
-                            todo.with(r, |row| if row.is_some_and(|row| row.done) { ColorToken::TextMuted } else { ColorToken::Text })
+                            if r.try_with(todo, |row| row.done).unwrap_or_default() { ColorToken::TextMuted } else { ColorToken::Text }
                         }),
                 )
                 .child(button("Remove", KitSize::Md, ButtonVariant::Ghost).test_id(format!("remove-{id}")).on_press(move |w| {
@@ -270,18 +268,14 @@ fn chat_view(cx: &mut BuildCx<'_>, n: usize, virtualized: bool) -> El {
             });
         });
     };
-    let render = |_: &mut BuildCx<'_>, &id: &usize, msg: RowSignal<usize, Message>| {
-        let role = msg.clone();
+    let render = |_: &mut BuildCx<'_>, &id: &usize, msg: RowSignal<Message>| {
         col()
             .test_id(format!("msg-{id}"))
             .shrink(0.0)
             .p(sp(1.0))
+            .child(text(move |r: &mut ReadCx<'_>| r.try_with(msg, |row| row.author).unwrap_or_default()).test_id(format!("msg-role-{id}")))
             .child(
-                text(move |r: &mut ReadCx<'_>| role.with(r, |row| row.map(|row| row.author).unwrap_or("")))
-                    .test_id(format!("msg-role-{id}")),
-            )
-            .child(
-                text(move |r: &mut ReadCx<'_>| msg.with(r, |row| row.map(|row| row.body.clone()).unwrap_or_default()))
+                text(move |r: &mut ReadCx<'_>| r.try_with(msg, |row| row.body.clone()).unwrap_or_default())
                     .test_id(format!("msg-body-{id}")),
             )
     };
@@ -350,25 +344,23 @@ fn contacts_view(cx: &mut BuildCx<'_>, n: usize, virtualized: bool) -> El {
         .shrink(0.0),
         FlatKey::Item(id) => {
             let open = b.signal(false);
-            let name = people.read_only().row(id);
-            let star = name.clone();
-            let label = name.clone();
+            let person = b.row_signal(people, id);
             row()
                 .gap(sp(2.0))
                 .shrink(0.0)
                 .align(AlignItems::Center)
                 .test_id(format!("contact-{id}"))
                 .child(
-                    text(move |r: &mut ReadCx<'_>| name.with(r, |person| person.map(|p| p.name.clone()).unwrap_or_default()))
+                    text(move |r: &mut ReadCx<'_>| r.try_with(person, |person| person.name.clone()).unwrap_or_default())
                         .test_id(format!("name-{id}")),
                 )
                 .child(
                     checkbox(b.binding(
-                        move |r| star.with(r, |person| person.is_some_and(|p| p.starred)),
+                        move |r| r.try_with(person, |person| person.starred).unwrap_or_default(),
                         move |w, value| w.update_row(people, &id, |p| p.starred = value),
                     ))
                     .test_id(format!("star-{id}"))
-                    .label(move |r: &mut ReadCx<'_>| label.with(r, |p| p.map(|p| format!("Star {}", p.name)).unwrap_or_default())),
+                    .label(move |r: &mut ReadCx<'_>| r.try_with(person, |person| format!("Star {}", person.name)).unwrap_or_default()),
                 )
                 .child(
                     button("Open", KitSize::Md, ButtonVariant::Ghost)

@@ -43,11 +43,8 @@ struct MenuRoot {
 
 impl MenuRoot {
     fn authorize(self, write: &mut WriteCx<'_>, path: &[String]) {
-        if write.with(self.submenus, |submenus| submenus.get(path).is_some_and(|submenu| submenu.blocked)) {
-            write.update(self.submenus, |submenus| {
-                submenus.remove(path);
-            });
-        }
+        write
+            .mutate(self.submenus, |submenus| submenus.get(path).is_some_and(|submenu| submenu.blocked) && submenus.remove(path).is_some());
     }
 
     fn close_descendants(self, write: &mut WriteCx<'_>, path: &[String]) {
@@ -55,11 +52,11 @@ impl MenuRoot {
             submenus.iter().rev().filter(|(key, _)| key.starts_with(path)).map(|(key, submenu)| (key.clone(), *submenu)).collect::<Vec<_>>()
         });
         for (key, submenu) in descendants {
-            if key.len() > path.len() && submenu.open.is_alive(write) && !submenu.blocked && write.read(|read| submenu.open.get(read)) {
-                submenu.open.set(write, false);
+            if key.len() > path.len() && write.is_binding_alive(submenu.open) && !submenu.blocked && write.get(submenu.open) {
+                write.set(submenu.open, false);
             }
             // A controlled submenu can decline the reset. It still needs a fresh open request.
-            let blocked = key.len() > path.len() && submenu.open.is_alive(write) && write.read(|read| submenu.open.get(read));
+            let blocked = key.len() > path.len() && write.is_binding_alive(submenu.open) && write.get(submenu.open);
             write.update(self.submenus, |submenus| {
                 if blocked {
                     submenus.insert(key, Submenu { blocked: true, ..submenu });
@@ -111,7 +108,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> MenuState<K, T> {
         let attachment = build.signal(None::<Attachment>);
         let entry = build.signal(None);
         build.watch(
-            move |read| open.get(read),
+            move |read| read.get(open),
             move |write, open, _| {
                 if !open {
                     collection.set_active(write, None);
@@ -135,7 +132,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> MenuState<K, T> {
     }
 
     pub fn is_open(self, read: &mut ReadCx<'_>) -> bool {
-        self.open.get(read)
+        read.get(self.open)
     }
 
     pub fn set_open(self, write: &mut WriteCx<'_>, open: bool) {
@@ -145,7 +142,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> MenuState<K, T> {
         {
             attachment.root.authorize(write, &attachment.path);
         }
-        self.open.set(write, open);
+        write.set(self.open, open);
         if !open && !write.read(|read| self.is_open(read)) {
             let path = write.read(|read| self.path(read));
             self.root.close_descendants(write, &path);
@@ -218,12 +215,12 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> MenuState<K, T> {
 
     pub fn checkbox_item<C, V: CheckValue>(self, element: El<C>, key: &K, checked: impl Into<Binding<V>>) -> El<C> {
         let checked = checked.into();
-        self.row(element.role(Role::MenuItemCheckbox), key).checked(bind(move |read| checked.get(read).checked())).behavior_first(
+        self.row(element.role(Role::MenuItemCheckbox), key).checked(bind(move |read| read.get(checked).checked())).behavior_first(
             |behavior| {
                 behavior.on_press(move |write| {
-                    let next = write.read(|read| checked.get(read)).toggle();
+                    let next = write.get(checked).toggle();
                     self.close_root(write);
-                    checked.set(write, next);
+                    write.set(checked, next);
                 })
             },
         )
@@ -234,12 +231,12 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> MenuState<K, T> {
         let checked_key = key.clone();
         let key = key.clone();
         self.row(element.role(Role::MenuItemRadio), &key)
-            .checked(move |read: &mut ReadCx<'_>| selected.with(read, |value| value.as_ref() == Some(&checked_key)))
+            .checked(move |read: &mut ReadCx<'_>| read.with(selected, |value| value.as_ref() == Some(&checked_key)))
             .behavior_first(|behavior| {
                 behavior.on_press(move |write| {
                     self.close_root(write);
-                    if !write.read(|read| selected.with(read, |value| value.as_ref() == Some(&key))) {
-                        selected.set(write, Some(key.clone()));
+                    if !write.with(selected, |value| value.as_ref() == Some(&key)) {
+                        write.set(selected, Some(key.clone()));
                     }
                 })
             })
@@ -360,12 +357,12 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> MenuState<K, T> {
 
     fn submenu_open(self, read: &mut ReadCx<'_>, key: &str, open: Binding<bool>) -> bool {
         let path = self.submenu_path(read, key);
-        open.get(read) && read.with(self.root.submenus, |submenus| !submenus.get(&path).is_some_and(|submenu| submenu.blocked))
+        read.get(open) && read.with(self.root.submenus, |submenus| !submenus.get(&path).is_some_and(|submenu| submenu.blocked))
     }
 
     fn close_root(self, write: &mut WriteCx<'_>) {
         self.root.close_descendants(write, &[]);
-        self.root.open.set(write, false);
+        write.set(self.root.open, false);
     }
 
     fn navigate(self, write: &mut WriteCx<'_>, movement: Navigation) {

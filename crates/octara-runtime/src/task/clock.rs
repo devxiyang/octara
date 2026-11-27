@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -62,7 +62,7 @@ struct ClockState {
 /// A monotonic clock advanced by the host or by a test.
 #[derive(Clone, Default)]
 pub struct VirtualClock {
-    state: Rc<ClockState>,
+    state: Arc<ClockState>,
 }
 
 impl VirtualClock {
@@ -112,13 +112,13 @@ impl VirtualClock {
         self.periodic_wait(period, None)
     }
 
-    pub(super) fn sleep_for_task(&self, deadline: Duration, owner: &Rc<TaskState>) -> Sleep {
-        self.wait(deadline, Some(Rc::downgrade(owner)))
+    pub(super) fn sleep_for_task(&self, deadline: Duration, owner: &Arc<TaskState>) -> Sleep {
+        self.wait(deadline, Some(Arc::downgrade(owner)))
     }
 
     #[track_caller]
-    pub(super) fn interval_for_task(&self, period: Duration, owner: &Rc<TaskState>) -> Interval {
-        self.periodic_wait(period, Some(Rc::downgrade(owner)))
+    pub(super) fn interval_for_task(&self, period: Duration, owner: &Arc<TaskState>) -> Interval {
+        self.periodic_wait(period, Some(Arc::downgrade(owner)))
     }
 
     fn wait(&self, deadline: Duration, owner: Option<Weak<TaskState>>) -> Sleep {

@@ -58,19 +58,19 @@ impl ReadCx<'_> {
 
     #[track_caller]
     pub fn with_text<R>(&mut self, buffer: TextBuffer, read: impl FnOnce(&str) -> R) -> R {
-        self.track(buffer.0);
+        self.track_id(buffer.0);
         read(&self.world.value::<TextData>(buffer.0).value)
     }
 
     #[track_caller]
     pub fn text_cursor(&mut self, buffer: TextBuffer) -> Cursor {
-        self.track(buffer.0);
+        self.track_id(buffer.0);
         self.world.value::<TextData>(buffer.0).log.cursor()
     }
 
     #[track_caller]
     pub fn text_changes(&mut self, buffer: TextBuffer, cursor: &mut Cursor) -> Changes<TextEdit> {
-        self.track(buffer.0);
+        self.track_id(buffer.0);
         self.world.value::<TextData>(buffer.0).log.take(cursor)
     }
 }

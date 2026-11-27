@@ -159,7 +159,7 @@ impl AppRuntime {
 
     /// Installs the transport and decoder before opening the application's windows.
     pub fn set_media_loader(&mut self, loader: impl MediaLoader) {
-        self.media.loader = std::rc::Rc::new(loader);
+        self.media.loader = Arc::new(loader);
     }
 
     /// Installs the optional public HTTP response cache.

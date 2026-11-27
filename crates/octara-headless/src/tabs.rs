@@ -39,12 +39,12 @@ impl<K: Clone + PartialEq + KeyDisplay + 'static> TabsState<K> {
     }
 
     pub fn is_selected(self, read: &mut ReadCx<'_>, key: &K) -> bool {
-        self.selected.with(read, |value| value.as_ref() == Some(key))
+        read.with(self.selected, |value| value.as_ref() == Some(key))
     }
 
     pub fn select(self, write: &mut WriteCx<'_>, key: K) {
         if !write.read(|read| self.is_selected(read, &key)) {
-            self.selected.set(write, Some(key));
+            write.set(self.selected, Some(key));
         }
     }
 

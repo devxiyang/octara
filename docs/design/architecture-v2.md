@@ -29,8 +29,8 @@ This document is the architectural overview. Exact crate layouts, naming convent
    - Zero per-signal `Rc<RefCell<Box<dyn Any>>>` heap allocations.
    - Six entire classes of v1 runtime diagnostics (`WRITE_IN_DERIVE`, `WRITE_IN_BUILD`, `STRICT_READ_UNTRACKED`, `SIGNAL_BORROW`, `VIEW_READS_STATE`, `REGISTER_IN_CLEANUP`) become **Rust compile errors**.
 2. **Every Reactive Handle is `Copy` (Arena-Backed World)**:
-   - Not just `Signal<T>` and `ReadSignal<T>`, but also **`StateList<K, T>`**, **`ReadList<K, T>`**, **`TextBuffer`**, **`Watch`**, and **`ScopeId`** are lightweight `Copy` handles into `ReactiveWorld`.
-   - Entire domain controller structs (e.g. `Chat`) become `#[derive(Clone, Copy)]`, eliminating `.clone()` ceremony before every closure while exposing capability-typed domain methods (`chat.active_thread(r: &mut ReadCx)`, `chat.send(w: &mut WriteCx, ...)`).
+   - Signals, bindings, stores and store fields, lists and row handles, text buffers, triggers, watches and scope IDs are lightweight `Copy` handles into `ReactiveWorld`.
+   - Domain controllers can derive `Clone, Copy` and expose capability-typed methods such as `chat.active_thread(r)` and `chat.send(w, message)`. Value reads and writes share the context methods `r.get(handle)`, `r.with(handle, f)` and `w.set(handle, value)`.
 3. **Sparse Data-Oriented Micro-Kernel (`octara-tree`)**:
    - Hot `NodeCore` (**≤ 48 bytes**) + typed sparse `SecondaryMap<NodeId, T>` side tables (12–20× denser than v1's ~1 KB flat `Node`).
    - Strictly **two** write gates: `Tree::apply(Transaction)` (authored structure/props) and `Tree::apply_runtime(RuntimeOp)` (transient interaction/scroll/editor/exit state).
@@ -142,9 +142,9 @@ flowchart TB
 
 | Context | Provided To | Allowed Operations | Statically Prevented (Compile Error) |
 | --- | --- | --- | --- |
-| `BuildCx<'_>` | `#[ui]` builders, `show` / `each` factories | `signal`, `persisted`, `memo`, `watch`, `list`, `derive_list`, `binding`, `text_buffer`, `provide`, `context`, untracked `read` / `sample`, `menus`, `on_chord`, `on_cleanup`, emit nodes into `TxBuilder` | `set`, `update`, tracked `get`, `shutdown` |
-| `ReadCx<'_>` | `memo(\|r\| ...)`, dynamic prop/style closures, `watch` source | `get(sig)`, `with(sig, f)`, `with2(a, b, f)`, `list` reads, `untrack(\|r\| ...)` | `set`, `update`, `signal`, `watch`, `spawn`, `provide`, `shutdown` |
-| `WriteCx<'_>` | Event handlers, `watch` callbacks, `TaskCx::write`, `App::update` | `get`, `with`, `set`, `update`, `list` mutations, `spawn`, `focus`, `request_command`, `open_window`, `close_window`, `ask`, `service` | Re-entrant borrow conflicts (`SIGNAL_BORROW`), direct `&mut Tree` mutation |
+| `BuildCx<'_>` | `#[ui]` builders, `show` / `each` factories | `signal`, `persisted`, `store`, `memo`, `memo_with`, `trigger`, `watch`, `list`, `derive_list`, `row_signal`, `binding`, `text_buffer`, `provide`, `context`, untracked `read` / `sample`, `menus`, `on_chord`, `on_cleanup`, emit nodes into `TxBuilder` | `set`, `update`, tracked `get`, `shutdown` |
+| `ReadCx<'_>` | `memo(\|r\| ...)`, dynamic prop/style closures, `watch` source | `get`, `with`, `with2`, `try_get`, `try_with`, `track`, list reads, `untrack` | `set`, `update`, `signal`, `watch`, `spawn`, `provide`, `shutdown` |
+| `WriteCx<'_>` | Event handlers, `watch` callbacks, `TaskCx::write`, `App::update` | Untracked reads, `set`, `update`, `mutate`, `notify`, list mutations, `spawn`, `focus`, `request_command`, `open_window`, `close_window`, `ask`, `service` | Re-entrant borrow conflicts (`SIGNAL_BORROW`), direct `&mut Tree` mutation |
 | `CleanupCx<'_>` | `on_cleanup(\|c\| ...)` | `sample(sig)`, drop/release external handles | `set`, `update`, `register`, `spawn`, `shutdown` |
 | `TaskCx` | `cx.spawn(name, async move \|task\| ...)` | `task.write(\|w\| ...)`, `task.sleep(d)`, `task.recv(rx)`, `task.background(f)` | Holding `&mut WriteCx` across `.await` |
 | *Pure* (no `Cx`) | `StateList` pure closures (`map`, `filter_with`, `sort_by_with`, `group_by`) | Pure Rust function of `(&Item)` or `(&Item, &Param)` | Reading/writing ambient signals (`VIEW_READS_STATE`) |
@@ -178,21 +178,19 @@ flowchart TB
 3. **Anonymous vs Persisted State**:
    - `cx.signal(init)` — anonymous local UI state, lifetime bound to current scope.
    - `cx.persisted("sidebar_width", || 260.0f32)` — explicit schema-tracked state preserved across hot reload, process restart (`RestartState`), and signed release handoff.
-4. **Struct Field Projections (`#[derive(Store)]` / `slice`)**:
-   - Fine-grained field readers without shattering cohesive models into dozens of loose signals.
+4. **Struct Field Projections (`#[derive(Store)]`)**
+   - `cx.store(init)` holds the whole model. `store.field()` gives the author a read-write handle with an independent revision.
+   - `#[store(nested)]` enables chained accessors such as `store.settings().title()`. The context can also read and write the entire store.
 
 ### 3.3 Type-Partitioned Slab Storage (`TypedSlab<T>`)
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ReactiveId {
-    runtime: u32,
-    bucket: u16,
-    slot: u32,
-    gen: u32,
-}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct ReactiveId(u64);
 ```
 
+- `ReactiveId` packs runtime, node index and generation into eight bytes. `ReactiveHot` holds the slab bucket and slot for each node. A `Signal<T>` is also eight bytes.
 - Every value type `T` lives contiguously in its own `TypedSlab<T>` (`Vec<Slot<T>>`) inside `ReactiveWorld` — **zero `Rc`**, **zero per-signal `Box<dyn Any>`**, **zero `RefCell`** in value storage.
 - `ReadCx<'_>` takes `&mut self` internally so `r.get(memo)` / `r.with(memo, f)` lazily recomputes dirty upstream memos and records dependency edges with plain Rust `&mut` borrows.
 - `WriteCx<'_>` takes `&mut self` for writes and memo-aware reads, making nested conflicting access (`w.update(a, |_| w.set(a, ...))`) a **compile-time borrow error**.

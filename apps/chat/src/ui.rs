@@ -144,7 +144,7 @@ fn age(updated: u64, now: u64) -> Age {
     }
 }
 
-type Threads = ReadList<FlatKey<Age, ThreadId>, FlatItem<Age, ThreadId, Thread>>;
+type Threads = ReadList<FlatKey<Age, ThreadId>, FlatItem<Age, Thread>>;
 
 fn sidebar(b: &mut BuildCx<'_>, chat: Chat, nav: Navigator<Page>) -> El {
     let now = chat.now(b);
@@ -249,8 +249,8 @@ fn thread_row(
     let context_menu = ContextMenuState::new(b, menu);
     let menu_group = LayerGroupId::new();
     let confirm = b.signal(false);
-    let thread = chat.threads.read_only().row(id);
-    let title = b.memo(move |r| thread.with(r, |t| t.map(|t| t.title.clone()).unwrap_or_default()));
+    let thread = b.row_signal(chat.threads, id);
+    let title = b.memo(move |r| r.try_with(thread, |thread| thread.title.clone()).unwrap_or_default());
     row()
         .gap(sp(1.0))
         .align(AlignItems::Center)
@@ -419,7 +419,7 @@ fn conversation(b: &mut BuildCx<'_>, chat: Chat, listing: Binding<bool>, compact
                 .px(sp(4.0))
                 .child(show(
                     move |r| r.get(compact),
-                    move |_| icon_button(icons::MENU, "Conversations").test_id("conversations").on_press(move |w| listing.set(w, true)),
+                    move |_| icon_button(icons::MENU, "Conversations").test_id("conversations").on_press(move |w| w.set(listing, true)),
                 ))
                 .child(
                     text(move |r: &mut ReadCx<'_>| {
@@ -699,15 +699,13 @@ impl fmt::Display for PartKind {
     }
 }
 
-type MessageRow = RowSignal<MessageId, Message>;
+type MessageRow = RowSignal<Message>;
 
 fn message_row(b: &mut BuildCx<'_>, chat: Chat, id: MessageId, message: MessageRow, toasts: ToastQueue<String>) -> El {
-    let user = b.read(|r| message.with(r, |m| m.is_some_and(|m| m.author == Author::User)));
-    let status_row = message.clone();
-    let status = b.memo(move |r| status_row.with(r, |m| m.map_or(Status::Done, |m| m.status.clone())));
-    let structure = message.clone();
+    let user = b.read(|r| r.with(message, |m| m.author == Author::User));
+    let status = b.memo(move |r| r.try_with(message, |m| m.status.clone()).unwrap_or(Status::Done));
     let parts = b.derive_list(move |r| {
-        structure.with(r, |m| m.map_or_else(Vec::new, |m| m.parts.iter().map(|(id, part)| (*id, PartKind::from(part))).collect()))
+        r.try_with(message, |m| m.parts.iter().map(|(id, part)| (*id, PartKind::from(part))).collect()).unwrap_or_default()
     });
     col()
         .test_id(format!("msg-{id}"))
@@ -728,10 +726,9 @@ fn message_row(b: &mut BuildCx<'_>, chat: Chat, id: MessageId, message: MessageR
                 .gap(sp(2.0))
                 .child(each(parts, move |_, part_id, kind| {
                     let part_id = *part_id;
-                    let message = message.clone();
                     el().test_id(format!("part-{id}-{part_id}")).w(FULL).min_w(0.0).child(keyed(
-                        move |r| kind.read(r).unwrap_or(PartKind::Text),
-                        move |b, kind| render_part(b, id, part_id, message.clone(), *kind, user),
+                        move |r| r.try_get(kind).unwrap_or(PartKind::Text),
+                        move |b, kind| render_part(b, id, part_id, message, *kind, user),
                     ))
                 })),
         )
@@ -824,16 +821,15 @@ fn answer_actions(chat: Chat, id: MessageId, status: ReadSignal<Status>, toasts:
     )
 }
 
-fn part_value<R>(r: &mut ReadCx<'_>, row: &MessageRow, id: PartId, f: impl FnOnce(Option<&Part>) -> R) -> R {
-    row.with(r, |m| f(m.and_then(|m| m.parts.iter().find(|(part_id, _)| *part_id == id).map(|(_, part)| part))))
+fn part_value<R>(r: &mut ReadCx<'_>, row: MessageRow, id: PartId, f: impl Fn(Option<&Part>) -> R) -> R {
+    r.try_with(row, |m| f(m.parts.iter().find(|(part_id, _)| *part_id == id).map(|(_, part)| part))).unwrap_or_else(|| f(None))
 }
 
 fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: MessageRow, kind: PartKind, user: bool) -> El {
     match kind {
         PartKind::Text => {
-            let state = message.clone();
             let source = move |r: &mut ReadCx<'_>| {
-                part_value(r, &message, part, |p| match p {
+                part_value(r, message, part, |p| match p {
                     Some(Part::Text(text)) => text.clone(),
                     _ => String::new(),
                 })
@@ -843,9 +839,8 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
             } else {
                 let source = stream_text(b, source);
                 let finished = b.memo(move |r| {
-                    state.with(r, |m| {
-                        m.is_none_or(|m| m.status != Status::Streaming || m.parts.last().is_some_and(|(last, _)| *last != part))
-                    })
+                    r.try_with(message, |m| m.status != Status::Streaming || m.parts.last().is_some_and(|(last, _)| *last != part))
+                        .unwrap_or(true)
                 });
                 // Chat coalesces provider deltas before they reach the transcript.
                 markdown_stream(b, source, finished, StreamingOptions { effects: rich::REVEAL, pace: false, ..StreamingOptions::default() })
@@ -854,13 +849,12 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
         }
         PartKind::Reasoning => {
             let open = b.signal(false);
-            let header_row = message.clone();
             collapsible(
                 b,
                 &format!("reasoning-{id}-{part}"),
                 open.into(),
                 text(move |r: &mut ReadCx<'_>| {
-                    part_value(r, &header_row, part, |p| match p {
+                    part_value(r, message, part, |p| match p {
                         Some(Part::Reasoning { started, ended: Some(end), .. }) => {
                             format!("Thought for {:.1}s", end.saturating_sub(*started).as_secs_f64())
                         }
@@ -868,9 +862,8 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
                     })
                 }),
                 move |b| {
-                    let message = message.clone();
                     let source = stream_text(b, move |r| {
-                        part_value(r, &message, part, |p| match p {
+                        part_value(r, message, part, |p| match p {
                             Some(Part::Reasoning { text, .. }) => text.clone(),
                             _ => String::new(),
                         })
@@ -883,13 +876,12 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
         }
         PartKind::Tool => {
             let open = b.signal(false);
-            let header_row = message.clone();
             collapsible(
                 b,
                 &format!("tool-{id}-{part}"),
                 open.into(),
                 text(move |r: &mut ReadCx<'_>| {
-                    part_value(r, &header_row, part, |p| match p {
+                    part_value(r, message, part, |p| match p {
                         Some(Part::Tool(t)) => {
                             let status = match t.state {
                                 ToolState::Streaming => "Receiving input",
@@ -903,8 +895,6 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
                     })
                 }),
                 move |b| {
-                    let input = message.clone();
-                    let output = message.clone();
                     col()
                         .p(sp(2.0))
                         .gap(sp(2.0))
@@ -912,7 +902,7 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
                         .rounded(RadiusToken::Md)
                         .child(
                             text(stream_text(b, move |r| {
-                                part_value(r, &input, part, |p| match p {
+                                part_value(r, message, part, |p| match p {
                                     Some(Part::Tool(t)) => t.input.clone(),
                                     _ => String::new(),
                                 })
@@ -921,7 +911,7 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
                         )
                         .child(
                             text(move |r: &mut ReadCx<'_>| {
-                                part_value(r, &output, part, |p| match p {
+                                part_value(r, message, part, |p| match p {
                                     Some(Part::Tool(t)) => match &t.state {
                                         ToolState::Failed(error) => error.clone(),
                                         _ => t.output.clone().unwrap_or_default(),
@@ -935,7 +925,7 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
             )
         }
         PartKind::File => chip(move |r: &mut ReadCx<'_>| {
-            part_value(r, &message, part, |p| match p {
+            part_value(r, message, part, |p| match p {
                 Some(Part::File(file)) => file.name.clone(),
                 _ => String::new(),
             })
@@ -1045,8 +1035,7 @@ fn composer(b: &mut BuildCx<'_>, chat: Chat, no_models: bool) -> El {
                     move |_| {
                         row().gap(sp(1.0)).wrap(FlexWrap::Wrap).child(each(chat.files, move |b, id, file| {
                             let id = *id;
-                            let name = b.memo(move |r| file.with(r, |file| file.map(|f| f.name.clone()).unwrap_or_default()));
-                            let name = b.sample(name);
+                            let name = b.read(|r| r.with(file, |file| file.name.clone()));
                             removable_chip(b, &name, |remove| {
                                 remove.test_id(format!("remove-file-{id}")).on_press(move |w| chat.detach(w, id))
                             })
@@ -1122,12 +1111,10 @@ fn attach_files(chat: Chat, w: &mut WriteCx<'_>) {
     );
 }
 
-fn queued_row(b: &mut BuildCx<'_>, chat: Chat, id: u64, queued: RowSignal<u64, Queued>) -> El {
+fn queued_row(b: &mut BuildCx<'_>, chat: Chat, id: u64, queued: RowSignal<Queued>) -> El {
     let choices = chat.model_choices(b);
-    let choice_row = queued.clone();
-    let model = b.memo(move |r| {
-        choice_row.with(r, |q| q.and_then(|q| choices.iter().find(|(id, _)| *id == q.model_id).map(|(_, name)| name.clone())))
-    });
+    let model =
+        b.memo(move |r| r.try_with(queued, |q| choices.iter().find(|(id, _)| *id == q.model_id).map(|(_, name)| name.clone())).flatten());
     row()
         .test_id(format!("queued-{id}"))
         .align(AlignItems::Center)
@@ -1146,7 +1133,7 @@ fn queued_row(b: &mut BuildCx<'_>, chat: Chat, id: u64, queued: RowSignal<u64, Q
                         .text_color(ColorToken::TextMuted)
                         .max_lines(1),
                 )
-                .child(text(move |r: &mut ReadCx<'_>| queued.with(r, |q| q.map(|q| q.text.clone()).unwrap_or_default())).max_lines(1)),
+                .child(text(move |r: &mut ReadCx<'_>| r.try_with(queued, |q| q.text.clone()).unwrap_or_default()).max_lines(1)),
         )
         .child(
             icon_button(icons::ARROW_UP, "Send now")

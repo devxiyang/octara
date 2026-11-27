@@ -5,11 +5,11 @@ use octara_model::image::{Image, ObjectFit};
 use octara_model::input::ContactTarget;
 use octara_tree::transaction::{NodeContent, NodeSpec};
 use octara_tree::{Tree, TreeDelta};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::task::{Poll, Waker};
 
-type TestBounds = Rc<Cell<Rect>>;
+type TestBounds = Arc<Cell<Rect>>;
 
 struct Bounds(TestBounds);
 
@@ -35,9 +35,9 @@ impl HostEngine for Bounds {
 
 #[derive(Default)]
 struct Loader {
-    requests: RefCell<Vec<Rc<Pending>>>,
+    requests: RefCell<Vec<Arc<Pending>>>,
     resize: Cell<bool>,
-    variants: RefCell<Vec<(MediaVariant, Rc<Pending>)>>,
+    variants: RefCell<Vec<(MediaVariant, Arc<Pending>)>>,
 }
 
 #[derive(Default)]
@@ -63,7 +63,7 @@ impl Pending {
     }
 }
 
-struct DropNotice(Rc<Pending>);
+struct DropNotice(Arc<Pending>);
 
 impl Drop for DropNotice {
     fn drop(&mut self) {
@@ -71,9 +71,10 @@ impl Drop for DropNotice {
     }
 }
 
-impl MediaLoader for Rc<Loader> {
+impl MediaLoader for Arc<Loader> {
     fn load(&self, request: MediaRequest, progress: MediaProgress) -> super::super::MediaFuture {
-        let pending = Rc::new(Pending { cancel: request.cancel, progress, disk: request.disk_cache.is_some(), ..Pending::default() });
+        #[expect(clippy::arc_with_non_send_sync, reason = "the media fixture shares local state with its mock host and futures")]
+        let pending = Arc::new(Pending { cancel: request.cancel, progress, disk: request.disk_cache.is_some(), ..Pending::default() });
         self.requests.borrow_mut().push(pending.clone());
         wait_for_image(pending)
     }
@@ -83,13 +84,14 @@ impl MediaLoader for Rc<Loader> {
     }
 
     fn variant(&self, _: LoadedMedia, target: MediaVariant, cancel: CancellationToken) -> super::super::MediaFuture {
-        let pending = Rc::new(Pending { cancel, ..Pending::default() });
+        #[expect(clippy::arc_with_non_send_sync, reason = "the media fixture shares local state with its mock host and futures")]
+        let pending = Arc::new(Pending { cancel, ..Pending::default() });
         self.variants.borrow_mut().push((target, pending.clone()));
         wait_for_image(pending)
     }
 }
 
-fn wait_for_image(pending: Rc<Pending>) -> super::super::MediaFuture {
+fn wait_for_image(pending: Arc<Pending>) -> super::super::MediaFuture {
     let notify = DropNotice(pending.clone());
     Box::pin(async move {
         let result = poll_fn(|cx| {
@@ -123,16 +125,17 @@ impl MediaCacheBackend for NoDisk {
 
 struct Fixture {
     app: AppRuntime,
-    loader: Rc<Loader>,
-    bounds: Rc<RefCell<VecDeque<TestBounds>>>,
+    loader: Arc<Loader>,
+    bounds: Arc<RefCell<VecDeque<TestBounds>>>,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let bounds: Rc<RefCell<VecDeque<TestBounds>>> = Rc::default();
+        let bounds: Arc<RefCell<VecDeque<TestBounds>>> = Arc::default();
         let engine = bounds.clone();
         let mut app = AppRuntime::new(move |_, _| Box::new(Bounds(engine.borrow_mut().pop_front().expect("window bounds"))));
-        let loader = Rc::new(Loader::default());
+        #[expect(clippy::arc_with_non_send_sync, reason = "the media fixture shares local state with its mock host and futures")]
+        let loader = Arc::new(Loader::default());
         app.set_media_loader(loader.clone());
         app.set_media_cache_backend(Arc::new(NoDisk));
         Self { app, loader, bounds }
@@ -143,7 +146,8 @@ impl Fixture {
     }
 
     fn open_at(&mut self, source: ImageSource, bounds: Rect) -> (WindowId, TestBounds) {
-        let bounds = Rc::new(Cell::new(bounds));
+        #[expect(clippy::arc_with_non_send_sync, reason = "the media fixture shares local state with its mock host and futures")]
+        let bounds = Arc::new(Cell::new(bounds));
         self.bounds.borrow_mut().push_back(bounds.clone());
         let id = self
             .app
@@ -175,7 +179,7 @@ impl Fixture {
         }
     }
 
-    fn request(&self, index: usize) -> Rc<Pending> {
+    fn request(&self, index: usize) -> Arc<Pending> {
         self.loader.requests.borrow()[index].clone()
     }
 

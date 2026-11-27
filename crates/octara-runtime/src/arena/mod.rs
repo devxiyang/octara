@@ -1,8 +1,11 @@
 mod pending;
 mod scope;
 mod slab;
+#[cfg(test)]
+mod tests;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
 use std::panic::Location;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -19,13 +22,54 @@ pub use self::scope::{PersistedState, ScopeId};
 
 static NEXT_RUNTIME: octara_model::CacheLine<AtomicU32> = octara_model::CacheLine(AtomicU32::new(1));
 
+const GENERATION_BITS: u32 = u16::BITS;
+const NODE_BITS: u32 = 24;
+const RUNTIME_SHIFT: u32 = GENERATION_BITS + NODE_BITS;
+const MAX_NODE_INDEX: u32 = (1 << NODE_BITS) - 1;
+const MAX_RUNTIME: u32 = (1 << (u64::BITS - RUNTIME_SHIFT)) - 1;
+
+fn next_runtime(counter: &AtomicU32) -> u32 {
+    counter
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| (id <= MAX_RUNTIME).then(|| id + 1))
+        .expect("reactive runtime IDs exhausted")
+}
+
 /// Identifies one allocation in one reactive world.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ReactiveId {
-    runtime: u32,
-    pub(crate) node: u32,
-    generation: u32,
-    slot: u32,
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct ReactiveId(u64);
+
+const _: () = assert!(size_of::<ReactiveId>() == 8);
+
+impl ReactiveId {
+    // Keep the runtime, node, and generation order for Ord. A node slot is retired
+    // permanently after its final generation so that old handles cannot alias new ones.
+    fn new(runtime: u32, node: u32, generation: u16) -> Self {
+        debug_assert!(runtime <= MAX_RUNTIME && node <= MAX_NODE_INDEX);
+        Self((u64::from(runtime) << RUNTIME_SHIFT) | (u64::from(node) << GENERATION_BITS) | u64::from(generation))
+    }
+
+    fn runtime(self) -> u32 {
+        (self.0 >> RUNTIME_SHIFT) as u32
+    }
+
+    pub(crate) fn node(self) -> u32 {
+        ((self.0 >> GENERATION_BITS) as u32) & MAX_NODE_INDEX
+    }
+
+    fn generation(self) -> u16 {
+        self.0 as u16
+    }
+}
+
+impl fmt::Debug for ReactiveId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReactiveId")
+            .field("runtime", &self.runtime())
+            .field("node", &self.node())
+            .field("generation", &self.generation())
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,11 +95,48 @@ pub enum NodeState {
 pub(crate) type Compute = Box<dyn FnMut(&mut ReadCx<'_>) -> bool>;
 pub(crate) type WatchEffect = Box<dyn FnMut(&mut WriteCx<'_>, ReactiveId)>;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Revision(u64);
+
+impl Revision {
+    const MAX: u64 = u64::MAX >> 1;
+
+    pub(crate) fn get(self) -> u64 {
+        self.0
+    }
+
+    #[track_caller]
+    pub(crate) fn next(self) -> Self {
+        assert!(self.0 < Self::MAX, "reactive revision exhausted");
+        Self(self.0 + 1)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Source {
     pub id: ReactiveId,
-    pub revision: u64,
-    pub fixed: bool,
+    // The least significant bit marks a dependency retained across evaluations.
+    revision_and_fixed: u64,
+}
+
+const _: () = assert!(size_of::<Source>() == 16);
+
+impl Source {
+    pub(crate) fn new(id: ReactiveId, revision: Revision, fixed: bool) -> Self {
+        Self { id, revision_and_fixed: (revision.0 << 1) | u64::from(fixed) }
+    }
+
+    pub(crate) fn revision(self) -> Revision {
+        Revision(self.revision_and_fixed >> 1)
+    }
+
+    pub(crate) fn fixed(self) -> bool {
+        self.revision_and_fixed & 1 != 0
+    }
+
+    pub(crate) fn set_fixed(&mut self) {
+        self.revision_and_fixed |= 1;
+    }
 }
 
 const ALIVE: u8 = 1 << 0;
@@ -65,7 +146,7 @@ const WATCH_PENDING: u8 = 1 << 3;
 
 pub(crate) struct ReactiveHot {
     // The runtime and node index are implicit in the enclosing world and vector slot.
-    generation: u32,
+    generation: u16,
     slot: u32,
     bucket: u16,
     flags: u8,
@@ -74,14 +155,14 @@ pub(crate) struct ReactiveHot {
     pub kind: NodeKind,
     pub state: NodeState,
     pub depth: u32,
-    pub revision: u64,
+    pub revision: Revision,
 }
 
 const _: () = assert!(size_of::<ReactiveHot>() <= 32);
 
 impl ReactiveHot {
     fn id(&self, runtime: u32, node: u32) -> ReactiveId {
-        ReactiveId { runtime, node, generation: self.generation, slot: self.slot }
+        ReactiveId::new(runtime, node, self.generation)
     }
 
     fn has_flag(&self, flag: u8) -> bool {
@@ -154,8 +235,7 @@ impl Default for ReactiveWorld {
 
 impl ReactiveWorld {
     pub fn new() -> Self {
-        let runtime =
-            NEXT_RUNTIME.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).expect("reactive runtime IDs exhausted");
+        let runtime = next_runtime(&NEXT_RUNTIME);
         let mut world = Self {
             runtime,
             slabs: SlabStore::default(),
@@ -213,11 +293,11 @@ impl ReactiveWorld {
     }
 
     pub fn is_alive(&self, id: ReactiveId) -> bool {
-        id.runtime == self.runtime
-            && self
-                .hot
-                .get(id.node as usize)
-                .is_some_and(|node| node.has_flag(ALIVE) && node.generation == id.generation && node.slot == id.slot)
+        id.runtime() == self.runtime && self.live_node(id).is_some()
+    }
+
+    fn live_node(&self, id: ReactiveId) -> Option<&ReactiveHot> {
+        self.hot.get(id.node() as usize).filter(|node| node.has_flag(ALIVE) && node.generation == id.generation())
     }
 
     #[track_caller]
@@ -228,32 +308,34 @@ impl ReactiveWorld {
 
     #[track_caller]
     pub(crate) fn hot(&self, id: ReactiveId) -> &ReactiveHot {
-        self.check_node(id, &codes::READ_DISPOSED);
-        &self.hot[id.node as usize]
+        self.check_node(id, &codes::READ_DISPOSED)
     }
 
     #[track_caller]
     pub(crate) fn hot_mut(&mut self, id: ReactiveId) -> &mut ReactiveHot {
         self.check_node(id, &codes::WRITE_DISPOSED);
-        &mut self.hot[id.node as usize]
+        &mut self.hot[id.node() as usize]
     }
 
     #[track_caller]
     pub(crate) fn cold(&self, id: ReactiveId) -> &ReactiveCold {
         self.check_node(id, &codes::READ_DISPOSED);
-        &self.cold[id.node as usize]
+        &self.cold[id.node() as usize]
     }
 
     #[track_caller]
     pub(crate) fn cold_mut(&mut self, id: ReactiveId) -> &mut ReactiveCold {
         self.check_node(id, &codes::WRITE_DISPOSED);
-        &mut self.cold[id.node as usize]
+        &mut self.cold[id.node() as usize]
     }
 
     #[track_caller]
-    fn check_node(&self, id: ReactiveId, disposed: &'static octara_model::diagnostics::Code) {
-        assert_eq!(id.runtime, self.runtime, "{}: reactive handle belongs to another runtime", codes::WRONG_RUNTIME);
-        assert!(self.is_alive(id), "{disposed}: reactive node {id:?} is no longer live");
+    fn check_node(&self, id: ReactiveId, disposed: &'static octara_model::diagnostics::Code) -> &ReactiveHot {
+        assert_eq!(id.runtime(), self.runtime, "{}: reactive handle belongs to another runtime", codes::WRONG_RUNTIME);
+        let Some(node) = self.live_node(id) else {
+            panic!("{disposed}: reactive node {id:?} is no longer live");
+        };
+        node
     }
 
     #[track_caller]
@@ -286,20 +368,31 @@ impl ReactiveWorld {
         init: impl FnOnce(&mut SlabStore, u32) -> (u16, u32),
     ) -> ReactiveId {
         self.check_scope(scope);
-        let spare = self.free_nodes.pop();
+        let spare = self.free_nodes.last().copied();
         let (index, generation) = if let Some(index) = spare {
             let generation = self.hot[index as usize].generation.checked_add(1).expect("reactive node generation exhausted");
             (index, generation)
         } else {
-            (u32::try_from(self.hot.len()).expect("reactive node IDs exhausted"), 0)
+            let index = u32::try_from(self.hot.len()).expect("reactive node IDs exhausted");
+            assert!(index <= MAX_NODE_INDEX, "reactive node IDs exhausted");
+            (index, 0)
         };
-        let (bucket, slot) = init(&mut self.slabs, generation);
-        let id = ReactiveId { runtime: self.runtime, node: index, generation, slot };
+        let (bucket, slot) = init(&mut self.slabs, u32::from(generation));
+        let id = ReactiveId::new(self.runtime, index, generation);
         let scope_data = &mut self.scopes[scope.index as usize];
         let scope_index = scope_data.nodes.len();
         scope_data.nodes.push(id);
-        let hot =
-            ReactiveHot { generation, slot, bucket, flags: ALIVE, queue_index: 0, kind, state: NodeState::Clean, depth: 0, revision: 0 };
+        let hot = ReactiveHot {
+            generation,
+            slot,
+            bucket,
+            flags: ALIVE,
+            queue_index: 0,
+            kind,
+            state: NodeState::Clean,
+            depth: 0,
+            revision: Revision::default(),
+        };
         let cold = ReactiveCold {
             scope,
             window,
@@ -312,6 +405,7 @@ impl ReactiveWorld {
             defined_at: Location::caller(),
         };
         if spare.is_some() {
+            self.free_nodes.pop();
             self.hot[index as usize] = hot;
             self.cold[index as usize] = cold;
         } else {
@@ -323,8 +417,9 @@ impl ReactiveWorld {
 
     #[track_caller]
     pub(crate) fn value<T: 'static>(&self, id: ReactiveId) -> &T {
-        let bucket = self.hot(id).value_bucket().expect("reactive node has no value");
-        self.slabs.get(bucket, id.slot, id.generation)
+        let node = self.hot(id);
+        let bucket = node.value_bucket().expect("reactive node has no value");
+        self.slabs.get(bucket, node.slot, u32::from(node.generation))
     }
 
     #[track_caller]
@@ -334,9 +429,9 @@ impl ReactiveWorld {
 
     #[track_caller]
     pub(crate) fn value_slot_mut<T: 'static>(&mut self, id: ReactiveId) -> &mut Option<T> {
-        self.check_node(id, &codes::WRITE_DISPOSED);
-        let bucket = self.hot_mut(id).value_bucket().expect("reactive node has no value");
-        self.slabs.get_mut(bucket, id.slot, id.generation)
+        let node = self.check_node(id, &codes::WRITE_DISPOSED);
+        let (bucket, slot, generation) = (node.value_bucket().expect("reactive node has no value"), node.slot, u32::from(node.generation));
+        self.slabs.get_mut(bucket, slot, generation)
     }
 
     pub fn retire_node(&mut self, id: ReactiveId) {
@@ -345,20 +440,22 @@ impl ReactiveWorld {
         }
         self.retire_persisted(id);
         self.unlink_node(id);
-        let hot = &mut self.hot[id.node as usize];
-        let cold = &mut self.cold[id.node as usize];
+        let hot = &mut self.hot[id.node() as usize];
+        let cold = &mut self.cold[id.node() as usize];
         if hot.kind == NodeKind::TextBuffer {
             self.text_streams.remove(&id);
         }
         hot.flags &= !ALIVE;
-        self.free_nodes.push(id.node);
+        if hot.generation < u16::MAX {
+            self.free_nodes.push(id.node());
+        }
         let siblings = &mut self.scopes[cold.scope.index as usize].nodes;
         let index = cold.scope_index;
         siblings.swap_remove(index);
-        let value = hot.value_bucket().and_then(|bucket| self.slabs.take(bucket, id.slot, id.generation));
+        let value = hot.value_bucket().and_then(|bucket| self.slabs.take(bucket, hot.slot, u32::from(hot.generation)));
         let retired = (cold.compute.take(), cold.watch_effect.take(), value);
         if let Some(swapped) = siblings.get(index) {
-            self.cold[swapped.node as usize].scope_index = index;
+            self.cold[swapped.node() as usize].scope_index = index;
         }
         drop(retired);
     }

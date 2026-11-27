@@ -273,15 +273,15 @@ impl<K: Clone + Eq + 'static> Selection<K> {
 
     pub fn contains(self, r: &mut ReadCx<'_>, key: &K) -> bool {
         match self {
-            Self::Single(value) => value.with(r, |value| value.as_ref() == Some(key)),
-            Self::Multiple(value) => value.with(r, |value| value.contains(key)),
+            Self::Single(value) => r.with(value, |value| value.as_ref() == Some(key)),
+            Self::Multiple(value) => r.with(value, |value| value.contains(key)),
         }
     }
 
     pub fn keys(self, r: &mut ReadCx<'_>) -> Vec<K> {
         match self {
-            Self::Single(value) => value.get(r).into_iter().collect(),
-            Self::Multiple(value) => value.get(r),
+            Self::Single(value) => r.get(value).into_iter().collect(),
+            Self::Multiple(value) => r.get(value),
         }
     }
 
@@ -290,17 +290,17 @@ impl<K: Clone + Eq + 'static> Selection<K> {
         match self {
             Self::Single(value) => {
                 if !w.read(|r| self.contains(r, &key)) {
-                    value.set(w, Some(key));
+                    w.set(value, Some(key));
                 }
             }
             Self::Multiple(value) => {
-                let mut selected = w.read(|r| value.get(r));
+                let mut selected = w.get(value);
                 if selected.contains(&key) {
                     selected.retain(|selected| selected != &key);
                 } else {
                     selected.push(key);
                 }
-                value.set(w, selected);
+                w.set(value, selected);
             }
         }
     }

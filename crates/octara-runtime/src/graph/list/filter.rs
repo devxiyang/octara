@@ -1,5 +1,5 @@
 use super::*;
-use crate::graph::value::IntoRead;
+use crate::ReadSignal;
 
 impl<K: Clone + Eq + Hash + 'static, T: 'static> ReadList<K, T> {
     #[track_caller]
@@ -11,10 +11,10 @@ impl<K: Clone + Eq + Hash + 'static, T: 'static> ReadList<K, T> {
     pub fn filter_with<P: 'static>(
         self,
         build: &mut BuildCx<'_>,
-        parameter: impl IntoRead<P>,
+        parameter: impl Into<ReadSignal<P>>,
         predicate: impl Fn(&T, &P) -> bool + 'static,
     ) -> Self {
-        self.filter_parameter(build, Parameter::Signal(parameter.into_read()), predicate)
+        self.filter_parameter(build, Parameter::Signal(parameter.into()), predicate)
     }
 
     fn filter_parameter<P: 'static>(

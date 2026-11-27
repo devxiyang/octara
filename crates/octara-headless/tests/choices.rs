@@ -215,7 +215,7 @@ fn combobox_composition_precedes_selection_and_virtual_navigation_reveals_the_ac
                         col().test_id("options").h(60).overflow_y(Overflow::Scroll),
                         VirtualOptions { estimated_row_height: 20.0, overscan: 0, ..Default::default() },
                         |_, key, row| {
-                            text(bind(move |r| row.read(r).map(|choice| choice.label).unwrap_or_default()))
+                            text(bind(move |r| r.try_get(row).map(|choice| choice.label).unwrap_or_default()))
                                 .h(20)
                                 .test_id(format!("choice-{key}"))
                         },

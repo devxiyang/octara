@@ -12,7 +12,7 @@
 ```text
 crates/
   octara-model/        # Layer 0: Pure values, IR, 4-channel input, diagnostics (NO heavy/OS deps)
-  octara-macros/       # Layer 0: #[ui] provenance & #[derive(Store)] field-lens proc macros
+  octara-macros/       # Layer 0: #[ui] provenance and #[derive(Store)] field projections
   octara-icons/        # Layer 0: Lucide vector icon definitions (-> octara-model)
   octara-fonts/        # Layer 0: Bundled fallback font bytes (native/headless)
   octara-svg/          # Layer 0: Optional roxmltree SVG -> Icon/Path parser (-> octara-model)

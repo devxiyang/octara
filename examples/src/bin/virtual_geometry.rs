@@ -45,7 +45,7 @@ fn view(cx: &mut BuildCx<'_>) -> El {
         .child(
             col().test_id("geometry-list").grow(1.0).min_h(0).overflow_y(Overflow::Scroll).style_with(move |r, p| p.w(r.get(width))).child(
                 virtual_each(rows, VirtualOptions { estimated_row_height: 88.0, ..Default::default() }, |_, &key, row| {
-                    text(move |r: &mut ReadCx<'_>| row.read(r).unwrap_or_default())
+                    text(move |r: &mut ReadCx<'_>| r.try_get(row).unwrap_or_default())
                         .test_id(format!("geometry-row-{key}"))
                         .shrink(0.0)
                         .p(sp(2.0))

@@ -21,7 +21,7 @@ impl SplitterState {
 
     /// Attaches horizontal resize behavior. The binding owns bounds and acceptance.
     pub fn handle<C>(self, element: El<C>) -> El<C> {
-        self.part(element, None).a11y_value(bind(move |read| self.width.get(read).round().to_string()))
+        self.part(element, None).a11y_value(bind(move |read| read.get(self.width).round().to_string()))
     }
 
     pub(crate) fn bounded<C>(self, element: El<C>, min: f32, max: f32) -> El<C> {
@@ -29,12 +29,12 @@ impl SplitterState {
             .numeric_range(bind(move |read| NumericRange {
                 min: min.into(),
                 max: max.into(),
-                value: Some(self.width.get(read).into()),
+                value: Some(read.get(self.width).into()),
                 step: Some(self.step.into()),
             }))
             .behavior_first(|behavior| {
                 behavior.handle(HandlerKind::Accessibility, move |write, event| {
-                    let current = write.read(|read| self.width.get(read));
+                    let current = write.get(self.width);
                     let width = match event {
                         HandlerEvent::Accessibility(A11yAction::SetNumericValue(value)) if value.is_finite() => {
                             value.clamp(min.into(), max.into()) as f32
@@ -43,7 +43,7 @@ impl SplitterState {
                         HandlerEvent::Accessibility(A11yAction::Decrement) => current - self.step,
                         _ => return HandlerOutcome::default(),
                     };
-                    self.width.set(write, width.clamp(min, max));
+                    write.set(self.width, width.clamp(min, max));
                     HandlerOutcome { consumed: true, ..Default::default() }
                 })
             })
@@ -55,11 +55,11 @@ impl SplitterState {
                 .on(HandlerKind::Drag, move |write, event| {
                     let HandlerEvent::Interaction { payload: InteractionPayload::Drag(drag), .. } = event else { return };
                     if drag.phase == DragPhase::Start {
-                        let width = write.read(|read| self.width.get(read));
+                        let width = write.get(self.width);
                         write.set(self.before_drag, Some(width));
                     }
                     if let Some(start) = write.get(self.before_drag) {
-                        self.width.set(write, if drag.phase == DragPhase::Cancel { start } else { start + drag.displacement.x });
+                        write.set(self.width, if drag.phase == DragPhase::Cancel { start } else { start + drag.displacement.x });
                     }
                     if matches!(drag.phase, DragPhase::Cancel | DragPhase::End) {
                         write.set(self.before_drag, None);
@@ -71,7 +71,7 @@ impl SplitterState {
                         Modifiers::SHIFT if self.shift_step.is_some() => self.shift_step.unwrap_or(self.step),
                         _ => return false,
                     };
-                    let current = write.read(|read| self.width.get(read));
+                    let current = write.get(self.width);
                     let width = match (event.key, bounds) {
                         (Key::Left, _) => current - step,
                         (Key::Right, _) => current + step,
@@ -79,7 +79,7 @@ impl SplitterState {
                         (Key::End, Some((_, max))) => max,
                         _ => return false,
                     };
-                    self.width.set(write, width);
+                    write.set(self.width, width);
                     true
                 })
         })

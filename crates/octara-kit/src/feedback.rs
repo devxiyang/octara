@@ -34,7 +34,7 @@ pub fn toast_viewport(id: &str, queue: ToastQueue<String>) -> El {
         move |b, key, toast| {
             let key = *key;
             let locale = crate::KitLocale::get(b);
-            let message = text(move |r: &mut ReadCx<'_>| toast.with(r, |toast| toast.map(|toast| toast.value.clone()).unwrap_or_default()))
+            let message = text(move |r: &mut ReadCx<'_>| r.try_with(toast, |toast| toast.value.clone()).unwrap_or_default())
                 .min_w(0)
                 .grow(1.0)
                 .text_size(FontSizeToken::Sm);
@@ -76,7 +76,7 @@ pub fn command_palette(
             |_| None,
             move |w, key| {
                 if let Some(key) = key {
-                    open.set(w, false);
+                    w.set(open, false);
                     on_choose(w, key);
                 }
             },

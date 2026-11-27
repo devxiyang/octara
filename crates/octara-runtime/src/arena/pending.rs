@@ -106,22 +106,24 @@ impl ReactiveWorld {
     }
 
     pub(crate) fn schedule(&mut self, id: ReactiveId) {
-        let node = &mut self.hot[id.node as usize];
+        let index = id.node();
+        let node = &mut self.hot[index as usize];
         if !node.has_flag(SCHEDULED)
             && !node.computing()
             && let Some(tier) = node.kind.tier()
         {
-            self.pending.insert(tier as usize, id.node, node);
+            self.pending.insert(tier as usize, index, node);
             node.flags |= SCHEDULED;
         }
     }
 
     pub(crate) fn unschedule(&mut self, id: ReactiveId) {
-        let node = &mut self.hot[id.node as usize];
+        let index = id.node();
+        let node = &mut self.hot[index as usize];
         if node.has_flag(SCHEDULED) {
             let tier = node.kind.tier().expect("scheduled reactive node has a flush tier");
             node.flags &= !SCHEDULED;
-            self.pending.remove(tier as usize, id.node, &mut self.hot);
+            self.pending.remove(tier as usize, index, &mut self.hot);
         }
     }
 }

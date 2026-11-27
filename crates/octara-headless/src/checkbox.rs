@@ -43,11 +43,11 @@ fn checkable<C, T: CheckValue>(element: El<C>, value: Binding<T>, role: Role) ->
     crate::interactive::data_interactive(element)
         .role(role)
         .focusable()
-        .checked(move |read: &mut ReadCx<'_>| value.get(read).checked())
+        .checked(move |read: &mut ReadCx<'_>| read.get(value).checked())
         .behavior_first(|behavior| {
             behavior.on_toggle(move |write| {
-                let next = write.read(|read| value.get(read).toggle());
-                value.set(write, next);
+                let next = write.get(value).toggle();
+                write.set(value, next);
             })
         })
 }

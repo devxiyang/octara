@@ -468,11 +468,11 @@ impl Chat {
 
     fn install_cancel(&self, w: &mut WriteCx<'_>, thread: ThreadId, id: MessageId, title: bool, cancel: Cancel) -> bool {
         let mut pending = Some(cancel);
-        w.update(self.requests, |requests| {
+        w.mutate(self.requests, |requests| {
             let requests = if title { &mut requests.titles } else { &mut requests.answers };
-            if let Some(request) = requests.get_mut(&thread).filter(|request| request.id == id) {
-                request.cancel = pending.take().map(Rc::from);
-            }
+            let Some(request) = requests.get_mut(&thread).filter(|request| request.id == id) else { return false };
+            request.cancel = pending.take().map(Rc::from);
+            true
         });
         if let Some(cancel) = pending {
             cancel();

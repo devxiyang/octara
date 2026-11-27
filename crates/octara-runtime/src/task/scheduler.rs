@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet, btree_set};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Wake, Waker};
@@ -43,7 +42,7 @@ pub struct TaskInfo {
 }
 
 struct Task {
-    state: Rc<TaskState>,
+    state: Arc<TaskState>,
     future: LocalFuture,
     waker: Waker,
 }
@@ -162,7 +161,7 @@ struct PendingTasks {
     next: Cell<u64>,
     closed: Cell<bool>,
     pending: RefCell<Vec<Task>>,
-    live: RefCell<BTreeMap<TaskId, Rc<TaskState>>>,
+    live: RefCell<BTreeMap<TaskId, Arc<TaskState>>>,
     cancelled: RefCell<Vec<TaskId>>,
     inbox: Arc<WakeInbox>,
     clock: VirtualClock,
@@ -170,7 +169,7 @@ struct PendingTasks {
 
 /// Local task registration shared with capability contexts.
 #[derive(Clone)]
-pub struct TaskSpawner(Rc<PendingTasks>);
+pub struct TaskSpawner(Arc<PendingTasks>);
 
 impl TaskSpawner {
     pub(crate) fn host_wake(&self) -> Option<HostWake> {
@@ -199,7 +198,8 @@ impl TaskSpawner {
             return id;
         }
 
-        let state = Rc::new(TaskState {
+        #[expect(clippy::arc_with_non_send_sync, reason = "task state is shared by local futures and the scheduler")]
+        let state = Arc::new(TaskState {
             info: TaskInfo { id, scope, window, label },
             live: Cell::new(true),
             write: Cell::new(None),
@@ -255,7 +255,8 @@ impl TaskScheduler {
         let scheduler = NEXT_SCHEDULER
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .expect("task scheduler identity exhausted");
-        let spawner = TaskSpawner(Rc::new(PendingTasks {
+        #[expect(clippy::arc_with_non_send_sync, reason = "local task registration may own futures that cannot be sent across threads")]
+        let spawner = TaskSpawner(Arc::new(PendingTasks {
             scheduler,
             next: Cell::new(0),
             closed: Cell::new(false),

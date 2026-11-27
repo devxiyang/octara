@@ -811,21 +811,19 @@ impl AppRuntime {
     }
 
     fn invoke(&mut self, id: WindowId, handler: HandlerId, event: HandlerEvent<'_>) -> HandlerOutcome {
-        let Some(callback) = self.windows.get(&id).and_then(|window| window.handlers.get(&handler)) else {
+        let Some(window) = self.windows.get(&id) else { return HandlerOutcome::default() };
+        let Some(callback) = window.handlers.get(&handler) else {
             return HandlerOutcome::default();
         };
         let scope = callback.scope;
         if !self.world.is_scope_alive(scope) {
             return HandlerOutcome::default();
         }
-        let call = callback.call.clone();
-        call(&mut self.write(scope, id), &event)
+        (callback.call)(&mut window.write(&mut self.world, scope, self.tasks.spawner(), &mut self.commands), &event)
     }
 
     fn write(&mut self, scope: ScopeId, window: WindowId) -> crate::WriteCx<'_> {
-        let mut write = self.world.write(scope, Some(window)).with_tasks(self.tasks.spawner()).with_commands(&mut self.commands);
-        write.tree = self.windows.get(&window).map(|window| &window.tree);
-        write
+        self.windows[&window].write(&mut self.world, scope, self.tasks.spawner(), &mut self.commands)
     }
 
     fn invoke_shortcut(&mut self, id: WindowId, key: KeyEvent) -> bool {
@@ -833,7 +831,7 @@ impl AppRuntime {
         let Some((scope, callback)) = window.authoring.shortcut(&self.world, key, window.shortcut_modifier) else {
             return false;
         };
-        callback(&mut self.write(scope, id));
+        callback(&mut window.write(&mut self.world, scope, self.tasks.spawner(), &mut self.commands));
         true
     }
 
@@ -923,8 +921,8 @@ impl AppRuntime {
                         ) && self.world.is_scope_alive(entry.scope)
                     });
                     if let Some(callback) = callback {
-                        let (scope, call) = (callback.scope, callback.call.clone());
-                        call(&mut self.write(scope, window), &key);
+                        let mut write = state.write(&mut self.world, callback.scope, self.tasks.spawner(), &mut self.commands);
+                        (callback.call)(&mut write, &key);
                     }
                 }
                 AppCommand::Ask { window, scope, ask, done } => {

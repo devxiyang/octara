@@ -1,7 +1,9 @@
 //! Capability contexts for construction, derivation, mutation, and teardown.
 
+mod access;
 mod binding;
 mod close;
+pub use access::{PreparedRead, Readable, Writable};
 pub use binding::Binding;
 pub use close::CloseHandle;
 
@@ -16,7 +18,7 @@ use smallvec::SmallVec;
 use crate::app::AppCommands;
 use crate::arena::{NodeKind, ReactiveId, ReactiveWorld, ScopeId, Source};
 use crate::authoring::WindowAuthoring;
-use crate::graph::value::{IntoRead, Lens, ReadSignal, Signal, Watch};
+use crate::graph::value::{ReadSignal, Signal, Trigger, Watch};
 use crate::task::TaskSpawner;
 
 /// A tracked read of a reactive computation, binding, or watch source.
@@ -64,7 +66,7 @@ impl<'a> ReadCx<'a> {
     }
 
     #[track_caller]
-    pub(crate) fn track(&mut self, id: ReactiveId) {
+    pub(crate) fn track_id(&mut self, id: ReactiveId) {
         self.world.ensure_clean(id);
         self.record(id, false);
     }
@@ -80,38 +82,52 @@ impl<'a> ReadCx<'a> {
         };
         let revision = self.world.revision(id);
         if let Some(index) = existing {
-            self.sources[index].revision = revision;
-            self.sources[index].fixed |= fixed;
+            let fixed = self.sources[index].fixed() || fixed;
+            self.sources[index] = Source::new(id, revision, fixed);
             return;
         }
         if let Some(indices) = &mut self.source_indices {
             indices.insert(id, self.sources.len());
         }
-        self.sources.push(Source { id, revision, fixed });
+        self.sources.push(Source::new(id, revision, fixed));
         if self.sources.len() == 5 {
             self.source_indices = Some(self.sources.iter().enumerate().map(|(index, source)| (source.id, index)).collect());
         }
     }
 
+    /// Subscribe to a payload-free notification.
     #[track_caller]
-    pub fn get<T: Clone + 'static>(&mut self, signal: impl IntoRead<T>) -> T {
-        self.with(signal, Clone::clone)
+    pub fn track(&mut self, trigger: Trigger) {
+        self.track_id(trigger.id());
     }
 
     #[track_caller]
-    pub fn with<T: 'static, R>(&mut self, signal: impl IntoRead<T>, f: impl FnOnce(&T) -> R) -> R {
-        let id = signal.into_read().id();
-        self.track(id);
-        f(self.world.value(id))
+    pub fn get<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> T {
+        self.try_get(handle).expect("reactive value is absent")
+    }
+
+    /// Read a value that may be absent, such as a removed list row.
+    #[track_caller]
+    pub fn try_get<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> Option<T> {
+        handle.prepare(self).into_value(self.world)
     }
 
     #[track_caller]
-    pub fn with2<A: 'static, B: 'static, R>(&mut self, a: impl IntoRead<A>, b: impl IntoRead<B>, f: impl FnOnce(&A, &B) -> R) -> R {
-        let a = a.into_read().id();
-        let b = b.into_read().id();
-        self.track(a);
-        self.track(b);
-        f(self.world.value(a), self.world.value(b))
+    pub fn with<T: 'static, R>(&mut self, handle: impl Readable<T>, f: impl FnOnce(&T) -> R) -> R {
+        self.try_with(handle, f).expect("reactive value is absent")
+    }
+
+    /// Borrow a value if it is present.
+    #[track_caller]
+    pub fn try_with<T: 'static, R>(&mut self, handle: impl Readable<T>, f: impl FnOnce(&T) -> R) -> Option<R> {
+        handle.prepare(self).value(self.world).map(f)
+    }
+
+    #[track_caller]
+    pub fn with2<A: 'static, B: 'static, R>(&mut self, a: impl Readable<A>, b: impl Readable<B>, f: impl FnOnce(&A, &B) -> R) -> R {
+        let a = a.prepare(self);
+        let b = b.prepare(self);
+        f(a.value(self.world).expect("first reactive value is absent"), b.value(self.world).expect("second reactive value is absent"))
     }
 
     /// Reads current values without subscribing the surrounding computation.
@@ -237,14 +253,16 @@ impl<'a> BuildCx<'a> {
         self.world.memo(self.scope, self.window, f)
     }
 
+    /// Derive a value by reusing its existing storage. Return true to publish a change.
     #[track_caller]
-    pub fn slice<Owner: 'static, Field: Clone + PartialEq + 'static>(
-        &mut self,
-        signal: impl IntoRead<Owner>,
-        lens: Lens<Owner, Field>,
-    ) -> ReadSignal<Field> {
-        let signal = signal.into_read();
-        self.memo(move |r| r.with(signal, |value| lens.read(value).clone()))
+    pub fn memo_with<T: 'static>(&mut self, init: T, compute: impl FnMut(&mut ReadCx<'_>, &mut T) -> bool + 'static) -> ReadSignal<T> {
+        self.world.memo_with(self.scope, self.window, init, compute)
+    }
+
+    /// Create a scope-owned notification with no value slot.
+    #[track_caller]
+    pub fn trigger(&mut self) -> Trigger {
+        Trigger::new(self.world.alloc_node(NodeKind::ValueSource, self.scope, self.window))
     }
 
     /// Runs an effect after a tracked value changes. Both callbacks can retain private state.
@@ -273,8 +291,8 @@ impl<'a> BuildCx<'a> {
     }
 
     #[track_caller]
-    pub fn sample<T: Clone + 'static>(&mut self, signal: impl IntoRead<T>) -> T {
-        self.read(|read| read.get(signal))
+    pub fn sample<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> T {
+        self.read(|read| read.get(handle))
     }
 
     #[track_caller]
@@ -355,57 +373,64 @@ impl<'a> WriteCx<'a> {
     }
 
     #[track_caller]
-    pub fn get<T: Clone + 'static>(&mut self, signal: impl IntoRead<T>) -> T {
-        self.world.read().get(signal)
+    pub fn get<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> T {
+        self.world.read().get(handle)
     }
 
     #[track_caller]
-    pub fn with<T: 'static, R>(&mut self, signal: impl IntoRead<T>, f: impl FnOnce(&T) -> R) -> R {
-        self.world.read().with(signal, f)
+    pub fn with<T: 'static, R>(&mut self, handle: impl Readable<T>, f: impl FnOnce(&T) -> R) -> R {
+        self.world.read().with(handle, f)
     }
 
-    /// Evaluates a read binding while handling an event or applying an update.
+    #[track_caller]
+    pub fn try_get<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> Option<T> {
+        self.world.read().try_get(handle)
+    }
+
+    #[track_caller]
+    pub fn try_with<T: 'static, R>(&mut self, handle: impl Readable<T>, f: impl FnOnce(&T) -> R) -> Option<R> {
+        self.world.read().try_with(handle, f)
+    }
+
+    #[track_caller]
+    pub fn with2<A: 'static, B: 'static, R>(&mut self, a: impl Readable<A>, b: impl Readable<B>, f: impl FnOnce(&A, &B) -> R) -> R {
+        self.world.read().with2(a, b, f)
+    }
+
+    /// Evaluate reads without creating an observer.
     pub fn read<R>(&mut self, f: impl FnOnce(&mut ReadCx<'_>) -> R) -> R {
         f(&mut self.world.read())
     }
 
     #[track_caller]
-    pub fn set<T: 'static>(&mut self, signal: Signal<T>, value: T) {
-        let id = signal.id();
-        let old = std::mem::replace(self.world.value_mut(id), value);
-        self.world.mark_changed(id);
-        drop(old);
+    pub fn set<T: 'static>(&mut self, target: impl Writable<T>, value: T) {
+        target.write(self, value);
     }
 
     #[track_caller]
-    pub fn set_if_changed<T: PartialEq + 'static>(&mut self, signal: Signal<T>, value: T) -> bool {
-        if self.world.value_mut::<T>(signal.id()) == &value {
-            return false;
-        }
-        self.set(signal, value);
-        true
+    pub fn set_if_changed<T: PartialEq + 'static>(&mut self, target: impl Writable<T>, value: T) -> bool {
+        target.write_if_changed(self, value)
     }
 
     #[track_caller]
-    pub fn update<T: 'static, R>(&mut self, signal: Signal<T>, f: impl FnOnce(&mut T) -> R) -> R {
-        let id = signal.id();
-        self.world.mark_changed(id);
-        f(self.world.value_mut(id))
+    pub fn update<T: 'static, R>(&mut self, target: impl Writable<T>, f: impl FnOnce(&mut T) -> R) -> R {
+        target.edit(self, |value| (f(value), true))
     }
 
+    /// Edit a value and notify its observers only when the edit returns true.
+    /// The callback must leave the observable value unchanged when it returns false.
     #[track_caller]
-    pub fn set_slice<Owner: 'static, Field: 'static>(&mut self, signal: Signal<Owner>, lens: Lens<Owner, Field>, value: Field) {
-        self.update_slice(signal, lens, |field| *field = value);
+    pub fn mutate<T: 'static>(&mut self, target: impl Writable<T>, f: impl FnOnce(&mut T) -> bool) -> bool {
+        target.edit(self, |value| {
+            let changed = f(value);
+            (changed, changed)
+        })
     }
 
+    /// Notify computations tracking this payload-free trigger.
     #[track_caller]
-    pub fn update_slice<Owner: 'static, Field: 'static, R>(
-        &mut self,
-        signal: Signal<Owner>,
-        lens: Lens<Owner, Field>,
-        f: impl FnOnce(&mut Field) -> R,
-    ) -> R {
-        self.update(signal, |owner| f(lens.write(owner)))
+    pub fn notify(&mut self, trigger: Trigger) {
+        self.world.mark_changed(trigger.id());
     }
 }
 
@@ -430,7 +455,7 @@ impl<'a> CleanupCx<'a> {
     }
 
     #[track_caller]
-    pub fn sample<T: Clone + 'static>(&mut self, signal: impl IntoRead<T>) -> T {
-        self.world.read().get(signal)
+    pub fn sample<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> T {
+        self.world.read().get(handle)
     }
 }

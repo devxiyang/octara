@@ -114,19 +114,17 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
                                         editor,
                                         ComboboxOptions::default().picker(PickerOptions::Standard),
                                         |_, _, item| {
-                                            let label = item.clone();
-                                            let detail = item.clone();
                                             col()
                                                 .gap(sp(0.5))
                                                 .description(move |r: &mut ReadCx<'_>| {
-                                                    detail.with(r, |item| item.map_or_else(String::new, |item| item.description.clone()))
+                                                    r.try_with(item, |item| item.description.clone()).unwrap_or_default()
                                                 })
                                                 .child(text(move |r: &mut ReadCx<'_>| {
-                                                    label.with(r, |item| item.map_or_else(String::new, |item| item.label.clone()))
+                                                    r.try_with(item, |item| item.label.clone()).unwrap_or_default()
                                                 }))
                                                 .child(
                                                     text(move |r: &mut ReadCx<'_>| {
-                                                        item.with(r, |item| item.map_or_else(String::new, |item| item.description.clone()))
+                                                        r.try_with(item, |item| item.description.clone()).unwrap_or_default()
                                                     })
                                                     .text_size(FontSizeToken::Xs)
                                                     .text_color(ColorToken::TextMuted),

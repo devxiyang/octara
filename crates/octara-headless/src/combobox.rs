@@ -52,7 +52,7 @@ impl<K: Clone + Eq + Hash + Display + 'static> ComboboxState<K> {
         let query = query.into().bind(b);
         let enabled = rows.filter(b, |row| !row.disabled);
         let available = b.memo(move |r| r.len(enabled) > 0);
-        let normalized = b.memo(move |r| query.with(r, |query| query.to_lowercase()));
+        let normalized = b.memo(move |r| r.with(query, |query| query.to_lowercase()));
         let visible = rows.filter_with(b, normalized, |row, query| query.is_empty() || row.label.to_lowercase().contains(query));
         let collection = Collection::choices(b, visible);
         Self::with_collection(b, collection, selection, query, available)
@@ -79,7 +79,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> ComboboxState<K, T> {
             presentation: Presentation::Editable,
         };
         b.watch(
-            move |r| (query.get(r), state.is_open(r)),
+            move |r| (r.get(query), state.is_open(r)),
             move |w, (query, open), previous| {
                 if *open && previous.is_some_and(|(old_query, was_open)| *was_open && old_query != query) {
                     state.picker.reset_active(w);
@@ -108,8 +108,8 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> ComboboxState<K, T> {
     pub fn open(self, w: &mut WriteCx<'_>) {
         if matches!(self.presentation, Presentation::Anchored) && w.get(self.picker.open).is_none() {
             w.set_if_changed(self.composing, false);
-            if w.read(|r| self.query.with(r, |query| !query.is_empty())) {
-                self.query.set(w, String::new());
+            if w.with(self.query, |query| !query.is_empty()) {
+                w.set(self.query, String::new());
             }
         }
         self.picker.open(w, Navigation::First);
@@ -135,7 +135,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> ComboboxState<K, T> {
             .behavior_first(|behavior| {
                 behavior
                     .on_input(move |w, text| {
-                        self.query.set(w, text.to_owned());
+                        w.set(self.query, text.to_owned());
                         self.open(w);
                     })
                     .on_key(move |w, event| self.input_key(w, event))
@@ -191,7 +191,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> ComboboxState<K, T> {
     }
 
     /// Configures the list and builds a caller-provided element for each option.
-    pub fn options(self, el: El, render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static) -> El {
+    pub fn options(self, el: El, render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static) -> El {
         self.picker.render_options(self.options_part(el), render, None, Some(self.composing))
     }
 
@@ -204,7 +204,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> ComboboxState<K, T> {
         b: &mut BuildCx<'_>,
         el: El,
         options: VirtualOptions,
-        render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+        render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
     ) -> El {
         let geometry = self.picker.observe_virtual(b);
         self.picker.render_options(self.options_part(el).observe_geometry(geometry), render, Some(options), Some(self.composing))

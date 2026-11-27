@@ -1,7 +1,7 @@
 use super::*;
 use crate::graph::delta::DEFAULT_DELTA_LOG_CAP;
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn derived_reads_are_fresh_and_only_changed_key_observers_run() {
@@ -11,24 +11,24 @@ fn derived_reads_are_fresh_and_only_changed_key_observers_run() {
 
     let mut world = ReactiveWorld::new();
     let scope = world.root_scope();
-    let calls = Rc::new(Cell::new(0));
-    let observed = Rc::new(Cell::new(0));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::new(AtomicUsize::new(0));
     let (list, mapped, first, second, positive) = {
         let mut build = world.build(scope, None);
         let list = build.list::<u32, Row>();
         let mapped = list.read_only().map(&mut build, {
-            let calls = Rc::clone(&calls);
+            let calls = Arc::clone(&calls);
             move |row| {
-                calls.set(calls.get() + 1);
+                calls.fetch_add(1, Ordering::Relaxed);
                 Projected(row.0 * 2)
             }
         });
         let positive = mapped.filter(&mut build, |row| row.0 > 0);
         let first = build.memo(move |read| read.with_row(positive, &1, |row| row.map(|r| r.0)));
         let second = build.memo({
-            let observed = Rc::clone(&observed);
+            let observed = Arc::clone(&observed);
             move |read| {
-                observed.set(observed.get() + 1);
+                observed.fetch_add(1, Ordering::Relaxed);
                 read.with_row(positive, &2, |row| row.map(|r| r.0))
             }
         });
@@ -41,19 +41,19 @@ fn derived_reads_are_fresh_and_only_changed_key_observers_run() {
     }
     assert_eq!(write.get(first), Some(2));
     assert_eq!(write.get(second), Some(4));
-    assert_eq!(calls.get(), 200);
-    assert_eq!(observed.get(), 1);
+    assert_eq!(calls.load(Ordering::Relaxed), 200);
+    assert_eq!(observed.load(Ordering::Relaxed), 1);
 
     for i in 1..=100 {
         write.update_row(list, &1, |row| row.0 = -i);
     }
-    assert_eq!(calls.get(), 200);
+    assert_eq!(calls.load(Ordering::Relaxed), 200);
     assert_eq!(write.get(first), None);
     assert_eq!(write.with_row(mapped, &1, |row| row.map(|r| r.0)), Some(-200));
     assert_eq!(write.len(positive), 198);
     assert_eq!(write.get(second), Some(4));
-    assert_eq!(calls.get(), 201);
-    assert_eq!(observed.get(), 1);
+    assert_eq!(calls.load(Ordering::Relaxed), 201);
+    assert_eq!(observed.load(Ordering::Relaxed), 1);
 
     let copied = list;
     write.update_row(copied, &1, |row| row.0 = 3);
@@ -142,14 +142,14 @@ fn overflow_rebuilds_derived_views_without_losing_authoritative_values() {
 fn a_missing_source_key_tracks_only_its_presence() {
     let mut world = ReactiveWorld::new();
     let scope = world.root_scope();
-    let calls = Rc::new(Cell::new(0));
+    let calls = Arc::new(AtomicUsize::new(0));
     let (list, row) = {
         let mut build = world.build(scope, None);
         let list = build.list();
         let row = build.memo({
-            let calls = Rc::clone(&calls);
+            let calls = Arc::clone(&calls);
             move |read| {
-                calls.set(calls.get() + 1);
+                calls.fetch_add(1, Ordering::Relaxed);
                 read.get_row(list, &0)
             }
         });
@@ -160,15 +160,15 @@ fn a_missing_source_key_tracks_only_its_presence() {
     assert_eq!(write.get(row), None);
     write.push_row(list, 1, "other row");
     assert_eq!(write.get(row), None);
-    assert_eq!(calls.get(), 1);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
     write.insert_row(list, 0, 0, "present");
     assert_eq!(write.get(row), Some("present"));
     write.move_row(list, &0, 1);
     assert_eq!(write.get(row), Some("present"));
-    assert_eq!(calls.get(), 2);
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
     write.remove_row(list, &0);
     assert_eq!(write.get(row), None);
-    assert_eq!(calls.get(), 3);
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
 }
 
 #[test]
@@ -317,4 +317,33 @@ fn derived_list_publishes_keyed_deltas_and_keeps_equal_rows() {
         Changes::Delta(vec![ListDelta::Move { key: 2, to: 0 }, ListDelta::Update(2), ListDelta::Insert(3)])
     );
     assert!(world.validate_integrity());
+}
+
+#[test]
+fn copyable_row_handle_follows_an_owned_key_without_cloning_values() {
+    struct Entry(u32);
+
+    fn copy<T: Copy>(value: T) -> (T, T) {
+        (value, value)
+    }
+    let mut world = ReactiveWorld::new();
+    let scope = world.root_scope();
+    let mut build = world.build(scope, None);
+    let list = build.list::<String, Entry>();
+    let key = String::from("row");
+    let (row, same) = copy(build.row_signal(list, key.clone()));
+    let offset = build.signal(100);
+    let value = build.memo(move |read| read.try_with(row, |entry| entry.0));
+    assert_eq!(world.read().get(value), None);
+
+    let mut write = world.write(scope, None);
+    write.push_row(list, key.clone(), Entry(2));
+    assert_eq!(write.get(value), Some(2));
+    assert_eq!(write.with2(same, offset, |entry, offset| entry.0 + offset), 102);
+    write.update_row(list, &key, |entry| entry.0 = 7);
+    assert_eq!(write.get(value), Some(7));
+    write.remove_row(list, &key);
+    assert_eq!(write.get(value), None);
+    write.push_row(list, key, Entry(4));
+    assert_eq!(write.get(value), Some(4));
 }

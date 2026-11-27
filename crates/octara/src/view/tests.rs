@@ -79,15 +79,15 @@ struct Model<T> {
 }
 
 #[ui]
-fn titled_row(cx: &mut BuildCx<'_>, model: Signal<Model<String>>) -> El {
-    text(cx.slice(model, Model::title())).test_id("heading")
+fn titled_row(model: Store<Model<String>>) -> El {
+    text(model.title()).test_id("heading")
 }
 
 #[test]
 fn structure_regions_keep_sibling_order_and_keyed_identity() {
     let mut app = App::new(|_, _| Box::new(Headless));
     let (list, first, title) =
-        app.build(|cx| (cx.list::<u64, String>(), cx.signal(true), cx.signal(Model { title: "heading".into() }))).unwrap();
+        app.build(|cx| (cx.list::<u64, String>(), cx.signal(true), cx.store(Model { title: "heading".into() }))).unwrap();
     app.update(|w| {
         w.push_row(list, 1, "one".into());
         w.push_row(list, 2, "two".into());
@@ -96,14 +96,14 @@ fn structure_regions_keep_sibling_order_and_keyed_identity() {
     let built = Rc::new(Cell::new(0));
     let counter = built.clone();
     let id = app
-        .open_window(WindowOptions::default(), move |cx| {
+        .open_window(WindowOptions::default(), move |_| {
             col()
                 .test_id("parent")
                 .child(show(move |r| r.get(first), |_| text("first").test_id("first")))
-                .child(titled_row(cx, title))
+                .child(titled_row(title))
                 .child(each(list, move |_, key, item| {
                     counter.set(counter.get() + 1);
-                    text(bind(move |r| item.read(r).unwrap_or_default())).test_id(key.to_string())
+                    text(bind(move |r| r.try_get(item).unwrap_or_default())).test_id(key.to_string())
                 }))
                 .child(show(move |r| !r.get(first), |_| text("last").test_id("last")))
         })
@@ -115,7 +115,7 @@ fn structure_regions_keep_sibling_order_and_keyed_identity() {
         w.set(first, false);
         w.move_row(list, &1, 1);
         w.update_row(list, &1, |value| value.push('!'));
-        w.set_slice(title, Model::title(), "heading!".into());
+        w.set(title.title(), "heading!".into());
     })
     .unwrap();
     let tree = app.window(id).unwrap().runtime().tree();

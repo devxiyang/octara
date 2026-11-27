@@ -129,7 +129,7 @@ impl MarkdownComposer {
         triggers: impl IntoIterator<Item = TriggerConfig>,
     ) -> Self {
         let model = markdown.into();
-        let markdown = build.memo(move |read| model.get(read));
+        let markdown = build.memo(move |read| read.get(model));
         let editor = build.signal(None);
         let dismissed = build.signal(None);
         let triggers: Vec<_> = triggers.into_iter().collect();
@@ -150,7 +150,7 @@ impl MarkdownComposer {
     }
 
     pub fn set_markdown(self, write: &mut WriteCx<'_>, markdown: impl Into<String>) {
-        self.model.set(write, markdown.into());
+        write.set(self.model, markdown.into());
     }
 
     pub fn active_trigger(self) -> ReadSignal<Option<TriggerQuery>> {
@@ -216,7 +216,7 @@ impl MarkdownComposer {
             move |write, submitted_item, _| {
                 if let Some((expected, completion)) = submitted_item {
                     write.set(submitted, None);
-                    if write.read(|read| self.model.with(read, |markdown| markdown == expected)) {
+                    if write.with(self.model, |markdown| markdown == expected) {
                         on_complete(write, completion);
                     }
                 }
@@ -242,8 +242,8 @@ impl MarkdownComposer {
             .observe_editor(self.editor)
             .role(Role::EditableComboBox)
             .expanded(open)
-            .controls(bind(move |read| open.get(read).then(|| controls.clone())))
-            .active_descendant(bind(move |read| open.get(read).then(|| option_id(read.get(selected)))))
+            .controls(bind(move |read| read.get(open).then(|| controls.clone())))
+            .active_descendant(bind(move |read| read.get(open).then(|| option_id(read.get(selected)))))
             .behavior_first(move |behavior| {
                 behavior
                     .on_input(move |write, text| {
@@ -256,7 +256,7 @@ impl MarkdownComposer {
                         }
                     })
                     .on_key(move |write, event| {
-                        if !event.modifiers.is_empty() || !write.read(|read| open.get(read)) {
+                        if !event.modifiers.is_empty() || !write.get(open) {
                             return false;
                         }
                         let count = write.with(items, Vec::len);
@@ -306,10 +306,7 @@ impl MarkdownComposer {
                     .border_color(ColorToken::Border)
                     .preserve_focus_on_press()
                     .child(virtual_each(rows, VirtualOptions::default(), move |build, &index, item| {
-                        let label = build.memo({
-                            let item = item.clone();
-                            move |read| item.with(read, |item| item.map_or_else(String::new, |item| item.label.to_string()))
-                        });
+                        let label = build.memo(move |read| read.try_with(item, |item| item.label.to_string()).unwrap_or_default());
                         text(move |read: &mut ReadCx<'_>| read.get(label))
                             .id(option_id(index))
                             .role(Role::ListBoxOption)
@@ -323,7 +320,7 @@ impl MarkdownComposer {
                             }))
                             .preserve_focus_on_press()
                             .on_press(move |write| {
-                                if let Some(item) = write.read(|read| item.read(read)) {
+                                if let Some(item) = write.try_get(item) {
                                     choose(write, item);
                                 }
                             })

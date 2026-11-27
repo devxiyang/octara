@@ -50,7 +50,7 @@ fn build_row<K, T, P>(
     identity: RowKey,
     key: &K,
     list: ReadList<K, T>,
-    render: &mut impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El,
+    render: &mut impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El,
     observe: impl FnOnce(&mut MountCx<'_>, NodeRef) -> P,
 ) -> (MountedRow, P)
 where
@@ -58,7 +58,10 @@ where
     T: 'static,
 {
     let mount = |cx: &mut MountCx<'_>| {
-        let element = cx.build(|cx| render(cx, key, list.row(key.clone())));
+        let element = cx.build(|cx| {
+            let row = cx.row_signal(list, key.clone());
+            render(cx, key, row)
+        });
         let node = build_el(cx, element, target.component, Some(identity.clone()), None);
         let feedback = observe(cx, node);
         (node, feedback)
@@ -71,7 +74,7 @@ where
 /// Mounts one retained element per business key. Moves keep the existing row and child scope.
 /// Row properties can subscribe to `RowSignal` to update independently of the row order.
 #[track_caller]
-pub fn each<K, T>(list: impl IntoReadList<K, T>, mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static) -> View
+pub fn each<K, T>(list: impl IntoReadList<K, T>, mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static) -> View
 where
     K: Clone + Eq + Hash + Display + 'static,
     T: 'static,
@@ -310,7 +313,7 @@ type RowText<K, T> = dyn Fn(&K, &T) -> String;
 pub fn virtual_each<K, T>(
     list: impl IntoReadList<K, T>,
     options: VirtualOptions,
-    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
 ) -> View
 where
     K: Clone + Eq + Hash + Display + 'static,
@@ -325,7 +328,7 @@ where
 pub fn virtual_each_with_copy<K, T>(
     list: impl IntoReadList<K, T>,
     options: VirtualOptions,
-    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
     copy_text: impl Fn(&K, &T) -> String + 'static,
 ) -> View
 where
@@ -339,7 +342,7 @@ where
 fn virtual_rows<K, T>(
     list: impl IntoReadList<K, T>,
     mut options: VirtualOptions,
-    mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+    mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
     copy_text: Option<Box<RowText<K, T>>>,
 ) -> View
 where
@@ -412,7 +415,7 @@ fn apply_plan<K, T>(
     state: &mut VirtualRows<K>,
     list: ReadList<K, T>,
     plan: &Plan<K>,
-    render: &mut impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El,
+    render: &mut impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El,
 ) where
     K: Clone + Eq + Hash + Display + 'static,
     T: 'static,

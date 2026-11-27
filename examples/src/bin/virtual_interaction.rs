@@ -37,9 +37,10 @@ fn view(cx: &mut BuildCx<'_>) -> El {
             VirtualOptions { estimated_row_height: 44.0, ..Default::default() },
             move |b, &key, row| {
                 col().shrink(0.0).p(sp(1.0)).child(
-                    text_field(
-                        b.binding(move |r| row.read(r).unwrap_or_default(), move |w, value| w.update_row(rows, &key, |text| *text = value)),
-                    )
+                    text_field(b.binding(
+                        move |r| r.try_get(row).unwrap_or_default(),
+                        move |w, value| w.update_row(rows, &key, |text| *text = value),
+                    ))
                     .test_id(format!("virtual-row-{key}"))
                     .label(format!("Row {key}")),
                 )

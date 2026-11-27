@@ -18,7 +18,7 @@ use std::cell::Cell;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::arena::ScopeId;
@@ -30,7 +30,7 @@ use crate::cx::{BuildCx, WriteCx};
 /// the app only for its synchronous callback.
 #[derive(Clone)]
 pub struct TaskCx {
-    state: Rc<TaskState>,
+    state: Arc<TaskState>,
     clock: VirtualClock,
 }
 

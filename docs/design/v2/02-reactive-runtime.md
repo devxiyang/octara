@@ -15,7 +15,8 @@ crates/octara-runtime/src/
     scope.rs         # ScopeId, ScopeData, resumable teardown, Context lookup, persisted state store
   graph/
     mod.rs           # Dirty/Check/Clean push-mark, ensure_clean(id) pull engine, dynamic depth maintenance
-    value.rs         # Signal<T>, ReadSignal<T>, Memo<T>, Lens/Slice, Watch
+    value.rs         # Signal<T>, ReadSignal<T>, Memo<T>, Trigger, Watch
+    store.rs         # Store<T> and Field<T> projections with per-field revisions
     delta.rs         # DeltaLog<D> bounded ring buffer, Cursor, Changes<D>
     list/
       mod.rs         # StateList<K, T>, ReadList<K, T>, ListDelta<K>, per-key RowSignal O(1) index
@@ -28,6 +29,8 @@ crates/octara-runtime/src/
     text_buf.rs      # TextBuffer (Delta node over String + TextEdit log)
   cx/
     mod.rs           # BuildCx, ReadCx, WriteCx, CleanupCx, TaskCx
+    access.rs        # Readable<T> and Writable<T>
+    binding.rs       # Binding<T> and scope-owned custom accessors
   task/
     mod.rs           # TaskScheduler, VirtualClock, Sleep, Interval, Channel, Background (native)
     async_memo.rs    # AsyncMemo<T> integrated into ReactiveWorld
@@ -54,25 +57,17 @@ crates/octara/src/
 ## 2. Memory Layout: `ReactiveId` & `TypedSlab<T>`
 
 ### 2.1 Universal `Copy` Handles
-Every reactive handle in Octara v2 is a 16-byte `Copy` handle wrapping `ReactiveId` (plus zero-sized `PhantomData`):
+Reactive handles are lightweight `Copy` values. `ReactiveId` and `Signal<T>` are both eight bytes.
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ReactiveId {
-    pub(crate) runtime: u32, // distinguishes concurrent Apps without thread_local!
-    pub(crate) node: u32,    // index in ReactiveWorld::nodes
-    pub(crate) gen: u32,     // incremented on slot reuse
-    pub(crate) bucket: u16,  // direct index into SlabStore::buckets (O(1), no HashMap lookup on hot read!)
-    pub(crate) slot: u32,    // index into TypedSlab<T>::slots (u32::MAX if node has no value payload)
-}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct ReactiveId(u64);
 ```
 
-Handles that are ALL `Copy`:
-- `Signal<T>` / `ReadSignal<T>`
-- `StateList<K, T>` / `ReadList<K, T>`
-- `TextBuffer`
-- `Watch`
-- `ScopeId`
+The packed ID holds a 24-bit runtime, a 24-bit node index and a 16-bit generation. A slot retires permanently when its generation is exhausted. The hot node stores the slab bucket and slot. A graph source edge stores the ID and a packed revision and dependency flag in 16 bytes.
+
+`Signal<T>`, `ReadSignal<T>`, `Binding<T>`, `Store<T>`, `Field<T>`, `StateList<K, T>`, `ReadList<K, T>`, `RowSignal<T>`, `TextBuffer`, `Trigger`, `Watch` and `ScopeId` are all `Copy`.
 
 ### 2.2 Type-Partitioned Slab Storage (`SlabStore`)
 ```rust
@@ -97,7 +92,7 @@ struct SlabStore {
     buckets: Vec<Box<dyn AnySlab>>,
 }
 ```
-- **Hot read path**: `buckets[id.bucket as usize].as_any().downcast_ref::<TypedSlab<T>>()` → `slots[id.slot as usize]`. Zero `HashMap` hashing on read, zero `Rc`, zero `RefCell`, zero per-signal heap allocation.
+- **Hot read path**: validate the ID and use its node index to get the bucket and slot from `ReactiveHot`. Index the bucket, downcast the typed slab and load the slot. This path uses no hashing, shared ownership or per-signal heap allocation.
 - **Disposal**: `Scope` teardown collects retired `ReactiveId`s, removes values from `TypedSlab<T>` via `drop_slot` (returning boxed payloads if needed so user `Drop` impls run outside graph borrows), and pushes indices onto `free`.
 
 ---
@@ -105,7 +100,7 @@ struct SlabStore {
 ## 3. Exact Capability Context Contracts
 
 ### 3.1 `ReadCx<'a>`
-Passed to `memo(|r| ...)`, dynamic prop/style bindings `|r| ...`, `show(|r| ...)`, `watch` source `|r| ...`.
+Passed to `memo(|r| …)`, dynamic prop and style bindings, `show` predicates and `watch` sources. `Readable<T>` provides one read API for signals, bindings, stores, store fields and row handles.
 ```rust
 pub struct ReadCx<'a> {
     world: &'a mut ReactiveWorld,
@@ -114,9 +109,12 @@ pub struct ReadCx<'a> {
 }
 
 impl ReadCx<'_> {
-    #[track_caller] pub fn get<T: Clone + 'static>(&mut self, sig: impl IntoRead<T>) -> T;
-    #[track_caller] pub fn with<T: 'static, R>(&mut self, sig: impl IntoRead<T>, f: impl FnOnce(&T) -> R) -> R;
-    #[track_caller] pub fn with2<A: 'static, B: 'static, R>(&mut self, a: impl IntoRead<A>, b: impl IntoRead<B>, f: impl FnOnce(&A, &B) -> R) -> R;
+    #[track_caller] pub fn get<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> T;
+    #[track_caller] pub fn with<T: 'static, R>(&mut self, handle: impl Readable<T>, f: impl FnOnce(&T) -> R) -> R;
+    #[track_caller] pub fn try_get<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> Option<T>;
+    #[track_caller] pub fn try_with<T: 'static, R>(&mut self, handle: impl Readable<T>, f: impl FnOnce(&T) -> R) -> Option<R>;
+    #[track_caller] pub fn with2<A: 'static, B: 'static, R>(&mut self, a: impl Readable<A>, b: impl Readable<B>, f: impl FnOnce(&A, &B) -> R) -> R;
+    #[track_caller] pub fn track(&mut self, trigger: Trigger);
     #[track_caller] pub fn len<K: Eq + Hash + 'static, T: 'static>(&mut self, list: impl IntoReadList<K, T>) -> usize;
     #[track_caller] pub fn get_row<K: Eq + Hash + 'static, T: Clone + 'static>(&mut self, list: impl IntoReadList<K, T>, key: &K) -> Option<T>;
     #[track_caller] pub fn with_row<K: Eq + Hash + 'static, T: 'static, R>(&mut self, list: impl IntoReadList<K, T>, key: &K, f: impl FnOnce(Option<&T>) -> R) -> R;
@@ -125,7 +123,7 @@ impl ReadCx<'_> {
 }
 ```
 - **Compile-time guarantee**: `ReadCx` has **NO** `set`, `update`, `push`, `remove`, `signal`, `memo`, `watch`, `spawn`, `provide`, or `shutdown` methods.
-- **How `with()` stays zero-`RefCell`**: `ensure_clean(sig)` runs FIRST with `&mut self.world`; once clean, the `&T` reference is borrowed immutably from `self.world.slabs` and passed to `f(&T)` — `f` does not receive `self`, so aliasing is impossible.
+- **Borrowing values**: The context brings inputs up to date before lending references to the callback. A custom binding can supply an owned result for the duration of that callback. The callback receives only the borrowed values.
 
 ### 3.2 `BuildCx<'a>`
 Passed to `#[ui]` components, `AppDefinition` root, `show` / `each` / `virtual_each` / `overlay` factories.
@@ -139,18 +137,27 @@ pub struct BuildCx<'a> {
 
 impl BuildCx<'_> {
     #[track_caller] pub fn signal<T: 'static>(&mut self, init: T) -> Signal<T>;
+    #[track_caller] pub fn store<T: StoreSchema>(&mut self, init: T) -> Store<T>;
+    #[track_caller] pub fn binding<T: 'static>(
+        &mut self,
+        read: impl Fn(&mut ReadCx<'_>) -> T + 'static,
+        write: impl Fn(&mut WriteCx<'_>, T) + 'static,
+    ) -> Binding<T>;
     #[track_caller] pub fn persisted<T: Serialize + DeserializeOwned + 'static>(&mut self, key: &'static str, init: impl FnOnce() -> T) -> Signal<T>;
     #[track_caller] pub fn memo<T: PartialEq + 'static>(&mut self, f: impl FnMut(&mut ReadCx<'_>) -> T + 'static) -> ReadSignal<T>;
+    #[track_caller] pub fn memo_with<T: 'static>(&mut self, init: T, compute: impl FnMut(&mut ReadCx<'_>, &mut T) -> bool + 'static) -> ReadSignal<T>;
+    #[track_caller] pub fn trigger(&mut self) -> Trigger;
     #[track_caller] pub fn list<K: Clone + Eq + Hash + 'static, T: 'static>(&mut self) -> StateList<K, T>;
+    #[track_caller] pub fn row_signal<K: Eq + Hash + 'static, T: 'static>(&mut self, list: impl IntoReadList<K, T>, key: K) -> RowSignal<T>;
     #[track_caller] pub fn text_buffer(&mut self, init: impl Into<String>) -> TextBuffer;
     #[track_caller] pub fn watch<S: PartialEq + 'static>(
         &mut self,
-        source: impl Fn(&mut ReadCx<'_>) -> S + 'static,
-        effect: impl Fn(&mut WriteCx<'_>, &S, Option<&S>) + 'static,
+        source: impl FnMut(&mut ReadCx<'_>) -> S + 'static,
+        effect: impl FnMut(&mut WriteCx<'_>, &S, Option<&S>) + 'static,
     ) -> Watch;
     #[track_caller] pub fn provide<T: Clone + 'static>(&mut self, value: T);
     #[track_caller] pub fn context<T: Clone + 'static>(&self) -> Option<T>;
-    #[track_caller] pub fn sample<T: Clone + 'static>(&mut self, sig: impl IntoRead<T>) -> T; // explicit untracked read
+    #[track_caller] pub fn sample<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> T; // explicit untracked read
     #[track_caller] pub fn on_cleanup(&mut self, f: impl FnOnce(&mut CleanupCx<'_>) + 'static);
     #[track_caller] pub fn spawn<Fut>(&mut self, label: &'static str, f: impl FnOnce(TaskCx) -> Fut + 'static) where Fut: Future<Output = ()> + 'static;
     pub fn window(&self) -> WindowId;
@@ -160,7 +167,11 @@ impl BuildCx<'_> {
 ```
 - **Compile-time guarantee**: `BuildCx` has **NO** `set`/`update` and **NO** tracked `get` (explicit `read()` or `sample()`).
 
-A `BuildCx::read` closure takes a one-time untracked read of any reactive value, including lists and text buffers. `BuildCx::binding` returns a `Copy` handle that pairs a tracked reader with a scope-owned writer. Signals also convert directly to bindings.
+A `BuildCx::read` closure takes a one-time untracked read of any reactive value, including lists and text buffers. `BuildCx::binding` returns a `Copy` handle that pairs a tracked reader with a writer. The custom accessors live in the scope's slab storage. Signals also convert directly to bindings.
+
+`#[derive(Store)]` generates field projections. Each field owns its revision. Field writes notify observers of that field and its containing stores. A whole-store replacement compares leaf fields by reference and advances the revisions of changed fields. An in-place edit of a whole store invalidates its subtree when the edit reports a change. Mark a nested store field with `#[store(nested)]` and derive `Store` for the nested type to get chained accessors such as `store.settings().title()`.
+
+`memo_with` reuses its value's storage. Its callback reports whether that value changed. A `Trigger` holds a graph node with no value slot. `ReadCx::track` registers a dependency on it and `WriteCx::notify` advances its revision.
 
 Use `BuildCx::derive_list` when keyed rows come from general reactive reads. The list emits keyed edits through the graph and retains row identity. Prefer list operators for transforming an existing list incrementally.
 
@@ -177,15 +188,21 @@ pub struct WriteCx<'a> {
 
 impl WriteCx<'_> {
     // Reads (lazily ensures dirty upstream Memos / ListViews are fresh!)
-    #[track_caller] pub fn get<T: Clone + 'static>(&mut self, sig: impl IntoRead<T>) -> T;
-    #[track_caller] pub fn with<T: 'static, R>(&mut self, sig: impl IntoRead<T>, f: impl FnOnce(&T) -> R) -> R;
+    #[track_caller] pub fn get<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> T;
+    #[track_caller] pub fn with<T: 'static, R>(&mut self, handle: impl Readable<T>, f: impl FnOnce(&T) -> R) -> R;
+    #[track_caller] pub fn try_get<T: Clone + 'static>(&mut self, handle: impl Readable<T>) -> Option<T>;
+    #[track_caller] pub fn try_with<T: 'static, R>(&mut self, handle: impl Readable<T>, f: impl FnOnce(&T) -> R) -> Option<R>;
+    #[track_caller] pub fn with2<A: 'static, B: 'static, R>(&mut self, a: impl Readable<A>, b: impl Readable<B>, f: impl FnOnce(&A, &B) -> R) -> R;
+    pub fn is_binding_alive<T>(&self, binding: Binding<T>) -> bool;
     #[track_caller] pub fn len<K: Eq + Hash + 'static, T: 'static>(&mut self, list: impl IntoReadList<K, T>) -> usize;
     #[track_caller] pub fn get_row<K: Eq + Hash + 'static, T: Clone + 'static>(&mut self, list: impl IntoReadList<K, T>, key: &K) -> Option<T>;
 
     // Writes (mutably borrows `&mut self` -> compile-time protection against re-entrant borrows)
-    #[track_caller] pub fn set<T: 'static>(&mut self, sig: Signal<T>, value: T);
-    #[track_caller] pub fn set_if_changed<T: PartialEq + 'static>(&mut self, sig: Signal<T>, value: T) -> bool;
-    #[track_caller] pub fn update<T: 'static, R>(&mut self, sig: Signal<T>, f: impl FnOnce(&mut T) -> R) -> R;
+    #[track_caller] pub fn set<T: 'static>(&mut self, target: impl Writable<T>, value: T);
+    #[track_caller] pub fn set_if_changed<T: PartialEq + 'static>(&mut self, target: impl Writable<T>, value: T) -> bool;
+    #[track_caller] pub fn update<T: 'static, R>(&mut self, target: impl Writable<T>, f: impl FnOnce(&mut T) -> R) -> R;
+    #[track_caller] pub fn mutate<T: 'static>(&mut self, target: impl Writable<T>, f: impl FnOnce(&mut T) -> bool) -> bool;
+    #[track_caller] pub fn notify(&mut self, trigger: Trigger);
 
     // Collection & TextBuffer mutations
     #[track_caller] pub fn insert_row<K: Clone + Eq + Hash + 'static, T: 'static>(&mut self, list: StateList<K, T>, index: usize, key: K, item: T);
@@ -209,6 +226,8 @@ impl WriteCx<'_> {
     pub fn request_service(&mut self, req: ServiceRequest, on_done: impl FnOnce(&mut WriteCx<'_>, ServiceOutcome) + 'static);
 }
 ```
+
+`Writable<T>` covers signals, bindings, stores and store fields. Custom bindings run their writer on `set` and submit the resulting value after a successful edit. An edit passed to `mutate` must return `false` only when it leaves the observable value unchanged.
 
 ### 3.4 `TaskCx` (Borrow-Safe Async Tasks)
 Tasks run on the UI thread at Turn boundaries. `TaskCx` is a small handle that opens a scoped `WriteCx` **only synchronously between `.await` points**:
@@ -326,6 +345,8 @@ pub enum ListDelta<K> {
 }
 ```
 
+The `*_with` operators take their parameter as `impl Into<ReadSignal<P>>` so the parameter has a stable dependency in the graph. Their closures borrow the row and the parameter as `&T` and `&P`.
+
 | Operator | Internal Index State | On `ListDelta<K>` | On Value Param Change (`*_with`) | Complexity |
 | --- | --- | --- | --- | --- |
 | `filter_with(cx, param, pred)` | `seq: Seq<K>`, `included: FxHashSet<K>` | `Insert/Update(k)`: test `pred(up[k], param)` → emit flip; `Remove(k)`: evict if included; `Move`: mirror rank | Sync pending list deltas; re-test `pred(up[k], new_param)` across upstream; emit **only** flipped `Insert`/`Remove` | `O(k log n)` list / `O(n log n)` param |
@@ -333,7 +354,21 @@ pub enum ListDelta<K> {
 | `map_with(cx, param, proj)` | `seq: Seq<K>`, `values: FxHashMap<K, U>` | Mirror topology; `Insert/Update(k)`: compute `proj(&up[k], param)` | Re-project & emit `Update(k)` where `PartialEq` differs | `O(k log n)` |
 | `group_by` + `flatten` | Weighted `Seq<G>` for group headers, per-group `Seq<K>` for members, keyed membership, flat `Seq<FlatKey<G, K>>` | Look up the prior group and compute the new group from `&up[k]`. Search the group by fixed-size upstream order labels and maintain the flat index and group headers. | N/A | Expected `O(log n)` under the treap priority model |
 | `join(left, right, jk_fn)` | `left_jk: FxHashMap<K, JK>`, `rev_idx: FxHashMap<JK, SmallVec<[K; 2]>>` | Left delta: update `rev_idx` & join value; Right `Insert/Update/Remove(jk)`: iterate `rev_idx[jk]`, emit `Update(k)` (diagnose `JOIN_FANOUT` if fanout exceeds threshold) | N/A | `O(log n + fanout)` |
-| Per-key `RowSignal` | `row_observers: FxHashMap<K, SmallVec<[ReactiveId; 2]>>` | On `Update(k)`: dirty **only** `row_observers[k]` | — | `O(1)` |
+| Per-key `RowSignal` | `row_nodes: FxHashMap<K, ReactiveId>` | Publish changes through the updated key's node | — | Expected `O(1)` lookup |
+
+### 4.5 Reading a Keyed Row
+
+`each` and `virtual_each` pass `&K` and `RowSignal<T>` separately to the row factory. Use `b.row_signal(list, key)` to get the same handle outside a row factory. The handle resolves the key from arena storage and follows it through removal and reinsertion for the lifetime of the list.
+
+Use `r.get(row)` or `r.with(row, |value| …)` when the row is present. Use `r.try_get(row)` or `r.try_with(row, |value| …)` when it can be absent. These optional reads subscribe to the key even if it is absent. Their `WriteCx` equivalents read the current row without subscribing. List edits go through `StateList` and its business key.
+
+```rust
+let row = b.row_signal(files, file_id);
+let name = b.memo(move |r| r.try_with(row, |file| file.name.clone()).unwrap_or_default());
+let rename = move |w: &mut WriteCx<'_>, next: String| {
+    w.update_row(files, &file_id, |file| file.name = next);
+};
+```
 
 ---
 

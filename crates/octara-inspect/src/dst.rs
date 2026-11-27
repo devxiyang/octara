@@ -174,7 +174,7 @@ fn open(driver: &mut HeadlessDriver) -> Result<SimWindow, TurnError> {
                     let key = *key;
                     col().h(24).test_id(format!("row-{key}")).child(
                         input()
-                            .value(bind(move |r| item.read(r).unwrap_or_default()))
+                            .value(bind(move |r| r.try_get(item).unwrap_or_default()))
                             .on_input(move |w, value| w.update_row(rows, &key, |name| *name = value.into()))
                             .h(24)
                             .test_id(format!("editor-{key}")),

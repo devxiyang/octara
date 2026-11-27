@@ -18,8 +18,8 @@ use smallvec::SmallVec;
 
 use self::seq::Seq;
 use super::delta::{Changes, Cursor, DeltaLog};
-use crate::arena::{NodeKind, ReactiveId, ReactiveWorld};
-use crate::cx::{BuildCx, ReadCx, WriteCx};
+use crate::arena::{NodeKind, ReactiveId, ReactiveWorld, Revision};
+use crate::cx::{BuildCx, PreparedRead, ReadCx, Readable, WriteCx};
 
 pub use self::group::{FlatItem, FlatKey, GroupInfo, Groups};
 pub use self::join::JOIN_FANOUT_ROWS;
@@ -116,46 +116,42 @@ impl<K, T> IntoReadList<K, T> for &StateList<K, T> {
     }
 }
 
-/// A key-addressed row input. It follows removal and reinsertion of the same key.
-pub struct RowSignal<K, T> {
-    list: ReadList<K, T>,
-    key: K,
+/// A copyable read handle to a keyed row. A handle follows removal and reinsertion
+/// of the same key while its list is alive.
+pub struct RowSignal<T> {
+    list: ReactiveId,
+    node: ReactiveId,
+    get: fn(&ReactiveWorld, ReactiveId, ReactiveId) -> Option<&T>,
 }
 
-impl<K: Clone, T> Clone for RowSignal<K, T> {
+impl<T> Copy for RowSignal<T> {}
+impl<T> Clone for RowSignal<T> {
     fn clone(&self) -> Self {
-        Self { list: self.list, key: self.key.clone() }
+        *self
     }
 }
 
-impl<K: Eq, T> PartialEq for RowSignal<K, T> {
+impl<T> PartialEq for RowSignal<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.list == other.list && self.key == other.key
+        self.node == other.node
     }
 }
 
-impl<K: Eq, T> Eq for RowSignal<K, T> {}
+impl<T> Eq for RowSignal<T> {}
 
-impl<K, T> ReadList<K, T> {
-    pub fn row(self, key: K) -> RowSignal<K, T> {
-        RowSignal { list: self, key }
+impl<T: 'static> Readable<T> for RowSignal<T> {
+    type Prepared = Self;
+
+    fn prepare(self, read: &mut ReadCx<'_>) -> Self {
+        read.world.ensure_clean(self.list);
+        read.track_id(self.node);
+        self
     }
 }
 
-impl<K: Eq + Hash + 'static, T: 'static> RowSignal<K, T> {
-    pub fn key(&self) -> &K {
-        &self.key
-    }
-
-    pub fn with<R>(&self, read: &mut ReadCx<'_>, f: impl FnOnce(Option<&T>) -> R) -> R {
-        read.with_row(self.list, &self.key, f)
-    }
-
-    pub fn read(&self, read: &mut ReadCx<'_>) -> Option<T>
-    where
-        T: Clone,
-    {
-        read.get_row(self.list, &self.key)
+impl<T: 'static> PreparedRead<T> for RowSignal<T> {
+    fn value<'a>(&'a self, world: &'a ReactiveWorld) -> Option<&'a T> {
+        (self.get)(world, self.list, self.node)
     }
 }
 
@@ -217,6 +213,14 @@ impl<K: Eq + Hash + 'static, T: 'static> ReadList<K, T> {
         }
     }
 
+    fn row_signal(self, world: &mut ReactiveWorld, key: &K) -> RowSignal<T> {
+        RowSignal {
+            list: self.id,
+            node: self.row_node(world, key),
+            get: |world, list, node| Self::new(list).value(world, world.value::<K>(node)),
+        }
+    }
+
     fn row_node(self, world: &mut ReactiveWorld, key: &K) -> ReactiveId {
         let data = self.data(world);
         if let Some(&node) = data.row_nodes.get(key) {
@@ -227,7 +231,7 @@ impl<K: Eq + Hash + 'static, T: 'static> ReadList<K, T> {
         let keyed_match = data.keyed_match;
         let parameter = data.parameter;
         let (scope, window) = world.owner(self.id);
-        let node = world.alloc_node(NodeKind::RowSource, scope, window);
+        let node = world.alloc_value(NodeKind::RowSource, scope, window, clone_key(key));
         self.data_mut(world).row_nodes.insert(clone_key(key), node);
         if let Some(input) = upstream.and_then(|upstream| upstream.row(world, key)) {
             world.add_dependency(node, input);
@@ -240,7 +244,7 @@ impl<K: Eq + Hash + 'static, T: 'static> ReadList<K, T> {
                 if let Some((source, key)) = &keyed_match
                     && let Some(matched) = source.row(read.world, key)
                 {
-                    read.track(matched);
+                    read.track_id(matched);
                 }
                 false
             });
@@ -418,6 +422,13 @@ impl BuildCx<'_> {
         ReadList::new(id)
     }
 
+    /// Create a copyable input for a keyed row. Use optional reads when the row may be absent.
+    #[track_caller]
+    pub fn row_signal<K: Eq + Hash + 'static, T: 'static>(&mut self, list: impl IntoReadList<K, T>, key: K) -> RowSignal<T> {
+        let list = list.into_read_list();
+        list.row_signal(self.world, &key)
+    }
+
     #[track_caller]
     pub fn sample_list_keys<K: Clone + Eq + Hash + 'static, T: 'static>(&mut self, list: impl IntoReadList<K, T>) -> Vec<K> {
         ReadCx::new(self.world).keys(list)
@@ -427,7 +438,7 @@ impl BuildCx<'_> {
 impl ReadCx<'_> {
     fn list_structure<K: Eq + Hash + 'static, T: 'static>(&mut self, list: ReadList<K, T>) {
         self.world.ensure_clean(list.id);
-        self.track(list.data(self.world).structural);
+        self.track_id(list.data(self.world).structural);
     }
 
     #[track_caller]
@@ -469,7 +480,7 @@ impl ReadCx<'_> {
         self.world.ensure_clean(list.id);
         if self.observer().is_some() {
             let node = list.row_node(self.world, key);
-            self.track(node);
+            self.track_id(node);
         }
         f(list.value(self.world, key))
     }
@@ -482,7 +493,7 @@ impl ReadCx<'_> {
     #[track_caller]
     pub fn list_cursor<K: Eq + Hash + 'static, T: 'static>(&mut self, list: impl IntoReadList<K, T>) -> Cursor {
         let list = list.into_read_list();
-        self.track(list.id);
+        self.track_id(list.id);
         list.data(self.world).log.cursor()
     }
 
@@ -493,7 +504,7 @@ impl ReadCx<'_> {
         cursor: &mut Cursor,
     ) -> Changes<ListDelta<K>> {
         let list = list.into_read_list();
-        self.track(list.id);
+        self.track_id(list.id);
         list.data(self.world).log.take(cursor)
     }
 
@@ -694,10 +705,10 @@ impl<P: 'static> Parameter<P> {
         }
     }
 
-    fn track(&self, read: &mut ReadCx<'_>, previous: &mut Option<u64>) -> bool {
+    fn track(&self, read: &mut ReadCx<'_>, previous: &mut Option<Revision>) -> bool {
         let Self::Signal(signal) = self else { return false };
         let id = signal.id();
-        read.track(id);
+        read.track_id(id);
         let revision = read.world.revision(id);
         previous.replace(revision) != Some(revision)
     }

@@ -1,9 +1,9 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::{BuildCx, WriteCx};
 use crate::Signal;
 
-type Close = Rc<dyn Fn(&mut WriteCx<'_>)>;
+type Close = Arc<dyn Fn(&mut WriteCx<'_>)>;
 
 /// The closest enclosing close action. Handles expire when their provider's scope retires.
 #[derive(Clone, Copy)]
@@ -31,7 +31,7 @@ impl CloseHandle {
 impl BuildCx<'_> {
     /// Makes a scope-owned close action available to descendants, including portal content.
     pub fn provide_close(&mut self, close: impl Fn(&mut WriteCx<'_>) + 'static) -> CloseHandle {
-        let handle = CloseHandle(self.signal(Rc::new(close) as Close));
+        let handle = CloseHandle(self.signal(Arc::new(close) as Close));
         self.provide(handle);
         handle
     }

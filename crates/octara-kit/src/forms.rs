@@ -35,12 +35,11 @@ impl FieldInfo {
 /// control. Label and validation changes preserve the control's mounted identity and editor state.
 #[ui]
 #[track_caller]
-pub fn field<C>(build: &mut BuildCx<'_>, id: &str, label: impl IntoProp<String>, control: El<C>, info: impl IntoRead<FieldInfo>) -> El
+pub fn field<C>(build: &mut BuildCx<'_>, id: &str, label: impl IntoProp<String>, control: El<C>, info: impl Readable<FieldInfo>) -> El
 where
     El<C>: IntoView,
 {
     let state = FieldState::new(build, false);
-    let info = info.into_read();
     let focus_id = id.to_owned();
     let help_id = format!("{id}-help");
     let error_id = format!("{id}-error");
@@ -161,10 +160,7 @@ pub fn radio_group<K: Clone + Eq + Hash + KeyDisplay + 'static>(
             .child(each(options, move |b, key, item| {
                 let option_id = format!("{id}-option-{key}");
                 let selected_key = key.clone();
-                let selected = b.memo(move |r| value.with(r, |selected| selected.as_ref() == Some(&selected_key)));
-                let description = item.clone();
-                let label = item.clone();
-                let described = item.clone();
+                let selected = b.memo(move |r| r.with(value, |selected| selected.as_ref() == Some(&selected_key)));
                 let mark = el()
                     .size(sp(4.0))
                     .shrink(0.0)
@@ -187,7 +183,7 @@ pub fn radio_group<K: Clone + Eq + Hash + KeyDisplay + 'static>(
                 state
                     .radio(row(), key.clone())
                     .test_id(option_id)
-                    .description(move |r: &mut ReadCx<'_>| row_value(&description, r, |row| row.description.clone()))
+                    .description(move |r: &mut ReadCx<'_>| row_value(item, r, |row| row.description.clone()))
                     .w(rel(1.0))
                     .min_w(0.0)
                     .min_h(32.0)
@@ -213,12 +209,11 @@ pub fn radio_group<K: Clone + Eq + Hash + KeyDisplay + 'static>(
                             .basis(0.0)
                             .min_w(0.0)
                             .gap(sp(0.5))
-                            .child(text(move |r: &mut ReadCx<'_>| row_value(&label, r, |row| row.label.clone())).select_none())
+                            .child(text(move |r: &mut ReadCx<'_>| row_value(item, r, |row| row.label.clone())).select_none())
                             .child(show(
-                                move |r| row_value(&described, r, |row| !row.description.trim().is_empty()),
+                                move |r| row_value(item, r, |row| !row.description.trim().is_empty()),
                                 move |_| {
-                                    let item = item.clone();
-                                    text(move |r: &mut ReadCx<'_>| row_value(&item, r, |row| row.description.clone()))
+                                    text(move |r: &mut ReadCx<'_>| row_value(item, r, |row| row.description.clone()))
                                         .text_color(ColorToken::TextMuted)
                                         .select_none()
                                 },

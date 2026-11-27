@@ -9,7 +9,7 @@ use octara_model::{
     semantics::{Checked, NumericRange},
     theme::{Color, ColorToken, ColorValue, Fill, ThemePatch},
 };
-use octara_runtime::{Binding, ReadCx, ReadSignal, Signal};
+use octara_runtime::{Binding, Field, ReadCx, ReadSignal, Signal};
 use octara_tree::editor::EditorRichText;
 use std::sync::Arc;
 
@@ -66,7 +66,13 @@ impl<T, U: Clone + Into<T> + 'static> IntoProp<T> for ReadSignal<U> {
 
 impl<T, U: Clone + Into<T> + 'static> IntoProp<T> for Binding<U> {
     fn into_prop(self) -> Prop<T> {
-        bind(move |read| self.get(read).into())
+        bind(move |read| read.get(self).into())
+    }
+}
+
+impl<T, U: Clone + Into<T> + 'static> IntoProp<T> for Field<U> {
+    fn into_prop(self) -> Prop<T> {
+        bind(move |read| read.get(self).into())
     }
 }
 

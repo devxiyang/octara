@@ -158,7 +158,7 @@ fn cjk_ime_keeps_the_renamed_file_session_across_reorder_and_rejects_retired_tar
                 col().h(40).test_id(format!("row-{key}")).child(
                     input()
                         .test_id(format!("rename-{key}"))
-                        .value(bind(move |r| name.read(r).unwrap_or_default()))
+                        .value(bind(move |r| r.try_get(name).unwrap_or_default()))
                         .on_input(move |w, value| w.update_row(list, &key, |name| *name = value.into())),
                 )
             }))
@@ -357,7 +357,7 @@ fn virtual_reveal_and_offscreen_copy_preserve_exact_utf8_and_document_order() {
                 .child(virtual_each_with_copy(
                     list,
                     VirtualOptions { estimated_row_height: 20.0, overscan: 0, ..Default::default() },
-                    |_, key, item| text(bind(move |r| item.read(r).unwrap_or_default())).h(20).test_id(format!("line-{key}")),
+                    |_, key, item| text(bind(move |r| r.try_get(item).unwrap_or_default())).h(20).test_id(format!("line-{key}")),
                     |_, value| value.clone(),
                 ))
                 .on_command("reveal-42", |w| w.reveal_row("document", 42))

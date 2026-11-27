@@ -94,7 +94,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> ListboxState<K, T> {
     }
 
     /// Configures the list and builds a caller-provided element for each option.
-    pub fn options(self, el: El, render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static) -> El {
+    pub fn options(self, el: El, render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static) -> El {
         self.0.render_options(self.options_part(el), render, None, None)
     }
 
@@ -107,7 +107,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> ListboxState<K, T> {
         b: &mut BuildCx<'_>,
         el: El,
         options: VirtualOptions,
-        render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+        render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
     ) -> El {
         let geometry = self.0.observe_virtual(b);
         self.0.render_options(self.options_part(el).observe_geometry(geometry), render, Some(options), None)
@@ -242,7 +242,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, T: 'static> Picker<K, T> {
     pub(crate) fn render_options(
         self,
         el: El,
-        mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+        mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
         options: Option<VirtualOptions>,
         composing: Option<Signal<bool>>,
     ) -> El {

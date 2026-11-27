@@ -186,8 +186,8 @@ fn blocks_view(build: &mut BuildCx<'_>, context: RenderContext, get: impl Fn(&mu
     col().child(each(blocks, move |b, _, block| block_view(b, block, context.clone())))
 }
 
-pub(super) fn block_view(build: &mut BuildCx<'_>, block: RowSignal<BlockKey, BlockRef>, context: RenderContext) -> El {
-    let source = build.memo(move |r| block.read(r));
+pub(super) fn block_view(build: &mut BuildCx<'_>, block: RowSignal<BlockRef>, context: RenderContext) -> El {
+    let source = build.memo(move |r| r.try_get(block));
     let overlay = context.overlay;
     let slot =
         build.memo(move |r| r.with2(source, overlay, |block, overlay| block.as_deref().and_then(|block| overlay.slot(block)).cloned()));
@@ -706,7 +706,7 @@ pub fn default_list(build: &mut BuildCx<'_>, block: &RenderBlock) -> El {
         r.with(theme, |t| if tight { t.tight_list_gap } else { t.loose_list_gap })
     });
     col().role(Role::List).style_with(move |r, p| p.gap(r.get(gap))).child(each(items, move |b, key, item| {
-        let item = b.memo(move |r| item.read(r));
+        let item = b.memo(move |r| r.try_get(item));
         let index = key.index as u64;
         let bullet = move |r: &mut ReadCx<'_>| {
             r.with2(start, theme, |start, theme| match start {

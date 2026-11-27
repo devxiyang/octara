@@ -106,7 +106,7 @@ impl<K: Clone + Eq + 'static, C: Clone + Eq + Hash + 'static> DataTableState<K, 
         let effective_sort = b.memo(move |r| {
             let mut seen = HashSet::new();
             let limit = if sort_mode == SortMode::Single { 1 } else { usize::MAX };
-            sort.get(r)
+            r.get(sort)
                 .into_iter()
                 .filter(|sort| {
                     r.with_row(columns, &sort.column, |column| column.is_some_and(|column| column.sortable))
@@ -157,7 +157,7 @@ impl<K: Clone + Eq + 'static, C: Clone + Eq + Hash + 'static> DataTableState<K, 
         } else if let Some(direction) = direction {
             sort.push(Sort { column: column.clone(), direction });
         }
-        self.sort.set(w, sort);
+        w.set(self.sort, sort);
     }
 
     /// Reorders the source column relative to a live column, preserving both keys.
@@ -316,7 +316,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, C: Clone + Eq + Hash + 'static> D
     pub fn rows<T: 'static>(
         self,
         rows: impl IntoReadList<K, T>,
-        mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+        mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
     ) -> View {
         each(rows, move |b, key, row| self.row(render(b, key, row), key))
     }
@@ -327,7 +327,7 @@ impl<K: Clone + Eq + Hash + Display + 'static, C: Clone + Eq + Hash + 'static> D
         self,
         rows: impl IntoReadList<K, T>,
         options: VirtualOptions,
-        mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+        mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
     ) -> View {
         virtual_each(rows, options, move |b, key, row| self.row(render(b, key, row), key))
     }

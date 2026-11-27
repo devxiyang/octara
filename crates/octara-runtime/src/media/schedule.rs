@@ -11,10 +11,8 @@ use octara_model::image::{CachePolicy, ImageSource, ImageState, MediaAsset};
 use octara_model::style::Display;
 use octara_tree::{NodeFlags, NodeId, RuntimeOp, Tree, tables::MediaSourceSlot};
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
 use std::future::poll_fn;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const PARALLEL_LOADS: usize = 4;
@@ -68,7 +66,7 @@ enum JobEvent {
     Finished(JobKey, Result<LoadedMedia, Arc<str>>),
 }
 
-type Mailbox = Rc<RefCell<Vec<JobEvent>>>;
+type Mailbox = Arc<Mutex<Vec<JobEvent>>>;
 type ResultMap = FxHashMap<JobKey, Result<LoadedMedia, Arc<str>>>;
 
 struct CacheEntry {
@@ -138,7 +136,7 @@ impl Cache {
 }
 
 pub(crate) struct MediaScheduler {
-    pub(crate) loader: Rc<dyn MediaLoader>,
+    pub(crate) loader: Arc<dyn MediaLoader>,
     pub(crate) disk_cache: Option<Arc<dyn MediaCacheBackend>>,
     originals: Cache,
     variants: Cache,
@@ -150,7 +148,7 @@ pub(crate) struct MediaScheduler {
 impl Default for MediaScheduler {
     fn default() -> Self {
         Self {
-            loader: Rc::new(PixelsOnly),
+            loader: Arc::new(PixelsOnly),
             disk_cache: None,
             originals: Cache::new(20 * MIB),
             variants: Cache::new(30 * MIB),
@@ -167,12 +165,12 @@ impl MediaScheduler {
             job.cancel.cancel();
             tasks.cancel(job.task);
         }
-        self.events.borrow_mut().clear();
+        self.events.lock().expect("media events").clear();
         self.presented_targets.clear();
     }
 
     fn completions(&mut self, now: Duration) -> ResultMap {
-        let events = std::mem::take(&mut *self.events.borrow_mut());
+        let events = std::mem::take(&mut *self.events.lock().expect("media events"));
         let mut finished = FxHashMap::default();
         for event in events {
             match event {
@@ -254,12 +252,12 @@ impl MediaScheduler {
                 let result = future.as_mut().poll(cx);
                 if let Some(size) = progress.read(cx.waker()).filter(|size| Some(*size) != last_probe) {
                     last_probe = Some(size);
-                    events.borrow_mut().push(JobEvent::Probed(job_key.clone(), size));
+                    events.lock().expect("media events").push(JobEvent::Probed(job_key.clone(), size));
                 }
                 result
             })
             .await;
-            events.borrow_mut().push(JobEvent::Finished(job_key, result));
+            events.lock().expect("media events").push(JobEvent::Finished(job_key, result));
         });
         spawner.defer_until_next_turn(task);
         let variant_started = key.variant.is_some().then(|| tasks.now());

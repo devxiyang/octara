@@ -2,6 +2,7 @@
 
 pub mod delta;
 pub mod list;
+pub mod store;
 pub mod text_buf;
 pub mod text_stream;
 pub mod value;
@@ -15,7 +16,7 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 
 use crate::app::AppCommands;
-use crate::arena::{NodeKind, NodeState, ReactiveId, ReactiveWorld, ScopeId, Source};
+use crate::arena::{NodeKind, NodeState, ReactiveId, ReactiveWorld, Revision, ScopeId, Source};
 use crate::cx::{ReadCx, WriteCx};
 use crate::task::TaskSpawner;
 
@@ -140,7 +141,7 @@ impl ReactiveWorld {
     }
 
     #[track_caller]
-    pub(crate) fn revision(&self, id: ReactiveId) -> u64 {
+    pub(crate) fn revision(&self, id: ReactiveId) -> Revision {
         self.hot(id).revision
     }
 
@@ -160,10 +161,10 @@ impl ReactiveWorld {
         let revision = self.revision(source);
         let sources = &mut self.cold_mut(observer).sources;
         if let Some(existing) = sources.iter_mut().find(|edge| edge.id == source) {
-            existing.fixed = true;
+            existing.set_fixed();
             return;
         }
-        sources.push(Source { id: source, revision, fixed: true });
+        sources.push(Source::new(source, revision, true));
         self.cold_mut(source).observers.push(observer);
         self.update_depths(observer);
     }
@@ -186,7 +187,7 @@ impl ReactiveWorld {
     #[track_caller]
     pub(crate) fn mark_changed(&mut self, id: ReactiveId) {
         let node = self.hot_mut(id);
-        node.revision = node.revision.checked_add(1).expect("reactive revision exhausted");
+        node.revision = node.revision.next();
         self.invalidate_observers(id);
     }
 
@@ -255,7 +256,7 @@ impl ReactiveWorld {
                 for index in 0..self.cold(id).sources.len() {
                     let source = self.cold(id).sources[index];
                     self.ensure_clean(source.id);
-                    if self.revision(source.id) != source.revision {
+                    if self.revision(source.id) != source.revision() {
                         return true;
                     }
                 }
@@ -284,7 +285,7 @@ impl ReactiveWorld {
 
     fn evaluate<R>(&mut self, id: ReactiveId, f: impl FnOnce(&mut ReadCx<'_>) -> R) -> R {
         self.hot_mut(id).set_computing(true);
-        let fixed = self.cold(id).sources.iter().filter(|edge| edge.fixed).copied().collect::<SmallVec<[_; 4]>>();
+        let fixed = self.cold(id).sources.iter().filter(|edge| edge.fixed()).copied().collect::<SmallVec<[_; 4]>>();
         for source in &fixed {
             self.ensure_clean(source.id);
         }

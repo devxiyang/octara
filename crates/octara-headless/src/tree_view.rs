@@ -102,7 +102,7 @@ impl<K: Clone + Eq + Hash + 'static> TreeViewState<K> {
     }
 
     pub fn set_expanded(self, w: &mut WriteCx<'_>, key: &K, expanded: bool) {
-        let mut keys = w.read(|r| self.expanded.get(r));
+        let mut keys = w.get(self.expanded);
         if keys.contains(key) == expanded {
             return;
         }
@@ -111,7 +111,7 @@ impl<K: Clone + Eq + Hash + 'static> TreeViewState<K> {
         } else {
             keys.retain(|candidate| candidate != key);
         }
-        self.expanded.set(w, keys);
+        w.set(self.expanded, keys);
     }
 
     pub fn root(self, el: El) -> El {
@@ -121,10 +121,10 @@ impl<K: Clone + Eq + Hash + 'static> TreeViewState<K> {
 
 impl<K: Clone + Eq + Hash + Display + 'static> TreeViewState<K> {
     /// Mounts the visible rows on the tree element using the caller's row builder.
-    pub fn rows(self, mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, TreeRow<K>>) -> El + 'static) -> View {
+    pub fn rows(self, mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<TreeRow<K>>) -> El + 'static) -> View {
         each(self.visible_rows(), move |b, key, row| {
             let el = render(b, key, row);
-            self.item(b, el, key)
+            self.item_with_row(b, el, key, row)
         })
     }
 
@@ -133,16 +133,21 @@ impl<K: Clone + Eq + Hash + Display + 'static> TreeViewState<K> {
     pub fn virtual_rows(
         self,
         options: VirtualOptions,
-        mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, TreeRow<K>>) -> El + 'static,
+        mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<TreeRow<K>>) -> El + 'static,
     ) -> View {
         virtual_each(self.visible_rows(), options, move |b, key, row| {
             let el = render(b, key, row);
-            self.item(b, el, key)
+            self.item_with_row(b, el, key, row)
         })
     }
 
     /// Adds tree item semantics and interaction to an element in this tree.
     pub fn item(self, b: &mut BuildCx<'_>, el: El, key: &K) -> El {
+        let row = b.row_signal(self.visible_rows(), key.clone());
+        self.item_with_row(b, el, key, row)
+    }
+
+    fn item_with_row(self, b: &mut BuildCx<'_>, el: El, key: &K, row: RowSignal<TreeRow<K>>) -> El {
         let id = Id::new().part("tree-item");
         let focus_id = id.clone();
         let requested = key.clone();
@@ -157,10 +162,6 @@ impl<K: Clone + Eq + Hash + Display + 'static> TreeViewState<K> {
             },
         );
 
-        let row = self.visible_rows().row(key.clone());
-        let label = row.clone();
-        let expansion = row.clone();
-        let level = row.clone();
         let active_key = key.clone();
         let selected_key = key.clone();
         let focus_key = key.clone();
@@ -168,10 +169,10 @@ impl<K: Clone + Eq + Hash + Display + 'static> TreeViewState<K> {
         let keyboard_key = key.clone();
         el.id(id)
             .role(Role::TreeItem)
-            .label(move |r: &mut ReadCx<'_>| label.with(r, |row| row.map_or_else(String::new, |row| row.item.label.clone())))
-            .expanded_state(move |r: &mut ReadCx<'_>| expansion.with(r, |row| row.filter(|row| row.has_children).map(|row| row.expanded)))
-            .level(move |r: &mut ReadCx<'_>| level.with(r, |row| row.map_or(1, |row| u8::try_from(row.depth + 1).unwrap_or(u8::MAX))))
-            .disabled_when(move |r: &mut ReadCx<'_>| row.with(r, |row| row.is_none_or(|row| row.item.disabled)))
+            .label(move |r: &mut ReadCx<'_>| r.try_with(row, |row| row.item.label.clone()).unwrap_or_default())
+            .expanded_state(move |r: &mut ReadCx<'_>| r.try_with(row, |row| row.has_children.then_some(row.expanded)).flatten())
+            .level(move |r: &mut ReadCx<'_>| r.try_with(row, |row| u8::try_from(row.depth + 1).unwrap_or(u8::MAX)).unwrap_or(1))
+            .disabled_when(move |r: &mut ReadCx<'_>| r.try_with(row, |row| row.item.disabled).unwrap_or(true))
             .selected(move |r: &mut ReadCx<'_>| self.selection.contains(r, &selected_key))
             .focusable()
             .focus_preferred(move |r: &mut ReadCx<'_>| self.active(r).as_ref() == Some(&active_key))
@@ -273,7 +274,7 @@ fn flatten<K: Clone + Eq + Hash + 'static>(
     items: ReadList<K, TreeItem<K>>,
     expanded: Binding<Vec<K>>,
 ) -> Vec<(K, TreeRow<K>)> {
-    let expanded: HashSet<_> = expanded.get(r).into_iter().collect();
+    let expanded: HashSet<_> = r.get(expanded).into_iter().collect();
     let mut branches: HashMap<_, Vec<_>> = HashMap::new();
     for key in r.keys(items) {
         if let Some(item) = r.get_row(items, &key) {

@@ -99,10 +99,10 @@ pub fn checkbox<T: CheckValue>(value: Binding<T>) -> El {
         .border(1.0)
         .border_color(ColorToken::Border)
         .bg(ColorToken::Background)
-        .checked(move |r: &mut ReadCx<'_>| value.get(r).checked() != Checked::Unchecked)
+        .checked(move |r: &mut ReadCx<'_>| r.get(value).checked() != Checked::Unchecked)
         .when(State::CHECKED, |p| p.bg(ColorToken::Accent).border_color(ColorToken::Accent))
         .child(keyed(
-            move |r| match value.get(r).checked() {
+            move |r| match r.get(value).checked() {
                 Checked::Unchecked => "unchecked",
                 Checked::Checked => "checked",
                 Checked::Mixed => "mixed",
@@ -133,7 +133,7 @@ pub fn switch(on: Binding<bool>) -> El {
         .rounded(Radius::Full)
         .bg(ColorToken::Border)
         .style(StyleProp::ColorMotion(Spring::SNAP.into()))
-        .checked(move |r: &mut ReadCx<'_>| on.get(r))
+        .checked(move |r: &mut ReadCx<'_>| r.get(on))
         .when(State::CHECKED, |p| p.bg(ColorToken::Accent).justify(JustifyContent::End));
     octara_headless::checkbox::switch(toggle_target(track), on)
 }
@@ -177,11 +177,11 @@ pub fn search_field(
         .child(icon(icons::SEARCH.into()).ml(sp(1.0)).shrink(0.0).text_color(ColorToken::TextMuted).size(sp(4.0)).a11y_hidden())
         .child(editor)
         .child(show(
-            move |r| value.with(r, |query| !query.is_empty()),
+            move |r| r.with(value, |query| !query.is_empty()),
             move |_| {
                 let focus_id = focus_id.clone();
                 icon_button(icons::X, locale.clear_search).test_id(clear_id.clone()).preserve_focus_on_press().on_press(move |w| {
-                    value.set(w, String::new());
+                    w.set(value, String::new());
                     w.focus(&focus_id);
                 })
             },
@@ -236,7 +236,7 @@ fn editor_group() -> El {
 }
 
 fn text_editor(editor: TextInput, value: Binding<String>) -> TextInput {
-    editor.value(value).behavior_first(|behavior| behavior.on_input(move |w, text| value.set(w, text.to_owned())))
+    editor.value(value).behavior_first(|behavior| behavior.on_input(move |w, text| w.set(value, text.to_owned())))
 }
 
 /// Files from the system drop or chooser, or an error opening or reading the chosen file.

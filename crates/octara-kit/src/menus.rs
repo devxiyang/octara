@@ -54,7 +54,7 @@ fn menu_state(
 ) -> (MenuState<String>, ReadSignal<Menu>) {
     let mut cached = None;
     let snapshot = b.memo(move |r| {
-        if open.get(r) {
+        if r.get(open) {
             cached.get_or_insert_with(|| menu(r)).clone()
         } else {
             cached = None;
@@ -97,7 +97,7 @@ fn menu_panel(b: &mut BuildCx<'_>, panel: El, id: &str, state: MenuState<String>
                 .child(text(label).grow(1.0))
                 .children(shortcut.map(|label| text(label).text_color(ColorToken::TextMuted)))
                 .on_press(move |w| {
-                    if !w.read(|r| root.get(r)) {
+                    if !w.get(root) {
                         w.request_command_after_commit(&command);
                     }
                 });

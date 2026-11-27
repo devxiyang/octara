@@ -1060,7 +1060,7 @@ impl TextInput {
     /// Use the same model to publish editor text and accept edits.
     pub fn bind_value(self, binding: impl Into<Binding<String>>) -> Self {
         let binding = binding.into();
-        self.value(binding).on_input(move |write, text| binding.set(write, text.to_owned()))
+        self.value(binding).on_input(move |write, text| write.set(binding, text.to_owned()))
     }
 
     pub fn placeholder(mut self, value: impl IntoProp<Arc<str>>) -> Self {

@@ -17,6 +17,13 @@ fn prelude_reexports_capabilities_and_handles() {
         "TaskCx",
         "Signal",
         "ReadSignal",
+        "Binding",
+        "Field",
+        "Readable",
+        "RowSignal",
+        "Store",
+        "Trigger",
+        "Writable",
         "StateList",
         "ReadList",
         "TextBuffer",
@@ -46,7 +53,22 @@ fn items_resolve_capability_methods_and_host_types() {
     assert!(build.sig.contains("Signal<T>"), "{}", build.sig);
     assert!(api.get("octara::prelude::BuildCx::set").is_none());
     let set = api.get("octara::prelude::WriteCx::set").unwrap();
-    assert!(set.sig.contains("Signal<T>"), "{}", set.sig);
+    assert!(set.sig.contains("Writable<T>"), "{}", set.sig);
+    let get = api.get("octara::prelude::ReadCx::get").unwrap();
+    assert!(get.sig.contains("Readable<T>"), "{}", get.sig);
+    for (context, method) in [
+        ("BuildCx", "store"),
+        ("BuildCx", "memo_with"),
+        ("BuildCx", "trigger"),
+        ("ReadCx", "track"),
+        ("WriteCx", "mutate"),
+        ("WriteCx", "notify"),
+    ] {
+        let path = format!("octara::prelude::{context}::{method}");
+        assert_eq!(api.get(&path).unwrap_or_else(|| panic!("{path}")).kind, Kind::Method);
+    }
+    assert!(api.get("octara::prelude::BuildCx::slice").is_none());
+    assert!(api.get("octara::prelude::Binding::get").is_none());
     assert!(api.get("octara::prelude::ReadCx::set").is_none());
     assert!(api.get("octara::prelude::State::HOVER").is_some());
     assert!(api.get("octara::prelude::State::FOCUS_WITHIN").is_some());

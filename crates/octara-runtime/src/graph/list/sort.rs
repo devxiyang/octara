@@ -1,5 +1,5 @@
 use super::*;
-use crate::graph::value::IntoRead;
+use crate::ReadSignal;
 
 impl<K: Clone + Eq + Hash + 'static, T: 'static> ReadList<K, T> {
     /// Sorts by key, breaking ties by the time the row entered the view.
@@ -12,10 +12,10 @@ impl<K: Clone + Eq + Hash + 'static, T: 'static> ReadList<K, T> {
     pub fn sort_by_with<P: 'static, S: Ord + 'static>(
         self,
         build: &mut BuildCx<'_>,
-        parameter: impl IntoRead<P>,
+        parameter: impl Into<ReadSignal<P>>,
         key_fn: impl Fn(&T, &P) -> S + 'static,
     ) -> Self {
-        self.sort_parameter(build, Parameter::Signal(parameter.into_read()), key_fn)
+        self.sort_parameter(build, Parameter::Signal(parameter.into()), key_fn)
     }
 
     fn sort_parameter<P: 'static, S: Ord + 'static>(

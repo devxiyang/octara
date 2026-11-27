@@ -39,7 +39,7 @@ pub(super) fn view(b: &mut BuildCx<'_>, toasts: ToastQueue<String>) -> El {
         )
         .child(text("Drag to prioritize, or use Space, ↑/↓ and Enter.").text_size(FontSizeToken::Xs).text_color(ColorToken::TextMuted))
         .child(col().role(Role::List).gap(sp(1.0)).child(each(checks, move |b, &key, item| {
-            let label = b.read(|r| item.with(r, |item| *item.expect("a review check")));
+            let label = b.sample(item);
             check_row(b, checks, key, label, notify, toasts)
         })))
 }

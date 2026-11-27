@@ -1,5 +1,5 @@
 use super::*;
-use crate::graph::value::IntoRead;
+use crate::ReadSignal;
 
 impl<K: Clone + Eq + Hash + 'static, T: 'static> ReadList<K, T> {
     #[track_caller]
@@ -11,10 +11,10 @@ impl<K: Clone + Eq + Hash + 'static, T: 'static> ReadList<K, T> {
     pub fn map_with<P: 'static, U: PartialEq + 'static>(
         self,
         build: &mut BuildCx<'_>,
-        parameter: impl IntoRead<P>,
+        parameter: impl Into<ReadSignal<P>>,
         project: impl Fn(&T, &P) -> U + 'static,
     ) -> ReadList<K, U> {
-        self.map_parameter(build, Parameter::Signal(parameter.into_read()), project)
+        self.map_parameter(build, Parameter::Signal(parameter.into()), project)
     }
 
     fn map_parameter<P: 'static, U: PartialEq + 'static>(

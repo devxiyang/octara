@@ -47,11 +47,11 @@ impl PopoverState {
     }
 
     pub fn is_open(self, read: &mut ReadCx<'_>) -> bool {
-        self.open.get(read)
+        read.get(self.open)
     }
 
     pub fn set_open(self, write: &mut WriteCx<'_>, open: bool) {
-        self.open.set(write, open);
+        write.set(self.open, open);
     }
 
     pub fn panel_id(self) -> String {

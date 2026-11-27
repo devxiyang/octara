@@ -1,12 +1,12 @@
-use std::cell::{Cell, RefCell};
 use std::mem::size_of;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use octara_model::diagnostics::codes;
 
 use super::*;
-use crate::graph::value::{Lens, ReadSignal, Signal, Watch};
+use crate::graph::value::{ReadSignal, Signal, Watch};
 
 #[test]
 fn handle_size_copy_and_nonclone_reads() {
@@ -15,9 +15,9 @@ fn handle_size_copy_and_nonclone_reads() {
         (value, value)
     }
 
-    assert_eq!(size_of::<Signal<Value>>(), 16);
-    assert_eq!(size_of::<ReadSignal<Value>>(), 16);
-    assert_eq!(size_of::<Watch>(), 16);
+    assert_eq!(size_of::<Signal<Value>>(), 8);
+    assert_eq!(size_of::<ReadSignal<Value>>(), 8);
+    assert_eq!(size_of::<Watch>(), 8);
     assert_eq!(size_of::<ScopeId>(), 16);
     let mut world = ReactiveWorld::new();
     let (a, b) = copy(world.build(world.root_scope(), None).signal(Value(9)));
@@ -30,13 +30,13 @@ fn diamond_is_fresh_and_only_recomputes_when_outputs_change() {
     let scope = world.root_scope();
     let mut cx = world.build(scope, None);
     let input = cx.signal(1);
-    let runs = Rc::new(Cell::new(0));
+    let runs = Arc::new(AtomicUsize::new(0));
     let left = cx.memo(move |r| r.get(input) % 2);
     let right = cx.memo(move |r| r.get(input) % 2 + 10);
     let total = cx.memo({
         let runs = runs.clone();
         move |r| {
-            runs.set(runs.get() + 1);
+            runs.fetch_add(1, Ordering::Relaxed);
             r.with2(left, right, |left, right| left + right)
         }
     });
@@ -45,10 +45,10 @@ fn diamond_is_fresh_and_only_recomputes_when_outputs_change() {
     w.set(input, 3);
     w.set(input, 5);
     assert_eq!(w.get(total), 12);
-    assert_eq!(runs.get(), 1);
+    assert_eq!(runs.load(Ordering::Relaxed), 1);
     w.set(input, 2);
     assert_eq!(w.get(total), 10);
-    assert_eq!(runs.get(), 2);
+    assert_eq!(runs.load(Ordering::Relaxed), 2);
     assert!(!world.has_pending_work());
 }
 
@@ -92,11 +92,11 @@ fn observer_tiers_and_post_commit_watches_follow_revisions() {
     let source = cx.signal(0);
     let result = cx.signal(0);
     let parity = cx.memo(move |r| r.get(source) % 2);
-    let effects = Rc::new(RefCell::new(Vec::new()));
+    let effects = Arc::new(Mutex::new(Vec::new()));
     cx.watch(move |r| r.get(parity), {
         let effects = effects.clone();
         move |w, value, before| {
-            effects.borrow_mut().push((*value, before.copied()));
+            effects.lock().unwrap().push((*value, before.copied()));
             w.set(result, *value + 10);
         }
     });
@@ -108,10 +108,10 @@ fn observer_tiers_and_post_commit_watches_follow_revisions() {
     assert_eq!(world.next_observer(FlushTier::Binding), Some(binding));
     assert_eq!(world.evaluate_observer(binding, |r| r.get(parity)), Some(0));
     world.flush_watches();
-    assert!(effects.borrow().is_empty());
+    assert!(effects.lock().unwrap().is_empty());
     assert_eq!(world.read().get(result), 0);
     world.run_watch_effects();
-    assert_eq!(effects.borrow().as_slice(), &[(0, None)]);
+    assert_eq!(effects.lock().unwrap().as_slice(), &[(0, None)]);
     assert_eq!(world.read().get(result), 10);
 
     world.write(scope, None).set(source, 2);
@@ -121,13 +121,13 @@ fn observer_tiers_and_post_commit_watches_follow_revisions() {
     assert_eq!(world.evaluate_observer(binding, |r| r.get(parity)), None);
     world.flush_watches();
     world.run_watch_effects();
-    assert_eq!(effects.borrow().as_slice(), &[(0, None)]);
+    assert_eq!(effects.lock().unwrap().as_slice(), &[(0, None)]);
 
     world.write(scope, None).set(source, 3);
     world.flush_watches();
     assert_eq!(world.read().get(result), 10);
     world.run_watch_effects();
-    assert_eq!(effects.borrow().as_slice(), &[(0, None), (1, Some(0))]);
+    assert_eq!(effects.lock().unwrap().as_slice(), &[(0, None), (1, Some(0))]);
     assert_eq!(world.read().get(result), 11);
 }
 
@@ -150,7 +150,7 @@ fn equal_depth_observers_stay_ordered_across_pulls_and_slot_reuse() {
     world.retire_node(third);
 
     let replacement = world.create_observer(NodeKind::Binding, scope, None);
-    assert_eq!(replacement.node, third.node);
+    assert_eq!(replacement.node(), third.node());
     assert_ne!(replacement, third);
     assert_eq!(world.next_observer(FlushTier::Binding), Some(replacement));
     assert_eq!(world.evaluate_observer(replacement, |r| r.get(source)), Some(1));
@@ -234,27 +234,90 @@ fn watch_source_and_effect_keep_mutable_state_between_runs() {
 }
 
 #[test]
-fn untracked_reads_and_field_slices_are_fine_grained() {
-    struct Shape {
-        width: i32,
-        height: i32,
-    }
-    let width = Lens::new(|shape: &Shape| &shape.width, |shape| &mut shape.width);
-    let height = Lens::new(|shape: &Shape| &shape.height, |shape| &mut shape.height);
+fn untracked_read_only_refreshes_after_a_tracked_change() {
     let mut world = ReactiveWorld::new();
     let scope = world.root_scope();
     let mut cx = world.build(scope, None);
-    let shape = cx.signal(Shape { width: 2, height: 3 });
+    let input = cx.signal(2);
     let sampled = cx.signal(2);
-    let narrow = cx.slice(shape, width);
-    let scaled = cx.memo(move |r| r.get(narrow) * r.untrack(|r| r.get(sampled)));
+    let scaled = cx.memo(move |r| r.get(input) * r.untrack(|r| r.get(sampled)));
     assert_eq!(world.read().get(scaled), 4);
     let mut w = world.write(scope, None);
     w.set(sampled, 4);
-    w.set_slice(shape, height, 10);
     assert_eq!(w.get(scaled), 4);
-    w.update_slice(shape, width, |value| *value += 1);
+    w.update(input, |value| *value += 1);
     assert_eq!(w.get(scaled), 12);
+}
+
+#[test]
+fn false_mutation_and_unchanged_in_place_memo_leave_downstream_clean() {
+    #[derive(Default)]
+    struct Buffer(Vec<i32>);
+
+    let mut world = ReactiveWorld::new();
+    let scope = world.root_scope();
+    let mut cx = world.build(scope, None);
+    let input = cx.signal(1);
+    let parity = cx.memo_with(Buffer::default(), move |r, buffer| {
+        let next = r.get(input) % 2;
+        if buffer.0.first() == Some(&next) {
+            return false;
+        }
+        buffer.0.clear();
+        buffer.0.push(next);
+        true
+    });
+    let downstream = cx.memo(move |r| r.with(parity, |buffer| buffer.0[0]));
+    assert_eq!(world.read().get(downstream), 1);
+    let input_revision = world.revision(input.id());
+    let parity_revision = world.revision(parity.id());
+    let downstream_revision = world.revision(downstream.id());
+
+    assert!(!world.write(scope, None).mutate(input, |_| false));
+    assert_eq!(world.revision(input.id()), input_revision);
+    assert_eq!(world.hot(parity.id()).state, NodeState::Clean);
+    assert_eq!(world.hot(downstream.id()).state, NodeState::Clean);
+    assert!(!world.has_pending_work());
+
+    assert!(world.write(scope, None).mutate(input, |value| {
+        *value += 2;
+        true
+    }));
+    assert_eq!(world.read().get(downstream), 1);
+    assert_eq!(world.revision(parity.id()), parity_revision);
+    assert_eq!(world.revision(downstream.id()), downstream_revision);
+
+    world.write(scope, None).set(input, 4);
+    assert_eq!(world.read().get(downstream), 0);
+    assert_ne!(world.revision(downstream.id()), downstream_revision);
+}
+
+#[test]
+fn trigger_tracks_only_in_a_subscribed_read() {
+    let mut world = ReactiveWorld::new();
+    let root = world.root_scope();
+    let scope = world.new_scope(root);
+    let mut cx = world.build(scope, None);
+    let trigger = cx.trigger();
+    let mut runs = 0;
+    let tracked = cx.memo(move |r| {
+        r.track(trigger);
+        runs += 1;
+        runs
+    });
+    let mut samples = 0;
+    let sampled = cx.memo(move |r| {
+        r.untrack(|r| r.track(trigger));
+        samples += 1;
+        samples
+    });
+    assert_eq!(world.read().with2(tracked, sampled, |a, b| (*a, *b)), (1, 1));
+    world.write(root, None).notify(trigger);
+    world.write(root, None).notify(trigger);
+    assert_eq!(world.read().with2(tracked, sampled, |a, b| (*a, *b)), (2, 1));
+    world.dispose(scope);
+    assert!(!world.is_alive(trigger.id()));
+    assert!(world.validate_integrity());
 }
 
 #[test]
@@ -263,12 +326,12 @@ fn cycle_reports_its_definition_and_unwinds_the_evaluation_stack() {
     let scope = world.root_scope();
     let mut cx = world.build(scope, None);
     let enter_cycle = cx.signal(true);
-    let handle = Rc::new(Cell::new(None));
+    let handle = Arc::new(OnceLock::new());
     let cyclic = cx.memo({
         let handle = handle.clone();
-        move |r| if r.get(enter_cycle) { r.get(handle.get().unwrap()) } else { 42 }
+        move |r| if r.get(enter_cycle) { r.get(*handle.get().unwrap()) } else { 42 }
     });
-    handle.set(Some(cyclic));
+    handle.set(cyclic).unwrap();
     assert!(catch_unwind(AssertUnwindSafe(|| world.read().get(cyclic))).is_err());
     let diagnostics = world.take_diagnostics();
     assert_eq!(diagnostics.len(), 1);
@@ -289,7 +352,7 @@ fn stale_slots_and_foreign_worlds_are_rejected() {
     let fresh_scope = world.new_scope(parent);
     let fresh = world.build(fresh_scope, None).signal(2);
     assert_ne!(old_scope, fresh_scope);
-    assert_eq!(stale.id().node, fresh.id().node);
+    assert_eq!(stale.id().node(), fresh.id().node());
     assert_ne!(stale, fresh);
     assert!(catch_unwind(AssertUnwindSafe(|| world.read().get(stale))).is_err());
     assert!(catch_unwind(AssertUnwindSafe(|| world.write(fresh_scope, None).set(stale, 3))).is_err());
@@ -299,7 +362,7 @@ fn stale_slots_and_foreign_worlds_are_rejected() {
 
 #[test]
 fn scopes_shadow_context_and_resume_cleanup_after_a_panic() {
-    let history = Rc::new(RefCell::new(Vec::new()));
+    let history = Arc::new(Mutex::new(Vec::new()));
     let mut world = ReactiveWorld::new();
     let root = world.root_scope();
     let parent = world.new_scope(root);
@@ -308,7 +371,7 @@ fn scopes_shadow_context_and_resume_cleanup_after_a_panic() {
     cx.provide(10u8);
     cx.on_cleanup({
         let history = history.clone();
-        move |_| history.borrow_mut().push(1)
+        move |_| history.lock().unwrap().push(1)
     });
     let mut cx = world.build(child, None);
     assert_eq!(cx.context::<u8>(), Some(10));
@@ -317,7 +380,7 @@ fn scopes_shadow_context_and_resume_cleanup_after_a_panic() {
     let local = cx.signal(2);
     cx.on_cleanup({
         let history = history.clone();
-        move |cx| history.borrow_mut().push(cx.sample(local))
+        move |cx| history.lock().unwrap().push(cx.sample(local))
     });
     cx.on_cleanup(|_| panic!("cleanup failed"));
 
@@ -325,7 +388,7 @@ fn scopes_shadow_context_and_resume_cleanup_after_a_panic() {
     assert!(!world.is_scope_alive(child));
     assert!(world.is_alive(local.id()));
     world.dispose(parent);
-    assert_eq!(*history.borrow(), [2, 1]);
+    assert_eq!(*history.lock().unwrap(), [2, 1]);
     assert!(!world.is_alive(local.id()));
 }
 

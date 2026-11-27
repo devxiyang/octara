@@ -285,6 +285,6 @@ fn controllers_are_copy_with_owned_keys_and_payloads() {
     check::<TooltipState>();
     check::<TooltipGroup>();
     check::<NumberFieldState>();
-    check::<ProgressState>();
+    check::<ProgressState<Signal<Option<f64>>>>();
     check::<SliderState>();
 }

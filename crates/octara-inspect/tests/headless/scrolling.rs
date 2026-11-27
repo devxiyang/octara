@@ -182,7 +182,9 @@ fn virtual_anchor_preserves_identity_and_uses_measured_row_changes_once() {
             col().test_id("virtual-port").w(120).h(70).scroll_y().child(virtual_each(
                 rows,
                 VirtualOptions { estimated_row_height: 20.0, overscan: 2, maintain_scroll_anchor: true },
-                |_, &key, row| el().test_id(format!("row-{key}")).style_with(move |r, style| style.h(i32::from(row.read(r).unwrap_or(20)))),
+                |_, &key, row| {
+                    el().test_id(format!("row-{key}")).style_with(move |r, style| style.h(i32::from(r.try_get(row).unwrap_or(20))))
+                },
             ))
         })
         .unwrap();

@@ -291,7 +291,7 @@ fn data_widgets_and_breadcrumbs_project_their_actual_semantics() {
                     values.read_only(),
                     None,
                     |_, left, right| left.cmp(right),
-                    |_, _, key, value| text(bind(move |r| value.read(r).unwrap_or_default().to_string())).test_id(format!("cell-{key}")),
+                    |_, _, key, value| text(bind(move |r| r.try_get(value).unwrap_or_default().to_string())).test_id(format!("cell-{key}")),
                 )
                 .test_id("table"),
             )

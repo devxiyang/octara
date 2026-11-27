@@ -2,7 +2,7 @@
 
 use std::{
     cell::RefCell,
-    rc::{Rc, Weak},
+    sync::{Arc, Weak},
 };
 
 use rustc_hash::FxHashSet;
@@ -16,7 +16,7 @@ use crate::{BuildCx, ReactiveId, ReactiveWorld, ReadCx, Signal, WriteCx};
 /// Back and forward history owned by the scope that created it.
 pub struct Navigator<R> {
     history: Signal<RouteHistory<R>>,
-    guards: Signal<Rc<LeaveGuards<R>>>,
+    guards: Signal<Arc<LeaveGuards<R>>>,
 }
 
 impl<R> Copy for Navigator<R> {}
@@ -97,13 +97,13 @@ struct LeaveGuard<R> {
 struct RoutePage {
     navigator: ReactiveId,
     entry: u64,
-    parent: Option<Rc<Self>>,
+    parent: Option<Arc<Self>>,
 }
 
 impl BuildCx<'_> {
     /// Creates a navigator at its root route.
     pub fn navigator<R: Clone + 'static>(&mut self, initial: R) -> Navigator<R> {
-        Navigator { history: self.signal(RouteHistory::new(initial)), guards: self.signal(Rc::default()) }
+        Navigator { history: self.signal(RouteHistory::new(initial)), guards: self.signal(Arc::default()) }
     }
 
     /// Creates a navigator whose history and active position participate in `RestartState`.
@@ -112,21 +112,21 @@ impl BuildCx<'_> {
         key: &'static str,
         initial: impl FnOnce() -> R,
     ) -> Navigator<R> {
-        Navigator { history: self.persisted(key, || RouteHistory::new(initial())), guards: self.signal(Rc::default()) }
+        Navigator { history: self.persisted(key, || RouteHistory::new(initial())), guards: self.signal(Arc::default()) }
     }
 
     /// Registers a guard for this scope. Inside a route page it only runs while that page is active.
     /// Returning `false` vetoes navigation without changing the route or its history.
     pub fn on_before_leave<R: Clone + 'static>(&mut self, nav: Navigator<R>, allows: impl Fn(&mut ReadCx<'_>, &R, &R) -> bool + 'static) {
-        let owner: Option<Rc<RoutePage>> = self.context();
+        let owner: Option<Arc<RoutePage>> = self.context();
         let page = std::iter::successors(owner.as_deref(), |page| page.parent.as_deref())
             .find(|page| page.navigator == nav.history.id())
             .map(|page| page.entry);
-        let guard = Rc::new(LeaveGuard { page, allows: Box::new(allows) });
+        let guard = Arc::new(LeaveGuard { page, allows: Box::new(allows) });
         let guards = self.sample(nav.guards);
         let mut guards = guards.borrow_mut();
         guards.retain(|guard| guard.strong_count() > 0);
-        guards.push(Rc::downgrade(&guard));
+        guards.push(Arc::downgrade(&guard));
         self.on_cleanup(move |_| drop(guard));
     }
 }
@@ -253,7 +253,7 @@ impl<R: Clone + 'static> Navigator<R> {
 
     #[doc(hidden)]
     pub fn provide_page(self, b: &mut BuildCx<'_>, entry: u64) {
-        b.provide(Rc::new(RoutePage { navigator: self.history.id(), entry, parent: b.context() }));
+        b.provide(Arc::new(RoutePage { navigator: self.history.id(), entry, parent: b.context() }));
     }
 
     #[doc(hidden)]
@@ -263,6 +263,6 @@ impl<R: Clone + 'static> Navigator<R> {
 
     #[doc(hidden)]
     pub fn history_revision(self, world: &ReactiveWorld) -> Option<u64> {
-        world.is_alive(self.history.id()).then(|| world.revision(self.history.id()))
+        world.is_alive(self.history.id()).then(|| world.revision(self.history.id()).get())
     }
 }

@@ -138,27 +138,64 @@ fn preview() -> El {
 
 ## 读取、更新与清理
 
-`cx.signal(value)` 把值交给当前作用域。句柄可以复制到事件处理器或派生闭包。用 `r.with(signal, f)` 借用较大的值，用 `r.get(signal)` 读取轻量或需要独立持有的值。`cx.read(|r| …)` 在构造期间做一次非订阅读取。`cx.memo` 适合可由其他值推导的状态。
+`cx.signal(value)` 把值交给当前作用域。句柄可以复制到事件处理器或派生闭包。用 `r.with(handle, f)` 借用值，用 `r.get(handle)` 取得独立的值。这两个方法接受实现了 `Readable<T>` 的句柄，包括信号、Store 字段、列表行和绑定。构造期间可用 `cx.sample(handle)` 或 `cx.read(|r| …)` 做一次非订阅读取。
 
-`Binding<T>` 是可复制的双向绑定。用 `signal.into()` 直接绑定信号，或用 `cx.binding(read, write)` 定义读写逻辑。`octara-kit` 的受控控件接收 `Binding<T>`。
+`Binding<T>` 是可复制的双向绑定。用 `signal.into()` 直接绑定信号，或用 `cx.binding(read, write)` 定义读写逻辑。`octara-kit` 的受控控件接收 `Binding<T>`。在读写闭包中用 `r.get(binding)` 和 `w.set(binding, next)`。
 
 ```rust
 use octara::prelude::*;
 
 fn editor(cx: &mut BuildCx<'_>) -> El {
     let title = cx.persisted("title", || "Untitled".to_owned());
-    let initial_title = cx.read(|r| r.get(title));
     let value: Binding<String> = title.into();
-    let empty = cx.memo(move |r| r.with(title, String::is_empty));
+    let initial_title = cx.sample(value);
+    let empty = cx.memo(move |r| r.with(value, String::is_empty));
     col()
         .child(input()
-            .value(move |r: &mut ReadCx<'_>| value.get(r))
+            .value(move |r: &mut ReadCx<'_>| r.get(value))
             .label("Title")
-            .on_input(move |w, next| value.set(w, next.into())))
+            .on_input(move |w, next| w.set(value, next.into())))
         .child(text(format!("Opened as {initial_title}")))
         .child(show(move |r| r.get(empty), |_| text("Enter a title")))
 }
 ```
+
+`#[derive(Store)]` 为结构体生成字段访问器。`cx.store(init)` 持有整份状态，`store.field()` 返回可复制的字段句柄。单独更新一个字段只通知该字段和包含它的 Store。读写整份状态时直接传入 Store 句柄。给嵌套字段加上 `#[store(nested)]` 即可继续访问其子字段。
+
+```rust
+use octara::prelude::*;
+
+#[derive(Store)]
+struct Document {
+    title: String,
+    views: u32,
+}
+
+fn document(cx: &mut BuildCx<'_>) -> El {
+    let document = cx.store(Document { title: "Untitled".into(), views: 0 });
+    let title = document.title();
+    let views = document.views();
+    col()
+        .child(input()
+            .value(title)
+            .label("Title")
+            .on_input(move |w, next| {
+                w.set_if_changed(title, next.to_owned());
+            }))
+        .child(text(move |r: &mut ReadCx<'_>| format!("Views: {}", r.get(views))))
+        .child(el().role(Role::Button).focusable().on_press(move |w| {
+            w.mutate(views, |views| {
+                if *views == 10 {
+                    return false;
+                }
+                *views += 1;
+                true
+            });
+        }).child("Record view"))
+}
+```
+
+`cx.memo` 计算派生值并比较新旧结果。`cx.memo_with(init, |r, value| …)` 复用已有存储。与 `w.mutate(handle, |value| …)` 一样，回调在值发生变化时返回 `true`。`cx.trigger()` 创建无载荷通知，计算中用 `r.track(trigger)` 订阅，事件处理中用 `w.notify(trigger)` 使订阅者重新计算。
 
 `cx.persisted` 使用作用域路径和业务键来识别可恢复状态。`AppDefinition::state_schema` 标识数据结构。退出、切换发布版本或更换进程时可以导出 `RestartState`，再从同一 schema 恢复持久值。用 `scope` 或列表行建立独立寿命，用 `cx.on_cleanup` 释放外部资源。清理回调中的 `CleanupCx` 提供采样能力。
 
@@ -180,9 +217,11 @@ fn delayed_label(cx: &mut BuildCx<'_>) -> El {
 
 ## 用业务键更新列表
 
-`each` 按业务键复用已挂载的行。行读使用 `RowSignal`，可以只订阅一行。`virtual_each` 根据宿主测得的视口选择驻留行，保留拥有焦点或指针触点的行。集合算子用 `filter_with` 等 API 接受显式参数信号，纯行变换只借用行数据和参数值。
+`each` 按业务键复用已挂载的行，并给行构造闭包传入业务键引用和可复制的 `RowSignal<T>`。`virtual_each` 根据宿主测得的视口选择驻留行，保留拥有焦点或指针触点的行。
 
-已有列表可以用 `filter_with`、`map_list`、`group_by` 等增量算子组合。列表来自普通信号或多个响应式读取时，用 `cx.derive_list` 返回带业务键的行。
+用 `r.get(row)` 或 `r.with(row, f)` 读取确定存在的行。行可能暂时缺失时用 `r.try_get(row)` 或 `r.try_with(row, f)`，它们返回 `Option`。在列表之外可用 `cx.row_signal(list, key)` 创建同样的句柄。读取只订阅指定业务键。`WriteCx` 也可读取行，更新行则用 `w.update_row(list, &key, f)`。
+
+已有列表可以用 `filter_with`、`map_list`、`group_by` 等增量算子组合。`filter_with` 接收显式参数信号，筛选闭包只借用行数据和参数值。列表来自普通信号或多个响应式读取时，用 `cx.derive_list` 返回带业务键的行。
 
 ```rust
 use octara::prelude::*;
@@ -197,7 +236,7 @@ fn tasks(cx: &mut BuildCx<'_>) -> El {
             }).child("Add"),
         )
         .child(each(rows, |_, _, row| {
-            text(move |r: &mut ReadCx<'_>| row.read(r).unwrap_or_default())
+            text(move |r: &mut ReadCx<'_>| r.try_get(row).unwrap_or_default())
         }))
 }
 
@@ -206,7 +245,7 @@ fn selected_tasks(cx: &mut BuildCx<'_>, selection: Signal<Vec<u64>>) -> El {
         r.with(selection, |ids| ids.iter().map(|&id| (id, format!("Task {id}"))).collect())
     });
     col().child(each(rows, |_, _, row| {
-        text(move |r: &mut ReadCx<'_>| row.read(r).unwrap_or_default())
+        text(move |r: &mut ReadCx<'_>| r.try_get(row).unwrap_or_default())
     }))
 }
 ```

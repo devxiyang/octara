@@ -241,14 +241,14 @@ fn releases(b: &mut BuildCx<'_>, nav: Navigator<Route>, selected: Signal<Option<
             ReleaseColumn::Status => a.status.cmp(&b.status),
         },
         |b, column, key, item| match column {
-            ReleaseColumn::Name => text(move |r: &mut ReadCx<'_>| item.with(r, |row| row.map_or("", |release| release.name)))
+            ReleaseColumn::Name => text(move |r: &mut ReadCx<'_>| r.try_with(item, |release| release.name).unwrap_or_default())
                 .test_id(format!("release-{key}"))
                 .text_overflow(TextOverflow::Ellipsis)
                 .text_weight(600),
-            ReleaseColumn::Owner => text(move |r: &mut ReadCx<'_>| item.with(r, |row| row.map_or("", |release| release.owner)))
+            ReleaseColumn::Owner => text(move |r: &mut ReadCx<'_>| r.try_with(item, |release| release.owner).unwrap_or_default())
                 .text_color(ColorToken::TextMuted),
             ReleaseColumn::Status => {
-                let status = b.read(|r| item.with(r, |row| row.expect("a release row").status));
+                let status = b.read(|r| r.with(item, |release| release.status));
                 row()
                     .align(AlignItems::Center)
                     .child(badge(status.label(), status.tone()).px(sp(1.0)).text_overflow(TextOverflow::Ellipsis))

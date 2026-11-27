@@ -7,7 +7,7 @@ use octara_tree::editor::{EditorSession, EditorSlot};
 use octara_tree::tables::HandlerKind;
 use octara_tree::{NodeChange, NodeContent, NodeId, NodeSpec, RuntimeOp, Tree, TreeDelta};
 use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Default)]
 struct HostState {
@@ -19,7 +19,7 @@ struct HostState {
     publish_locally: Cell<Option<octara_runtime::task::Sender<()>>>,
 }
 
-struct TestHost(Rc<HostState>);
+struct TestHost(Arc<HostState>);
 
 impl HostEngine for TestHost {
     fn project(&mut self, tree: &Tree, _: &TreeDelta, _: WindowViewport, _: f64) -> Result<ProjectFeedback, ProjectError> {
@@ -57,8 +57,9 @@ impl HostEngine for TestHost {
     }
 }
 
-fn app() -> (AppRuntime, Rc<HostState>) {
-    let host = Rc::new(HostState::default());
+fn app() -> (AppRuntime, Arc<HostState>) {
+    #[expect(clippy::arc_with_non_send_sync, reason = "the test observes mock window state on the app thread")]
+    let host = Arc::new(HostState::default());
     let engine = host.clone();
     (AppRuntime::with_namespace([1, 2], move |_, _| Box::new(TestHost(engine.clone()))), host)
 }
@@ -82,24 +83,21 @@ fn feedback_loop_rolls_back_at_the_causal_round_limit() {
 #[test]
 fn worker_wakes_during_projection_wait_for_next_turn_and_notify_host() {
     use octara_runtime::task::channel;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     let (mut app, host) = app();
     let (local, mut local_rx) = channel();
     let (worker, mut worker_rx) = channel();
-    let local_arrived = Rc::new(Cell::new(false));
-    let worker_arrived = Rc::new(Cell::new(false));
+    let local_arrived = Arc::new(AtomicBool::new(false));
+    let worker_arrived = Arc::new(AtomicBool::new(false));
     let saw_local = local_arrived.clone();
     let saw_worker = worker_arrived.clone();
     app.build(move |b| {
         b.spawn("local channel", move |task| async move {
-            saw_local.set(task.recv(&mut local_rx).await.is_some());
+            saw_local.store(task.recv(&mut local_rx).await.is_some(), Ordering::Relaxed);
         });
         b.spawn("external channel", move |task| async move {
-            saw_worker.set(task.recv(&mut worker_rx).await.is_some());
+            saw_worker.store(task.recv(&mut worker_rx).await.is_some(), Ordering::Relaxed);
         });
     })
     .unwrap();
@@ -111,11 +109,11 @@ fn worker_wakes_during_projection_wait_for_next_turn_and_notify_host() {
     host.publish_locally.set(Some(local));
     host.publish_from_worker.set(Some(worker));
     app.open_window(WindowOptions::default(), |_| {}).unwrap();
-    assert!(local_arrived.get(), "same-thread wakes settle in the current turn");
-    assert!(!worker_arrived.get(), "off-thread arrivals cannot extend the current turn");
+    assert!(local_arrived.load(Ordering::Relaxed), "same-thread wakes settle in the current turn");
+    assert!(!worker_arrived.load(Ordering::Relaxed), "off-thread arrivals cannot extend the current turn");
     assert_eq!(wakes.load(Ordering::Relaxed), 2);
     app.settle().unwrap();
-    assert!(worker_arrived.get());
+    assert!(worker_arrived.load(Ordering::Relaxed));
 }
 
 #[test]

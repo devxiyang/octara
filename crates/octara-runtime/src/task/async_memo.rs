@@ -1,8 +1,8 @@
 use std::future::Future;
-use std::rc::Rc;
+use std::sync::Arc;
 
-use crate::cx::{BuildCx, ReadCx, WriteCx};
-use crate::graph::value::{IntoRead, ReadSignal, Signal};
+use crate::cx::{BuildCx, ReadCx, Readable, WriteCx};
+use crate::graph::value::{ReadSignal, Signal};
 
 use super::TaskCx;
 
@@ -60,9 +60,17 @@ impl<T, E> AsyncMemo<T, E> {
     }
 }
 
-impl<T, E> IntoRead<AsyncState<T, E>> for AsyncMemo<T, E> {
-    fn into_read(self) -> ReadSignal<AsyncState<T, E>> {
-        self.read_only()
+impl<T, E> Readable<AsyncState<T, E>> for AsyncMemo<T, E> {
+    type Prepared = ReadSignal<AsyncState<T, E>>;
+
+    fn prepare(self, read: &mut ReadCx<'_>) -> Self::Prepared {
+        self.read_only().prepare(read)
+    }
+}
+
+impl<T, E> From<AsyncMemo<T, E>> for ReadSignal<AsyncState<T, E>> {
+    fn from(memo: AsyncMemo<T, E>) -> Self {
+        memo.read_only()
     }
 }
 
@@ -102,7 +110,7 @@ where
     let refreshes = cx.signal(0u64);
     let request = cx.memo(move |read| (input(read), read.get(refreshes)));
     let mut running = None;
-    let fetch = Rc::new(fetch);
+    let fetch = Arc::new(fetch);
     cx.watch(
         move |read| read.get(request),
         move |write, requested, _| {

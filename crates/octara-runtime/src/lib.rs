@@ -14,12 +14,13 @@ pub mod window;
 
 pub use app::{AppRuntime, HostCommand, Input, RestartState};
 pub use arena::{ReactiveId, ReactiveWorld, ScopeId};
-pub use cx::{Binding, BuildCx, CleanupCx, CloseHandle, ReadCx, WriteCx};
+pub use cx::{Binding, BuildCx, CleanupCx, CloseHandle, PreparedRead, ReadCx, Readable, Writable, WriteCx};
 pub use engine::{CommitOutput, HostEngine, ProjectError, ProjectFeedback};
 pub use graph::list::{ReadList, RowSignal, StateList};
+pub use graph::store::{Field, Store};
 pub use graph::text_buf::TextBuffer;
 pub use graph::text_stream::{TextStreamError, TextStreamSink};
-pub use graph::value::{ReadSignal, Signal, Watch};
+pub use graph::value::{ReadSignal, Signal, Trigger, Watch};
 pub use navigation::Navigator;
 pub use task::{TaskCx, VirtualClock};
 pub use window::{

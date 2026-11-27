@@ -78,7 +78,7 @@ pub fn select<K: Clone + Eq + Hash + Display + 'static>(
     options: PickerOptions,
     popup: PopupOptions,
     trigger: impl FnOnce(ReadSignal<String>) -> El + 'static,
-    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, Choice>) -> El + Clone + 'static,
+    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<Choice>) -> El + Clone + 'static,
 ) -> View {
     let id = id.to_owned();
     let label = label.into();
@@ -112,7 +112,7 @@ pub fn combobox<K: Clone + Eq + Hash + Display + 'static>(
     choices: ReadList<K, Choice>,
     options: ComboboxOptions,
     trigger: impl FnOnce(ReadSignal<String>) -> El + 'static,
-    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, Choice>) -> El + Clone + 'static,
+    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<Choice>) -> El + Clone + 'static,
 ) -> View {
     let id = id.to_owned();
     let label = label.into();
@@ -143,7 +143,7 @@ pub fn combobox_input<K: Clone + Eq + Hash + Display + 'static, T: 'static>(
     state: ComboboxState<K, T>,
     editor: TextInput,
     options: ComboboxOptions,
-    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + Clone + 'static,
+    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + Clone + 'static,
 ) -> TextInput {
     let id = id.to_owned();
     let label = list_label.into();
@@ -199,7 +199,7 @@ pub(crate) fn combobox_options<K: Clone + Eq + Hash + Display + 'static, T: 'sta
     state: ComboboxState<K, T>,
     options: PickerOptions,
     surface_constrained: bool,
-    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
+    render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
 ) -> El {
     let collection = state.collection();
     let list = picker_list(id, label, surface_constrained);
@@ -224,16 +224,16 @@ pub(crate) fn combobox_options<K: Clone + Eq + Hash + Display + 'static, T: 'sta
 }
 
 /// Renders the label of a Headless choice as the popup's default text row.
-pub fn choice_row<K: Eq + Hash + 'static>(_: &mut BuildCx<'_>, _: &K, choice: RowSignal<K, Choice>) -> El {
-    text(move |r: &mut ReadCx<'_>| choice.with(r, |choice| choice.map(|choice| choice.label.clone()).unwrap_or_default()))
+pub fn choice_row<K: Eq + Hash + 'static>(_: &mut BuildCx<'_>, _: &K, choice: RowSignal<Choice>) -> El {
+    text(move |r: &mut ReadCx<'_>| r.try_with(choice, |choice| choice.label.clone()).unwrap_or_default())
         .text_overflow(TextOverflow::Ellipsis)
 }
 
 fn styled_options<K: Clone + Eq + Hash + Display + 'static, T: 'static>(
     id: &str,
     collection: Collection<K, T>,
-    mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static,
-) -> impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, T>) -> El + 'static {
+    mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
+) -> impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static {
     let id = id.to_owned();
     move |b, key, row| {
         let option = render(b, key, row).test_id(format!("{id}-option-{key}"));

@@ -1,10 +1,11 @@
-//! Octara component provenance, store field lenses, and compile-time style utilities.
+//! Octara component provenance, reactive stores, and compile-time style utilities.
 
+mod store;
 mod tw;
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, ItemFn, LitStr, parse_macro_input};
+use syn::{DeriveInput, ItemFn, LitStr, parse_macro_input};
 
 /// Compiles a string of whitespace-separated style utilities into an Octara `TwStyle`.
 ///
@@ -56,35 +57,14 @@ pub fn ui(attr: TokenStream, item: TokenStream) -> TokenStream {
     quote!(#function).into()
 }
 
-/// Generates a field lens constructor for every named field of a struct.
+/// Generates a reactive accessor for every named field of a struct.
 ///
-/// Each constructor has the field's name and visibility. Use the lens with `BuildCx::slice`
-/// to read a field reactively or with `WriteCx::update_slice` to update it.
-#[proc_macro_derive(Store)]
+/// Create a store with `cx.store(value)`, then use `store.field()` with `r.with`,
+/// `w.set`, or `w.mutate`. Each accessor has the field's name and visibility.
+/// Annotate a field with `#[store(nested)]` to expose the accessors of another
+/// derived store. Leaf fields need `PartialEq` for precise replacement.
+#[proc_macro_derive(Store, attributes(store))]
 pub fn store(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as DeriveInput);
-    let name = &input.ident;
-    let Data::Struct(data) = &input.data else {
-        return syn::Error::new_spanned(name, "`Store` requires a struct with named fields").into_compile_error().into();
-    };
-    let Fields::Named(fields) = &data.fields else {
-        return syn::Error::new_spanned(name, "`Store` requires a struct with named fields").into_compile_error().into();
-    };
-    let methods = fields.named.iter().map(|field| {
-        let name = field.ident.as_ref().expect("named field");
-        let ty = &field.ty;
-        let visibility = &field.vis;
-        quote! {
-            #visibility const fn #name() -> ::octara::Lens<Self, #ty> {
-                ::octara::Lens::new(|value| &value.#name, |value| &mut value.#name)
-            }
-        }
-    });
-    let (parameters, arguments, constraints) = input.generics.split_for_impl();
-    quote! {
-        impl #parameters #name #arguments #constraints {
-            #(#methods)*
-        }
-    }
-    .into()
+    store::expand(&input).unwrap_or_else(syn::Error::into_compile_error).into()
 }

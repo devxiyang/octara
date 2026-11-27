@@ -1,6 +1,6 @@
 [package]
 name = "octara-macros"
-description = "Octara component provenance, store field lens, and style utility macros."
+description = "Octara component provenance, reactive store, and style utility macros."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

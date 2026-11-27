@@ -1,5 +1,6 @@
 //! Per-window tree, staging queues and callback lifetimes.
 
+use crate::app::AppCommands;
 use crate::arena::{ReactiveId, ReactiveWorld, ScopeId};
 use crate::authoring::WindowAuthoring;
 use crate::cx::{BuildCx, ReadCx, WriteCx};
@@ -24,7 +25,6 @@ use octara_tree::tables::{CommandSlot, HandlerId, HandlerKind};
 use octara_tree::transaction::{PendingNode, RejectedTransaction};
 use octara_tree::{NodeChange, NodeId, NodeRef, NodeSpec, Retirement, RuntimeOp, TargetGuard, Tree, TreeDelta, TreeReceipt, TxBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -98,8 +98,8 @@ pub struct HandlerOutcome {
     pub scroll: Vec2,
 }
 
-pub(crate) type Handler = Rc<dyn Fn(&mut WriteCx<'_>, &HandlerEvent<'_>) -> HandlerOutcome>;
-pub(crate) type Reveal = Rc<dyn Fn(&mut WriteCx<'_>, &str)>;
+pub(crate) type Handler = Box<dyn Fn(&mut WriteCx<'_>, &HandlerEvent<'_>) -> HandlerOutcome>;
+pub(crate) type Reveal = Box<dyn Fn(&mut WriteCx<'_>, &str)>;
 pub(crate) type CopyRows = Box<dyn Fn(&mut ReadCx<'_>, NodeId, NodeId) -> Option<Result<Vec<CopyRow>, ()>>>;
 
 /// Content to copy from a virtual row between the selection endpoints.
@@ -348,7 +348,7 @@ impl MountCx<'_> {
     ) -> HandlerId {
         let node = node.into();
         let id = self.window.next_handler();
-        self.window.handlers.insert(id, ScopedHandler { node, kind, scope: self.scope, call: Rc::new(call) });
+        self.window.handlers.insert(id, ScopedHandler { node, kind, scope: self.scope, call: Box::new(call) });
         self.change(node, NodeChange::Handler { kind, id: Some(id) });
         id
     }
@@ -389,7 +389,7 @@ impl MountCx<'_> {
         let id = self.window.next_handler();
         self.window
             .handlers
-            .insert(id, ScopedHandler { node, scope: self.scope, kind: HandlerKind::Command, call: Rc::new(move |write, _| call(write)) });
+            .insert(id, ScopedHandler { node, scope: self.scope, kind: HandlerKind::Command, call: Box::new(move |write, _| call(write)) });
         let slot = self.window.work.commands.entry(node).or_default();
         slot.commands.retain(|(candidate, _)| *candidate != name);
         slot.commands.push((name, id));
@@ -459,7 +459,7 @@ impl MountCx<'_> {
     }
 
     pub fn on_reveal(&mut self, node: impl Into<NodeRef>, reveal: impl Fn(&mut WriteCx<'_>, &str) + 'static) {
-        self.window.reveal.push(ScopedReveal { node: node.into(), scope: self.scope, call: Rc::new(reveal) });
+        self.window.reveal.push(ScopedReveal { node: node.into(), scope: self.scope, call: Box::new(reveal) });
     }
 }
 
@@ -516,6 +516,18 @@ pub struct WindowRuntime {
 }
 
 impl WindowRuntime {
+    pub(crate) fn write<'a>(
+        &'a self,
+        world: &'a mut ReactiveWorld,
+        scope: ScopeId,
+        tasks: TaskSpawner,
+        commands: &'a mut AppCommands,
+    ) -> WriteCx<'a> {
+        let mut write = world.write(scope, Some(self.id)).with_tasks(tasks).with_commands(commands);
+        write.tree = Some(&self.tree);
+        write
+    }
+
     pub(crate) fn new(
         world: &mut ReactiveWorld,
         id: WindowId,

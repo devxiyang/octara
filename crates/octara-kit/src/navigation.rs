@@ -25,7 +25,7 @@ pub fn tabs<K: Clone + Eq + Hash + KeyDisplay + 'static>(
     value: Binding<Option<K>>,
     options: ReadList<K, Choice>,
     appearance: TabsOptions,
-    mut panel: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, Choice>) -> El + 'static,
+    mut panel: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<Choice>) -> El + 'static,
 ) -> El {
     let state = TabsState::new(build, value, appearance.activation, appearance.orientation);
     let tab_id = id.to_owned();
@@ -35,12 +35,11 @@ pub fn tabs<K: Clone + Eq + Hash + KeyDisplay + 'static>(
         Orientation::Vertical => col(),
     };
     let list = state.list(bar.test_id(id.to_owned()).label(label.into()).gap(sp(1.0))).child(each(options, move |_, key, option| {
-        let disabled = option.clone();
-        let tab = text(bind(move |read| row_value(&option, read, |item| item.label.clone())))
+        let tab = text(bind(move |read| row_value(option, read, |item| item.label.clone())))
             .select_none()
             .text_align(TextAlign::Center)
             .test_id(format!("{tab_id}-tab-{key}"))
-            .disabled(bind(move |read| row_value(&disabled, read, |item| item.disabled)));
+            .disabled(bind(move |read| row_value(option, read, |item| item.disabled)));
         state.tab(
             button_part(tab, appearance.size, ButtonVariant::Ghost)
                 .when(State::SELECTED, |style| style.bg(ColorToken::Surface).border_color(ColorToken::Accent)),
@@ -89,16 +88,15 @@ pub fn segmented<K: Clone + Eq + Hash + KeyDisplay + 'static>(
                     .border(1.0)
                     .border_color(ColorToken::Border)
                     .child(each(options, move |_, key, option| {
-                        let details = option.clone();
                         let button = button_part(
-                            text(bind(move |read| row_value(&option, read, |item| item.label.clone())))
+                            text(bind(move |read| row_value(option, read, |item| item.label.clone())))
                                 .select_none()
                                 .text_align(TextAlign::Center),
                             Size::Md,
                             ButtonVariant::Ghost,
                         )
                         .test_id(format!("{id}-option-{key}"))
-                        .description(bind(move |read| row_value(&details, read, |item| item.description.clone())))
+                        .description(bind(move |read| row_value(option, read, |item| item.description.clone())))
                         .grow(1.0)
                         .basis(0.0)
                         .min_w(0.0)

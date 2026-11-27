@@ -198,7 +198,7 @@ fn toast_timers_preserve_remaining_time_and_publish_live_policies() {
         .app_mut()
         .open_window(WindowOptions::default(), move |_| {
             col().child(each(queue.items(), move |build, id, item| {
-                let label = build.read(|read| item.with(read, |toast| toast.unwrap().value.0));
+                let label = build.read(|read| read.with(item, |toast| toast.value.0));
                 queue.item(build, text(label).test_id(format!("toast-{id}")), *id)
             }))
         })

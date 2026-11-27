@@ -36,19 +36,29 @@ pub fn default_table(build: &mut BuildCx<'_>, block: &RenderBlock) -> El {
     build.watch(
         move |r| r.get(dimensions),
         move |w, &(rows, cols), _| {
-            w.update(measured, |widths| widths.retain(|&(i, j), _| i < rows && j < cols));
+            w.mutate(measured, |widths| {
+                let before = widths.len();
+                widths.retain(|&(i, j), _| i < rows && j < cols);
+                widths.len() != before
+            });
         },
     );
-    let widths = build.memo(move |r| {
+    let mut next_widths = Vec::new();
+    let widths = build.memo_with(Vec::new(), move |r, widths| {
         r.with2(dimensions, measured, |&(rows, cols), measured| {
-            let mut widths = vec![0.0_f32; cols];
+            next_widths.resize(cols, 0.0_f32);
+            next_widths.fill(0.0);
             for (&(i, j), &w) in measured {
                 if i < rows && j < cols {
-                    widths[j] = widths[j].max(w);
+                    next_widths[j] = next_widths[j].max(w);
                 }
             }
-            widths
-        })
+        });
+        if *widths == next_widths {
+            return false;
+        }
+        std::mem::swap(widths, &mut next_widths);
+        true
     });
     let block = block.clone();
     col()
@@ -61,8 +71,7 @@ pub fn default_table(build: &mut BuildCx<'_>, block: &RenderBlock) -> El {
         })
         .child(each(rows, move |b, key, cells| {
             let i = key.index;
-            let cells = b
-                .derive_list(move |r| cells.with(r, |cells| cells.map(|cells| keyed_rows('c', cells.iter().cloned())).unwrap_or_default()));
+            let cells = b.derive_list(move |r| r.try_with(cells, |cells| keyed_rows('c', cells.iter().cloned())).unwrap_or_default());
             let block = block.clone();
             let line = row().role(Role::Row).style_with(move |r, p| {
                 let s = r.with(theme, |t| t.table);
@@ -76,13 +85,13 @@ pub fn default_table(build: &mut BuildCx<'_>, block: &RenderBlock) -> El {
             let line = if i == 0 { line.text_weight(600) } else { line };
             line.child(each(cells, move |b, key, cell| {
                 let j = key.index;
-                let cell = b.memo(move |r| cell.read(r));
+                let cell = b.memo(move |r| r.try_get(cell));
                 let geometry = b.signal(None::<LayoutBox>);
                 b.watch(
                     move |r| r.get(geometry).map(|layout| layout.rect.w),
                     move |w, width, _| {
                         if let Some(width) = *width {
-                            w.update(measured, |widths| widths.insert((i, j), width));
+                            w.mutate(measured, |widths| widths.insert((i, j), width) != Some(width));
                         }
                     },
                 );

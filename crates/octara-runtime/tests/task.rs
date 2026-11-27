@@ -1,10 +1,9 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::future::{Future, pending, poll_fn};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
@@ -22,7 +21,8 @@ fn task_writes_borrow_locals_and_close_between_polls() {
     let mut tasks = TaskScheduler::new();
     let scope = world.root_scope();
     let signal = world.build(scope, None).signal(0);
-    let retained = Rc::new(RefCell::new(None::<TaskCx>));
+    #[expect(clippy::arc_with_non_send_sync, reason = "the test retains a local task context across polls")]
+    let retained = Arc::new(RefCell::new(None::<TaskCx>));
     let task_handle = retained.clone();
 
     tasks.spawn(scope, None, "task", move |task| async move {
@@ -58,8 +58,9 @@ fn retiring_a_scope_cancels_its_moveable_wait_and_stale_waker() {
     let mut tasks = TaskScheduler::new();
     let parent = world.new_scope(world.root_scope());
     let child = world.new_scope(parent);
-    let stored_wait = Rc::new(RefCell::new(None));
-    let stored_waker = Rc::new(RefCell::new(None::<Waker>));
+    #[expect(clippy::arc_with_non_send_sync, reason = "the test moves a local timer out of its task")]
+    let stored_wait = Arc::new(RefCell::new(None));
+    let stored_waker = Arc::new(OnceLock::new());
     tasks.spawn(child, None, "cancelled before poll", |_| async { panic!("retired task polled") });
     tasks.cancel_scope(child);
 
@@ -72,7 +73,7 @@ fn retiring_a_scope_cancels_its_moveable_wait_and_stale_waker() {
             let mut sleep = sleep.take().expect("poll once");
             assert!(Pin::new(&mut sleep).poll(cx).is_pending());
             *wait.borrow_mut() = Some(sleep);
-            *waker.borrow_mut() = Some(cx.waker().clone());
+            waker.set(cx.waker().clone()).unwrap();
             Poll::Pending
         })
     });
@@ -83,7 +84,7 @@ fn retiring_a_scope_cancels_its_moveable_wait_and_stale_waker() {
     tasks.cancel_retired_scopes(&world);
     assert!(tasks.pending().is_empty());
     assert!(tasks.next_deadline().is_none());
-    stored_waker.borrow().as_ref().unwrap().wake_by_ref();
+    stored_waker.get().unwrap().wake_by_ref();
     assert!(!tasks.has_ready());
 }
 
@@ -205,14 +206,14 @@ fn a_large_ready_batch_does_not_starve_its_later_tasks() {
             })
         });
     }
-    let ran_last = Rc::new(Cell::new(false));
+    let ran_last = Arc::new(AtomicBool::new(false));
     let result = ran_last.clone();
-    tasks.spawn(scope, None, "last", |_| async move { result.set(true) });
+    tasks.spawn(scope, None, "last", |_| async move { result.store(true, Ordering::Relaxed) });
 
     assert_eq!(tasks.poll_ready(&mut world, &mut commands), 256);
-    assert!(!ran_last.get());
+    assert!(!ran_last.load(Ordering::Relaxed));
     assert_eq!(tasks.poll_ready(&mut world, &mut commands), 1);
-    assert!(ran_last.get());
+    assert!(ran_last.load(Ordering::Relaxed));
 }
 
 #[test]

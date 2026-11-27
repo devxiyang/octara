@@ -43,9 +43,6 @@ pub use structure::{collapsible, list, list_header, list_item, separator, split,
 
 pub(crate) use controls::TOUCH_TARGET;
 
-fn row_value<K, T: 'static, U: Default>(row: &RowSignal<K, T>, read: &mut ReadCx<'_>, project: impl FnOnce(&T) -> U) -> U
-where
-    K: Clone + Eq + std::hash::Hash + 'static,
-{
-    row.with(read, |item| item.map(project).unwrap_or_default())
+fn row_value<T: 'static, U: Default>(row: RowSignal<T>, read: &mut ReadCx<'_>, project: impl FnOnce(&T) -> U) -> U {
+    read.try_with(row, project).unwrap_or_default()
 }

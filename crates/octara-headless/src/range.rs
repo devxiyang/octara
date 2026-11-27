@@ -88,11 +88,11 @@ impl SliderState {
     }
 
     pub fn value(self, read: &mut ReadCx<'_>) -> f64 {
-        self.range.normalize(self.value.get(read))
+        self.range.normalize(read.get(self.value))
     }
 
     pub fn set(self, write: &mut WriteCx<'_>, value: f64) {
-        self.value.set(write, self.range.normalize(value));
+        write.set(self.value, self.range.normalize(value));
     }
 
     /// Attaches horizontal slider behavior to the actual track element.
@@ -129,7 +129,7 @@ impl SliderState {
                         let HandlerEvent::Interaction { payload: InteractionPayload::Drag(drag), local_pos, .. } = event else { return };
                         match drag.phase {
                             DragPhase::Start => {
-                                let before = write.read(|read| self.value.get(read));
+                                let before = write.get(self.value);
                                 let grab = local_pos.map_or(0.0, |at| self.grab_offset(write, at.x - drag.displacement.x, before, inset));
                                 write.set(self.drag_start, Some((before, grab)));
                                 if let Some(at) = local_pos {
@@ -147,7 +147,7 @@ impl SliderState {
                             }
                             DragPhase::Cancel => {
                                 if let Some((before, _)) = write.get(self.drag_start) {
-                                    self.value.set(write, before);
+                                    write.set(self.value, before);
                                 }
                                 write.set(self.drag_start, None);
                             }
@@ -210,7 +210,7 @@ impl NumberFieldState {
     }
 
     pub fn value(self, read: &mut ReadCx<'_>) -> Option<f64> {
-        self.draft.with(read, |draft| parse_number(draft))
+        read.with(self.draft, |draft| parse_number(draft))
     }
 
     /// Commits a finite draft to the range and preserves an incomplete draft.
@@ -221,7 +221,7 @@ impl NumberFieldState {
     }
 
     fn set(self, write: &mut WriteCx<'_>, value: f64) {
-        self.draft.set(write, self.range.normalize_text(value));
+        write.set(self.draft, self.range.normalize_text(value));
     }
 
     pub fn input(self, element: TextInput) -> TextInput {
@@ -233,7 +233,7 @@ impl NumberFieldState {
             .invalid_when(move |read| self.value(read).is_none_or(|value| value < self.range.min || value > self.range.max))
             .behavior_first(|behavior| {
                 behavior
-                    .on_input(move |write, draft| self.draft.set(write, draft.into()))
+                    .on_input(move |write, draft| write.set(self.draft, draft.into()))
                     .on_submit(move |write| self.commit(write))
                     .on(HandlerKind::Blur, move |write, _| self.commit(write))
                     .on_key(move |write, event| {
@@ -264,15 +264,15 @@ impl NumberFieldState {
 }
 
 #[derive(Clone, Copy)]
-pub struct ProgressState {
-    value: ReadSignal<Option<f64>>,
+pub struct ProgressState<S> {
+    value: S,
     max: f64,
 }
 
-impl ProgressState {
-    pub fn new(value: impl IntoRead<Option<f64>>, max: f64) -> Self {
+impl<S: Readable<Option<f64>>> ProgressState<S> {
+    pub fn new(value: S, max: f64) -> Self {
         assert!(max.is_finite() && max > 0.0, "progress requires a positive finite maximum");
-        Self { value: value.into_read(), max }
+        Self { value, max }
     }
 
     pub fn value(self, read: &mut ReadCx<'_>) -> Option<f64> {

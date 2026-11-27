@@ -10,12 +10,9 @@ use std::{cmp::Ordering, fmt::Display as KeyDisplay, hash::Hash};
 #[track_caller]
 pub fn tree_view<K: Clone + Eq + Hash + KeyDisplay + 'static>(state: TreeViewState<K>, options: Option<VirtualOptions>) -> El {
     tree_view_with(state, options, move |_, key, item| {
-        let depth = item.clone();
-        let label = item.clone();
-        let branch = item.clone();
         let key = key.clone();
         let toggle = keyed(
-            move |read| match row_value(&branch, read, |row| (row.has_children, row.expanded)) {
+            move |read| match row_value(item, read, |row| (row.has_children, row.expanded)) {
                 (false, _) => "leaf",
                 (true, true) => "expanded",
                 (true, false) => "collapsed",
@@ -26,7 +23,6 @@ pub fn tree_view<K: Clone + Eq + Hash + KeyDisplay + 'static>(state: TreeViewSta
                 }
                 let glyph = if *branch == "expanded" { octara_icons::CHEVRON_DOWN } else { octara_icons::CHEVRON_RIGHT };
                 let key = key.clone();
-                let item = item.clone();
                 el().size(26.0)
                     .when(When::Touch, |style| style.min_w(TOUCH_TARGET).min_h(TOUCH_TARGET))
                     .align(AlignItems::Center)
@@ -37,7 +33,7 @@ pub fn tree_view<K: Clone + Eq + Hash + KeyDisplay + 'static>(state: TreeViewSta
                     .preserve_focus_on_press()
                     .child(icon(glyph.into()).size(sp(3.0)))
                     .on_press(move |write| {
-                        let expanded = write.read(|read| row_value(&item, read, |row| row.expanded));
+                        let expanded = write.try_with(item, |row| row.expanded).unwrap_or_default();
                         state.set_expanded(write, &key, !expanded);
                     })
             },
@@ -45,9 +41,9 @@ pub fn tree_view<K: Clone + Eq + Hash + KeyDisplay + 'static>(state: TreeViewSta
         row()
             .align(AlignItems::Center)
             .gap(sp(1.0))
-            .style_with(move |read, style| style.pl(sp(2.0 + 4.0 * row_value(&depth, read, |row| row.depth) as f32)))
+            .style_with(move |read, style| style.pl(sp(2.0 + 4.0 * row_value(item, read, |row| row.depth) as f32)))
             .child(toggle)
-            .child(text(bind(move |read| row_value(&label, read, |row| row.item.label.clone()))).min_w(0.0))
+            .child(text(bind(move |read| row_value(item, read, |row| row.item.label.clone()))).min_w(0.0))
     })
 }
 
@@ -57,7 +53,7 @@ pub fn tree_view<K: Clone + Eq + Hash + KeyDisplay + 'static>(state: TreeViewSta
 pub fn tree_view_with<K: Clone + Eq + Hash + KeyDisplay + 'static>(
     state: TreeViewState<K>,
     options: Option<VirtualOptions>,
-    mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<K, TreeRow<K>>) -> El + 'static,
+    mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<TreeRow<K>>) -> El + 'static,
 ) -> El {
     let root = col().gap(sp(0.5)).overflow_y(Overflow::Scroll).min_w(0.0);
     let render = move |build: &mut BuildCx<'_>, key: &K, row| style_row(render(build, key, row)).rounded(RadiusToken::Sm);
@@ -76,7 +72,7 @@ pub fn data_table<K, C, T>(
     rows: ReadList<K, T>,
     options: Option<VirtualOptions>,
     compare: impl Fn(&C, &T, &T) -> Ordering + 'static,
-    render_cell: impl Fn(&mut BuildCx<'_>, &C, &K, RowSignal<K, T>) -> El + Clone + 'static,
+    render_cell: impl Fn(&mut BuildCx<'_>, &C, &K, RowSignal<T>) -> El + Clone + 'static,
 ) -> El
 where
     K: Clone + Eq + Hash + KeyDisplay + 'static,
@@ -90,13 +86,10 @@ where
         columns,
         move |build, column, source| {
             let sort = column.clone();
-            let label = source.clone();
             let divider = column.clone();
-            let sort_name = source.clone();
-            let resize_name = source.clone();
-            let has_divider = build.read(|read| source.with(read, |value| value.is_some_and(|value| value.width.is_some())));
-            let sortable = build.read(|read| source.with(read, |value| value.is_some_and(|value| value.sortable)));
-            let title = text(bind(move |read| row_value(&label, read, |col| col.label.clone())))
+            let has_divider = build.read(|read| read.with(source, |value| value.width.is_some()));
+            let sortable = build.read(|read| read.with(source, |value| value.sortable));
+            let title = text(bind(move |read| row_value(source, read, |col| col.label.clone())))
                 .min_w(0.0)
                 .text_size(FontSizeToken::Sm)
                 .text_weight(500);
@@ -115,9 +108,7 @@ where
                         ButtonVariant::Ghost,
                     )
                     .justify(JustifyContent::Start)
-                    .label(bind(move |read| {
-                        locale.sort_column.replace("{item}", &row_value(&sort_name, read, |column| column.label.clone()))
-                    })),
+                    .label(bind(move |read| locale.sort_column.replace("{item}", &row_value(source, read, |column| column.label.clone())))),
                     column,
                 )
             } else {
@@ -129,7 +120,7 @@ where
                     state.resize_handle(
                         build,
                         el().label(bind(move |read| {
-                            locale.resize_column.replace("{item}", &row_value(&resize_name, read, |column| column.label.clone()))
+                            locale.resize_column.replace("{item}", &row_value(source, read, |column| column.label.clone()))
                         }))
                         .w(7.0)
                         .when(When::Touch, |style| style.min_w(TOUCH_TARGET).min_h(TOUCH_TARGET))
@@ -145,11 +136,11 @@ where
             state.column_header(build, column_layout(header, state, column.clone()), column)
         },
     ));
-    let render = move |_: &mut BuildCx<'_>, key: &K, value: RowSignal<K, T>| {
+    let render = move |_: &mut BuildCx<'_>, key: &K, value: RowSignal<T>| {
         let key = key.clone();
         let render = render_cell.clone();
         style_row(row().child(each(columns, move |build, column, _| {
-            let cell = render(build, column, &key, value.clone()).px(sp(2.0)).min_w(0.0);
+            let cell = render(build, column, &key, value).px(sp(2.0)).min_w(0.0);
             state.cell(column_layout(cell, state, column.clone()))
         })))
     };

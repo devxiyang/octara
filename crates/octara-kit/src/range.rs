@@ -50,7 +50,7 @@ pub fn number_field(build: &mut BuildCx<'_>, value: Binding<String>, min: f64, m
 /// display an indeterminate indicator. Finite values paint a bounded bar.
 #[ui]
 #[track_caller]
-pub fn progress(build: &mut BuildCx<'_>, value: impl IntoRead<Option<f64>>, max: f64) -> El {
+pub fn progress(build: &mut BuildCx<'_>, value: impl Readable<Option<f64>>, max: f64) -> El {
     let state = ProgressState::new(value, max);
     state.progress(el().label(KitLocale::get(build).progress).w(160.0).min_h(16.0).align(AlignItems::Center).child(keyed(
         move |r| state.value(r).is_some(),
