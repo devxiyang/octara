@@ -56,6 +56,7 @@
      - **Linux Native Polish**: Wayland `text-input-v3` IME, fractional HiDPI scaling, XDG Desktop Portal dark-mode/preferences integration.
   6. **Airspace Occlusion**: Implement `AirspacePolicy::SnapshotOnOcclude` automatic GPU snapshot freeze and live-view hide whenever an Octara overlay intersects an overlay native view.
   7. **Internationalization & Accessibility Preferences**: BiDi/RTL `Direction::{Ltr, Rtl}` with logical spacing/alignment (`start`/`end`), plus `SystemPreferences::{locale, text_scale, high_contrast}`.
+  8. **P0 120Hz Presentation Pacing, VSync Input Coalescing & Scroll Hot-Path Optimization**: Monotonic GPU frame presentation (eliminating `finish_draw` stale-rev discard & `Retry(+16ms)` cascade), `CAMetalDisplayLink` `preferredFrameLatency = 1` + ProMotion `CAFrameRateRange` + idle grace window, causal VSync `MouseWheel`/`CursorMoved` coalescing with real `WheelPhase`, and Release CPU/GPU profiling & optimization of `SetScroll`, `virtual_each` + `octara-markdown` mounts, and bulk list switches.
 
 ---
 

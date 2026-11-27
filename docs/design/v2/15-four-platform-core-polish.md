@@ -6,7 +6,7 @@
 
 ---
 
-## 1. Six Core Framework Mechanisms
+## 1. Seven Core Framework Mechanisms
 
 | # | Mechanism | Architectural Layer | Platforms Closed |
 | --- | --- | --- | --- |
@@ -16,6 +16,7 @@
 | **C4** | **Web Production Closure** (`visualViewport` keyboard inset, `document.title` & `theme-color`, `beforeunload`, multimodal clipboard write, ARIA `inert` focus trap) | `octara-model` / `octara-runtime` / `octara-host-web` | Web |
 | **C5** | **Desktop Drag-Out, Window Levels/Panels & Linux Native Polish** (`NSDraggingSession`/Web drag out, `WindowLevel`, floating panel, Wayland `text-input-v3` IME, fractional HiDPI, XDG Portal) | `octara-model` / `octara-tree` / `octara-runtime` / `octara-host-native` / `octara-host-web` | macOS · Linux · Web |
 | **C6** | **Airspace `SnapshotOnOcclude`, BiDi/RTL & Accessibility Preferences** (`Direction::{Ltr, Rtl}`, `SystemPreferences::{locale, text_scale, high_contrast}`) | `octara-model` / `octara-tree` / `octara-pipeline` / `octara-host-*` | All Tier-1 + WebView |
+| **C7** | **P0 120Hz Presentation Pacing, VSync Input Coalescing & Scroll / `virtual_each` Hot-Path Optimization** (monotonic GPU presentation without `Retry(+16ms)` cascade, `CAMetalDisplayLink` latency/ProMotion/idle-grace tuning, causal VSync `MouseWheel`/`CursorMoved` coalescing + real `WheelPhase`, CPU/GPU scroll & virtual-list profiling) | `octara-host-native` / `octara-pipeline` / `octara-tree` / `octara-markdown` / `octara-render` | macOS · iOS · Linux |
 
 ---
 
@@ -141,6 +142,24 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
 3. **System Accessibility & Locale Preferences (`SystemPreferences`)**:
    - Extend `SystemPreferences` with `pub locale: Arc<str>` (BCP-47, e.g. `"en-US"`, `"zh-Hans"`, `"ar"`), `pub text_scale: f32` (default `1.0`, bound to iOS Dynamic Type / Linux font scale / Web root scale), and `pub high_contrast: bool`.
 
+### 2.7 C7 — P0 120Hz Presentation Pacing, VSync Input Coalescing & Scroll / `virtual_each` Hot-Path Optimization
+1. **Eliminate Finished-Frame Discard & `Retry(+16ms)` Cascade (`octara-host-native/src/presentation.rs`, `window.rs`, `os/macos/pacing.rs`)**:
+   - **Monotonic GPU Presentation**: Replace the strict `stamp.native_rev == latest` equality rejection in `Presentation::accepts` and `HostWindow::finish_draw` with monotonic acceptance (`stamp.native_rev >= last_presented_rev`, preserving strict `tree`, `surface_generation`, `device_generation`, and `size` guards). A completed GPU frame `N` MUST still be presented even when newer input pushed `latest` to `N+1` while frame `N` was rendering; after presenting `N`, keep the display clock active so `N+1` draws on the very next VSync.
+   - **Native-View Synchronization Without Blocking Pure-Octara Frames**: Apply native view placements synchronized up to `stamp.native_rev` (keeping the `CATransaction` atomic frame-sync guarantee for mounted native views) without discarding valid completed GPU frames whenever input advances `latest`.
+   - **External Display-Link Pacing Must Never Trigger `Retry(+16ms)`**: Distinguish `DrawableAcquisition::WaitingForClock` (external `CAMetalDisplayLink` has not fired its next callback yet) from `DrawableAcquisition::Retry` (non-externally-paced surface `Timeout`/`Occluded`). Under external pacing, awaiting the next display link callback MUST NOT set `self.redraw_at = now + 16ms` and MUST NOT call out-of-band `window.request_redraw()` that would skip the incoming real VSync drawable.
+2. **`CAMetalDisplayLink` Tuning & Idle Grace Window (`config.rs`, `os/macos/pacing.rs`, `window.rs`)**:
+   - Default `metal_frame_latency` to **`1`** (down from `2`, cutting 1 full frame of interactive pipeline latency; keep `OCTARA_METAL_FRAME_LATENCY=2` override).
+   - Explicitly configure `CAFrameRateRange` (`preferredFrameRateRange`) on `CAMetalDisplayLink` for ProMotion 120Hz displays (requesting high refresh rates during scrolling/animation).
+   - In `finish_draw`, keep `frame_clock_active(true)` whenever `motion || latest > stamp.native_rev || now < clock_idle_until` (using a short ~120 ms grace window after interactive scroll/pointer/touch input so continuous scrolling never suffers cold display-link start/stop stalls, while idle windows still settle to 0 Hz / 0% CPU).
+3. **Causal VSync Input Coalescing & `WheelPhase` Fidelity (`shell.rs`)**:
+   - Map `winit`'s `MouseWheel` `TouchPhase` accurately to `WheelPhase` (stopping hardcoded `WheelPhase::Discrete`) so trackpad direct vs. momentum scroll physics work natively.
+   - Coalesce bursty `CursorMoved` (keep latest position) and `MouseWheel` (accumulate `delta` for matching `(window, phase, mods)`) before each VSync boundary, flushing immediately ahead of any discrete button/key/phase-change event to preserve strict causal ordering while avoiding redundant sub-frame `Cycle` + layout + paint passes.
+4. **Release CPU / GPU Profiling & Hot-Path Optimization (`octara-tree`, `octara-pipeline`, `octara-markdown`, `octara-render`)**:
+   - Profile and optimize three canonical workloads in Release mode with reproducible benchmarks and DST regression ceilings:
+     1. Pure `SetScroll` micro-scroll (zero new rows mounted): eliminate unnecessary style/layout/paint-compiler work on pure scroll-offset updates (target `< 0.5 ms` p95 at 120Hz).
+     2. Fast-fling `virtual_each` + `octara-markdown` row mount/recycle: optimize row mount, Markdown incremental parsing/shaping, Taffy subtree layout, and paint compilation to stay comfortably inside the `8.33 ms` 120Hz budget.
+     3. Heavy list/thread switch teardown + remount: optimize bulk scope disposal, sparse table cleanup, and initial subtree mount latency.
+
 ---
 
 ## 3. Execution Waves & Verification Gates (`0.0.9`)
@@ -148,9 +167,10 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
 ### Wave A — Gestures, Soft-Keyboard Traits, BiDi/RTL & `SystemPreferences` (Cross-Platform Core)
 - Implement **C1** (`GestureEvent`, arbiter `LongPress`/`DoubleTap`, hardware Pinch/Rotate, `ScrollDismissesKeyboard`, `PullToRefresh`), **C2** (`InputTraits`), and **C6-part** (`Direction` RTL/logical spacing + `SystemPreferences::{locale, text_scale, high_contrast}`).
 
-### Wave B — iOS & Web Production Closure
+### Wave B — P0 120Hz Presentation Pacing, Input Coalescing, Scroll Hot-Path & iOS/Web Closure
+- Implement **C7** (monotonic GPU presentation without `Retry(+16ms)` cascade, `CAMetalDisplayLink` `preferredFrameLatency=1` + `CAFrameRateRange` + idle grace window, causal VSync `MouseWheel`/`CursorMoved` coalescing + real `WheelPhase`, Release profiling & optimization of `SetScroll` / `virtual_each` + `octara-markdown` / bulk switch, plus automated overlapping-input pacing regression test).
 - Implement **C3** (iOS `UIAccessibility` VoiceOver bridge, `StatusBarStyle`, safe-area/rotation verification) and **C4** (Web `visualViewport` keyboard inset, `document.title`/`theme-color`, `beforeunload`, unified `WriteClipboard(Vec<ClipboardItem>)`, ARIA `inert` focus trap).
 
 ### Wave C — Desktop Drag-Out, Window Levels/Panels, Linux Polish & Airspace `SnapshotOnOcclude`
 - Implement **C5** (macOS/Web Drag Out, `WindowLevel` / `NSPanel`, Linux Wayland IME/HiDPI/XDG Portal) and **C6-part** (`AirspacePolicy::SnapshotOnOcclude`).
-- Pass full `0.0.9` release gate: `tools/check_layers.py`, Clippy `-D warnings`, dual Wasm + Headless Chrome smoke, `aarch64-apple-ios-sim`, full workspace + CLI doctests, and DST regression ceilings.
+- Pass full `0.0.9` release gate: `tools/check_layers.py`, Clippy `-D warnings`, dual Wasm + Headless Chrome smoke, `aarch64-apple-ios-sim`, full workspace + CLI doctests, and DST + Release pacing regression ceilings.
