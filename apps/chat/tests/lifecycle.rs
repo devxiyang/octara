@@ -366,8 +366,10 @@ struct Directory(std::path::PathBuf);
 
 impl Directory {
     fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("octara-chat-lifecycle-{}-{nonce}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("octara-chat-lifecycle-{}-{nonce}-{seq}", std::process::id()));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
