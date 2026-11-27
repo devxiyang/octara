@@ -2,6 +2,7 @@
 
 use crate::{ShellConfig, ShellEvent};
 use octara::WindowOptions;
+use octara::module::{HostSurface, HostSurfaceKind};
 use octara::runtime::{Input, WindowId};
 use octara::tree::editor::{Composition, EditorSlot};
 use octara_gpu::DrawTarget;
@@ -15,6 +16,7 @@ use octara_model::text::TextGeometry;
 use octara_model::theme::ColorScheme;
 use octara_model::window::{UserAttention, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial};
 use octara_render::{gpu::OutputColor, wgpu};
+use std::path::PathBuf;
 use std::sync::Arc;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{Ime, KeyEvent};
@@ -99,6 +101,18 @@ pub enum KeyDispatch {
 
 pub trait OsHost {
     fn initialize(&mut self, _proxy: EventLoopProxy<ShellEvent>) {}
+    fn module_surface_kind(&self) -> HostSurfaceKind {
+        platform::SURFACE_KIND
+    }
+    fn take_launch_items(&mut self) -> (Vec<String>, Vec<PathBuf>) {
+        (Vec::new(), Vec::new())
+    }
+    fn application_active(&self) -> Option<bool> {
+        None
+    }
+    fn follows_window_focus(&self) -> bool {
+        false
+    }
     fn is_ready(&self) -> bool {
         true
     }
@@ -152,6 +166,15 @@ pub trait OsHost {
 pub trait OsWindow {
     fn text_input(&mut self) -> &mut dyn WindowTextInput;
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup>;
+
+    /// Supplies handles valid while the host borrows the live window.
+    fn module_surface<'a>(&'a self, window: &'a Window, kind: HostSurfaceKind, id: WindowId) -> HostSurface<'a> {
+        let surface = HostSurface::new(kind, Some(id));
+        match platform::raw_module_surface(window) {
+            Some(raw) => surface.with_raw_native(raw),
+            None => surface,
+        }
+    }
 
     fn asks(&mut self) -> Option<&mut dyn WindowAsks> {
         None

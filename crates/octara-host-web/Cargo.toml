@@ -34,7 +34,7 @@ web-sys = { version = "0.3.107", features = [
     "CssStyleDeclaration", "DataTransfer", "Document", "DragEvent",
     "DocumentFragment", "DomException", "DomRect", "DomRectList", "Element", "Event", "EventTarget", "File", "FileList", "FocusEvent", "FocusOptions",
     "History", "HtmlCanvasElement", "HtmlDialogElement", "HtmlElement", "HtmlImageElement", "HtmlInputElement", "HtmlTextAreaElement", "ImageData", "InputEvent",
-    "KeyboardEvent", "Location", "MediaQueryList", "MessageChannel", "MessageEvent", "MessagePort", "MouseEvent", "Navigator", "Node", "NodeList", "PointerEvent", "PopStateEvent", "Range", "ResizeObserver", "Selection",
+    "KeyboardEvent", "Location", "MediaQueryList", "MessageChannel", "MessageEvent", "MessagePort", "MouseEvent", "Navigator", "Node", "NodeList", "PageTransitionEvent", "PointerEvent", "PopStateEvent", "Range", "ResizeObserver", "Selection",
     "ResizeObserverBoxOptions", "ResizeObserverEntry", "ResizeObserverOptions", "ScrollBehavior", "ScrollToOptions", "Text",
     "TextMetrics", "Url", "Window", "Performance", "console",
 ] }

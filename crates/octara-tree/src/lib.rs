@@ -637,7 +637,9 @@ impl Tree {
             NodeContent::Native { kind, slot } => {
                 self.nodes[node].flags.insert(NodeFlags::HAS_NATIVE);
                 self.nodes[node].present.insert(TableMask::NATIVES);
-                self.tables.natives.insert(node, NativeSlot { kind, slot, props: serde_json::Value::Null, props_rev: 0, live: false });
+                self.tables
+                    .natives
+                    .insert(node, NativeSlot { kind, slot, props: serde_json::Value::Null, typed_props: None, props_rev: 0, live: false });
                 self.native_index.insert(node);
             }
         }
@@ -771,6 +773,9 @@ impl Tree {
             self.nodes[node].present.remove(TableMask::STYLES);
             let style = self.tables.styles.remove(node).expect("style slot");
             self.style_interner.release(style.resolved);
+        }
+        if self.nodes[node].present.contains(TableMask::NATIVES) {
+            delta.retired_native_props.extend(self.tables.natives[node].typed_props.take());
         }
         if let Some(asset) = self.tables.remove(node, self.nodes[node].present) {
             delta.retired_assets.push(asset);
@@ -993,8 +998,16 @@ impl Tree {
             }
             NodeChange::NativeProps(props) => {
                 let native = &mut self.tables.natives[node];
-                if native.props != props {
+                if native.typed_props.is_none() && native.props != props {
                     native.props = props;
+                    native.props_rev = native.props_rev.wrapping_add(1);
+                    self.content_changed(node, delta);
+                }
+            }
+            NodeChange::TypedNativeProps(props) => {
+                let native = &mut self.tables.natives[node];
+                if native.typed_props.as_ref() != Some(&props) {
+                    delta.retired_native_props.extend(native.typed_props.replace(props));
                     native.props_rev = native.props_rev.wrapping_add(1);
                     self.content_changed(node, delta);
                 }

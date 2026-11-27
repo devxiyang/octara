@@ -94,7 +94,7 @@ impl Scope<'_> {
 
 #[derive(Default)]
 struct Staging {
-    // A turn can project several feedback rounds. Revisit their dirty inputs against the
+    // A cycle can project several feedback rounds. Revisit their dirty inputs against the
     // committed baseline so changes that are superseded before commit never escape.
     dirty: FxHashSet<NodeId>,
     moved: FxHashSet<NodeId>,

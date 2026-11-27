@@ -189,6 +189,7 @@ impl WindowNativeViews for Views {
                 NativeChange::Destroy { id } => {
                     self.hosted.remove(id);
                 }
+                NativeChange::CreateTyped { .. } | NativeChange::UpdateTyped { .. } => {}
             }
         }
     }

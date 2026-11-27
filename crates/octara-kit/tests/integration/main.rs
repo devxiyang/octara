@@ -1,4 +1,4 @@
-//! Component behavior through native layout and the v2 event turn.
+//! Component behavior through native layout and the v2 event cycle.
 
 use octara::{
     EditorEvent, EditorSession, HostCommand, HostReply, Input, InteractionEvent, NodeId, PointerId, PointerKind, Tree, WindowRuntime,

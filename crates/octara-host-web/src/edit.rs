@@ -2,7 +2,7 @@
 
 use crate::{Driver, dom, event_element, modifiers, rich, services::clipboard_image, undo::DomUndoLog};
 use octara::App;
-use octara::runtime::{Input, WindowId, turn::TurnError};
+use octara::runtime::{Input, WindowId, cycle::AppError};
 use octara::tree::{
     Tree,
     editor::{EditorSession, EditorSlot},
@@ -173,20 +173,20 @@ impl Driver {
         for target in [self.mount.as_ref(), self.document.as_ref()] {
             self.listen(target, "selectionchange", false, |driver, _| {
                 if let Some(field) = driver.active_field()
-                    && let Err(error) = driver.turn(|app, window| driver.sync_selection(app, window, &field))
+                    && let Err(error) = driver.cycle(|app, window| driver.sync_selection(app, window, &field))
                 {
                     driver.report_error(error);
                 }
             })?;
         }
         self.listen(self.document.as_ref(), "selectionchange", false, |driver, _| {
-            if let Err(error) = driver.turn(|app, window| driver.sync_document_selection(app, window)) {
+            if let Err(error) = driver.cycle(|app, window| driver.sync_document_selection(app, window)) {
                 driver.report_error(error);
             }
         })?;
         self.listen(self.mount.as_ref(), "select", false, |driver, event| {
             if let Some(field) = driver.event_field(&event)
-                && let Err(error) = driver.turn(|app, window| driver.sync_selection(app, window, &field))
+                && let Err(error) = driver.cycle(|app, window| driver.sync_selection(app, window, &field))
             {
                 driver.report_error(error);
             }
@@ -203,7 +203,7 @@ impl Driver {
                 && let Some(text) = input.data_transfer().and_then(|data| data.get_data("text/plain").ok()).or_else(|| input.data())
             {
                 event.prevent_default();
-                if let Err(error) = driver.turn(|app, window| {
+                if let Err(error) = driver.cycle(|app, window| {
                     driver.sync_selection(app, window, &field)?;
                     let paste = PasteEvent { items: vec![ClipboardItem::Text(text)] };
                     app.dispatch(window, Input::Host(HostReply::Paste(paste)))?;
@@ -217,7 +217,7 @@ impl Driver {
                 event.prevent_default();
                 return;
             }
-            if let Err(error) = driver.turn(|app, window| {
+            if let Err(error) = driver.cycle(|app, window| {
                 driver.sync_selection(app, window, &field)?;
                 let stamp = Stamp::read(app, window, field.node).filter(|_| {
                     field.read().zip(editor_slot(app, window, field.node)).is_some_and(|(observed, editor)| observed.text == editor.value())
@@ -236,7 +236,7 @@ impl Driver {
             }
             let before = driver.editor.before.take();
             let Some(observed) = field.read() else { return };
-            if let Err(error) = driver.turn(|app, window| {
+            if let Err(error) = driver.cycle(|app, window| {
                 if let Some(stamp) = before.filter(|stamp| stamp.session.node == field.node && stamp.current(app, window)) {
                     let kind = match input.input_type().as_str() {
                         "insertText" => CommitKind::Typing,
@@ -259,7 +259,7 @@ impl Driver {
         })?;
         self.listen(self.mount.as_ref(), "compositionstart", false, |driver, event| {
             let Some(field) = driver.event_field(&event) else { return };
-            if let Err(error) = driver.turn(|app, window| {
+            if let Err(error) = driver.cycle(|app, window| {
                 driver.sync_selection(app, window, &field)?;
                 let stamp = Stamp::read(app, window, field.node);
                 driver.editor.before.set(None);
@@ -275,7 +275,7 @@ impl Driver {
             let Some(field) = driver.event_field(&event) else { return };
             let Some(text) = event.dyn_ref::<CompositionEvent>().and_then(CompositionEvent::data) else { return };
             let Some(stamp) = driver.editor.composition.get().filter(|stamp| stamp.session.node == field.node) else { return };
-            if let Err(error) = driver.turn(|app, window| {
+            if let Err(error) = driver.cycle(|app, window| {
                 if stamp.current(app, window) {
                     let end = text.len();
                     app.dispatch(
@@ -363,7 +363,7 @@ impl Driver {
     }
 
     fn paste(self: &Rc<Self>, event: &Event) {
-        if event.default_prevented() {
+        if event.default_prevented() || event_element(event).as_ref().and_then(dom::native_view_host).is_some() {
             return;
         }
         let Some(clipboard) = event.dyn_ref::<ClipboardEvent>().and_then(ClipboardEvent::clipboard_data) else { return };
@@ -384,7 +384,7 @@ impl Driver {
         }
         // Browser clipboard files expose a Blob and a basename, with no local path.
         event.prevent_default();
-        let context = self.turn(|app, window| {
+        let context = self.cycle(|app, window| {
             if let Some(field) = &field {
                 self.sync_selection(app, window, field)?;
             }
@@ -411,7 +411,7 @@ impl Driver {
                 }
             }
             let Some(driver) = driver.upgrade().filter(|driver| !driver.stopped.get()) else { return };
-            if let Err(error) = driver.turn(|app, window| {
+            if let Err(error) = driver.cycle(|app, window| {
                 if PasteContext::read(app, window) == Some(context) {
                     app.dispatch(window, Input::Host(HostReply::Paste(PasteEvent { items })))?;
                 }
@@ -442,7 +442,7 @@ impl Driver {
     }
 
     fn rich_key(&self, field: &Field, key: KeyEvent) {
-        if let Err(error) = self.turn(|app, window| {
+        if let Err(error) = self.cycle(|app, window| {
             self.sync_selection(app, window, field)?;
             if let Some(stamp) = Stamp::read(app, window, field.node) {
                 app.dispatch(window, Input::Editor(EditorEvent::KeyFallback { session: stamp.session, expected_rev: stamp.rev, key }))?;
@@ -454,7 +454,7 @@ impl Driver {
     }
 
     fn rich_insert(&self, field: &Field, text: String) {
-        if let Err(error) = self.turn(|app, window| {
+        if let Err(error) = self.cycle(|app, window| {
             self.sync_selection(app, window, field)?;
             if let Some(stamp) = Stamp::read(app, window, field.node)
                 && let Some(editor) = editor_slot(app, window, field.node)
@@ -476,7 +476,7 @@ impl Driver {
     }
 
     fn report_focus(&self) {
-        if let Err(error) = self.turn(|app, window| {
+        if let Err(error) = self.cycle(|app, window| {
             let element = self.document.active_element();
             let visible = element.as_ref().is_some_and(|element| element.matches(":focus-visible").unwrap_or(false));
             let node = element.and_then(|element| self.dom.node(element.as_ref()));
@@ -498,12 +498,15 @@ impl Driver {
     }
 
     fn keydown(&self, event: &Event) {
+        if event_element(event).as_ref().and_then(dom::native_view_host).is_some() {
+            return;
+        }
         let Some(key) = event.dyn_ref::<KeyboardEvent>().filter(|key| !key.is_composing()) else { return };
         let Some(key) = browser_key_event(key) else { return };
         let field = self.event_field(event);
         let shortcut_key = key.modifiers.intersects(Modifiers::META | Modifiers::CTRL | Modifiers::ALT);
         let shortcut = self.services.borrow().shortcut(key);
-        let handled = self.turn(|app, window| {
+        let handled = self.cycle(|app, window| {
             let authored_shortcut = app.runtime().window(window).is_some_and(|window| window.has_shortcut(key));
             let managed_tab = app.runtime().window(window).is_some_and(|window| window.tree().manages_tab());
             if let Some(field) = field.as_ref() {
@@ -642,7 +645,7 @@ impl Driver {
         Some([self.document_address(tree, anchor)?, self.document_address(tree, focus)?])
     }
 
-    fn sync_document_selection(&self, app: &mut App, window: WindowId) -> Result<(), TurnError> {
+    fn sync_document_selection(&self, app: &mut App, window: WindowId) -> Result<(), AppError> {
         let Some(tree) = editor_tree(app, window) else { return Ok(()) };
         let observed = self.active_field().is_none().then(|| self.document_endpoints(tree)).flatten();
         let observed = observed.and_then(|points| selection_region(tree, points).map(|region| (region, points)));
@@ -682,7 +685,7 @@ impl Driver {
         Field::new(self.dom.node(element.as_ref())?, element)
     }
 
-    fn sync_selection(&self, app: &mut App, window: WindowId, field: &Field) -> Result<(), TurnError> {
+    fn sync_selection(&self, app: &mut App, window: WindowId, field: &Field) -> Result<(), AppError> {
         if self.editor.ending.get().is_some() {
             return Ok(());
         }
@@ -740,7 +743,7 @@ impl Driver {
         }
         self.editor.ending.set(None);
         self.dom.set_composing(None);
-        if let Err(error) = self.turn(|app, window| {
+        if let Err(error) = self.cycle(|app, window| {
             if stamp.current(app, window) && field.active() {
                 let session = stamp.session;
                 let expected_rev = stamp.rev;

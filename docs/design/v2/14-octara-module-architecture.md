@@ -1,13 +1,13 @@
 # 14 — Cycle Terminology Cleanup & `octara::module` Platform Extension Architecture (`0.0.8`)
 
 > **Design premise**: Give Octara first-class, zero-fork platform extensibility across macOS, iOS, Desktop, Web, and Headless DST without bloating core crates, introducing circular dependencies, or relying on linker magic.  
-> **Zero-baggage rule**: Replace awkward `Turn` naming with `AppError` / `Cycle` / `CycleReceipt` directly (no compatibility aliases), and migrate hardcoded native slots (`webkit`, `video`) and file pickers onto the single unified `octara::module` SPI.
+> **Zero-baggage rule**: Use `AppError` / `Cycle` / `CycleReceipt` directly (no compatibility aliases), and migrate hardcoded native slots (`webkit`, `video`) and file pickers onto the single unified `octara::module` SPI.
 
 ---
 
-## 1. Runtime Terminology Cleanup (`turn.rs` → `cycle.rs`)
+## 1. Runtime Cycle
 
-The atomic `Ingress → React → Commit → Project → Publish` execution pass is renamed from `turn` to **`cycle`**, while exposing an immediately clear error type at the application boundary:
+The atomic `Ingress → React → Commit → Project → Publish` execution pass is a **`cycle`**, with a shared error type at the application boundary:
 
 | Legacy Symbol / Path | New Canonical Symbol / Path | Visibility |
 | --- | --- | --- |
@@ -16,12 +16,13 @@ The atomic `Ingress → React → Commit → Project → Publish` execution pass
 | `TurnError` | **`AppError`** | Public (`octara::AppError`, `octara::prelude::AppError`, `octara_runtime::cycle::AppError`) |
 | `TurnReceipt` | **`CycleReceipt`** | Public (`octara::CycleReceipt`, `octara_runtime::cycle::CycleReceipt`) |
 | `run_turn` / `drive_turn` / `begin_turn` | `run_cycle` / `drive_cycle` / `begin_cycle` | Crate-internal |
+| `ReplayError::Turn` | `ReplayError::Cycle` | Public (octara-inspect) |
 | `AppError::AppFailed` display text | `"application stopped after a failed cycle"` | Public |
 
 **Requirements**:
-1. Zero deprecated type aliases (`pub type TurnError = AppError` is forbidden).
+1. Do not add deprecated type aliases.
 2. Update all call sites across `octara-runtime`, `octara`, `octara-headless`, `octara-host-native`, `octara-host-web`, `octara-inspect`, `apps/`, `examples/`, and `docs/`.
-3. Update `crates/octara-inspect/src/replay.rs` error variant `ReplayError::Turn` → `ReplayError::Cycle`.
+3. Use `ReplayError::Cycle` in `crates/octara-inspect/src/replay.rs`.
 
 ---
 
@@ -133,6 +134,8 @@ pub enum HostLifecycleEvent {
 }
 ```
 
+`ModuleId` borrows from static input when deserializing. For dynamic input, decode the ID as a string and resolve it against the application's registered IDs.
+
 ---
 
 ### 2.3 Layer 1 — Runtime Contracts (`octara-runtime::module`)
@@ -179,6 +182,9 @@ pub trait ModuleCall: 'static {
 
     /// Optional structured summary for Inspect / DST logs (never emitted when `SENSITIVE == true`).
     fn inspect_args(&self) -> Option<serde_json::Value> { None }
+
+    /// Optional structured summary for a successful result.
+    fn inspect_output(_value: &Self::Output) -> Option<serde_json::Value> { None }
 }
 
 pub trait ModuleEvent: Clone + 'static {
@@ -201,6 +207,8 @@ pub trait ModuleEvent: Clone + 'static {
 - At the start of every `Cycle` (`Ingress`), `AppRuntime::drain_module_messages()`:
   1. Drops resolutions whose originating `ScopeId` has retired (and guarantees `OctaraModule::cancel(ticket)` was dispatched when the scope retired).
   2. Delivers all surviving call completions and module events into the current `Cycle`, coalescing resulting reactive signal writes into a single commit and layout pass.
+- Synchronous replies can carry any `'static` output. Replies and events posted by workers require `Send` data. Workers receive `ModuleError::Busy` when the inbox is full and `ModuleError::Cancelled` after shutdown. A host running on the UI thread can drive a lifecycle event directly through ingress while draining the worker inbox.
+- Lifecycle broadcasts visit installed modules in `ModuleId` order, then live subscribers in registration order. Typed observations in Inspect Replay are summaries. The original Rust payload remains available only within the process.
 
 #### 2.3.4 `OctaraModule` Lifecycle & Registration Trait
 ```rust
@@ -247,9 +255,10 @@ pub struct NativeViewEmitter {
 
 impl NativeViewEmitter {
     /// Emit a typed native view event delivered to the owning view node's typed listener.
-    pub fn emit<E: Clone + Send + 'static>(&self, name: &'static str, payload: E, inspect: Option<serde_json::Value>);
+    pub fn emit<E: Send + 'static>(&self, name: &'static str, payload: E, inspect: Option<serde_json::Value>)
+        -> Result<(), ModuleError>;
     /// Complete an asynchronous native view snapshot request.
-    pub fn finish_snapshot(&self, request: NativeSnapshotRequest, snapshot: NativeSnapshot);
+    pub fn finish_snapshot(&self, request: NativeSnapshotRequest, snapshot: NativeSnapshot) -> Result<(), ModuleError>;
 }
 
 pub trait NativeViewFactory: 'static {
@@ -379,7 +388,7 @@ Capabilities required by virtually every UI tree or tightly coupled to the windo
 ## 4. Phased Implementation Plan & Verification Gates
 
 ### Wave 1 — Cycle Naming Cleanup + `octara::module` Spine Foundation
-1. **Cycle Rename**: Rename `turn.rs` → `cycle.rs`, `TurnError` → `AppError`, `TurnReceipt` → `CycleReceipt` across the entire workspace (zero aliases).
+1. **Cycle Rename**: Apply the terminology changes in §1 across the entire workspace (zero aliases).
 2. **Layer 0 & Layer 1 Spine**: Implement `octara-model::module` and `octara-runtime::module` (`ModuleRegistry`, `ModuleDispatcher`, `HostSurface`, `ModuleCall`, `ModuleEvent`, `OctaraModule`, `NativeViewFactory`, `NativeViewInstance`, `NativeViewRegistry`, `HostLifecycleEvent`, `AirspacePolicy`, `ScopeId` auto-cancellation, `Ingress` drain).
 3. **Facade & Authoring**: Export `octara::module`; wire `AppDefinition::with_module`, `WriteCx::call_module` / `notify_module`, `TaskCx::call_module`, `BuildCx::on_module_event` / `on_lifecycle`.
 4. **Host & DST Plumbing**: Wire `HostSurface`, `NativeViewRegistry`, `ModuleDispatcher` wake integration, and `HostLifecycleEvent` forwarding into `octara-host-native`, `octara-host-web`, and `HeadlessDriver` (`stub_module_call`, `emit_module_event`, `dispatch_lifecycle`).

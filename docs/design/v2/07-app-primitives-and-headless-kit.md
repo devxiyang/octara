@@ -143,7 +143,7 @@ All 5 scenarios MUST have dedicated automated tests in `crates/octara-headless/t
 2. Combobox IME composition Enter does not commit an option; post-composition Enter commits once; keyboard navigation to off-viewport virtual options calls `reveal_row`, mounts the row, and only then publishes `active_descendant`.
 3. Non-modal Popover inside modal Dialog: Escape dismisses only the top layer; clicking an external focusable control lets that control keep focus; nested portals stay inside logical scope.
 4. Closing & immediately reopening an exiting overlay cancels stale `ExitFinished` without unmounting the reopened content; Agent/input eligibility tracks current logical state.
-5. Controlled `Field` label change preserves editor mount identity & reports updated accessible name in the same turn; manual `Tabs` separates focus from selection until confirmed.
+5. Controlled `Field` label change preserves editor mount identity & reports updated accessible name in the same cycle; manual `Tabs` separates focus from selection until confirmed.
 
 ---
 

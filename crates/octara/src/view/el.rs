@@ -15,7 +15,7 @@ use octara_model::{
         PasteEvent,
     },
     motion::Curve,
-    native::{NativeEvent, NativeSlot},
+    native::{NativeEvent, NativeSlot, TypedNativeProps},
     paint::{Canvas, Icon, Image, NodeIcon, ObjectFit, PaintInput, PaintMount, PaintProgram},
     semantics::{Checked, Live, NumericRange, Role},
     style::{FlexDirection, State, StyleProp, When},
@@ -81,6 +81,11 @@ struct Semantics {
     dynamic: SmallVec<[ReadSemantics; 2]>,
 }
 
+enum NativeProps {
+    Json(Prop<serde_json::Value>),
+    Typed(Prop<TypedNativeProps>),
+}
+
 struct ElementProps {
     content: Content,
     origin: &'static Location<'static>,
@@ -109,7 +114,7 @@ struct ElementProps {
     portals: SmallVec<[Portal; 1]>,
     custom_paint: Option<(PaintProgram, Prop<PaintInput>)>,
     transition_paint: Option<(PaintProgram, Prop<u64>, Curve)>,
-    native_props: Option<Prop<serde_json::Value>>,
+    native_props: Option<NativeProps>,
     image_state: Option<Signal<ImageState>>,
 }
 
@@ -180,7 +185,7 @@ impl ElementProps {
         set_key_context(Arc<str>) => key_context,
         set_layer(LayerPolicy) => layer,
         set_layer_group(LayerGroupId) => layer_group,
-        set_native_props(Prop<serde_json::Value>) => native_props,
+        set_native_props(NativeProps) => native_props,
     }
 
     #[inline(never)]
@@ -406,6 +411,12 @@ pub fn canvas(draw: impl FnMut(&mut ReadCx<'_>, &mut Canvas) + 'static) -> El {
 #[track_caller]
 pub fn native_view(kind: &'static str) -> El {
     element(Content::Node(NodeContent::Native { kind, slot: NativeSlot::Overlay }))
+}
+
+/// A view backed by a factory registered by one of the application's modules.
+#[track_caller]
+pub fn typed_native_view(kind: &'static str, props: impl IntoProp<TypedNativeProps>) -> El {
+    native_view(kind).typed_native_props(props)
 }
 
 #[track_caller]
@@ -1063,7 +1074,13 @@ impl El {
     }
 
     pub fn native_props(mut self, props: impl IntoProp<serde_json::Value>) -> Self {
-        self.props.set_native_props(props.into_prop());
+        self.props.set_native_props(NativeProps::Json(props.into_prop()));
+        self
+    }
+
+    /// Supplies an in-process payload to a registered native view factory.
+    pub fn typed_native_props(mut self, props: impl IntoProp<TypedNativeProps>) -> Self {
+        self.props.set_native_props(NativeProps::Typed(props.into_prop()));
         self
     }
 
@@ -1072,6 +1089,19 @@ impl El {
             if let HandlerEvent::Native(event) = event {
                 f(w, event);
             }
+        })
+    }
+
+    /// Handles events whose payload has the requested Rust type.
+    pub fn on_typed_native<E: 'static>(self, f: impl Fn(&mut WriteCx<'_>, &'static str, &E) + 'static) -> Self {
+        self.handle(HandlerKind::Native, move |w, event| {
+            if let HandlerEvent::TypedNative(event) = event
+                && let Some(payload) = event.downcast_ref::<E>()
+            {
+                f(w, event.name, payload);
+                return HandlerOutcome { consumed: true, ..Default::default() };
+            }
+            HandlerOutcome::default()
         })
     }
 }
@@ -1293,7 +1323,7 @@ pub(crate) fn build_el(
                 || ("video", serde_json::to_value(&source).expect("video properties serialize")),
                 |surface| (surface.kind, surface.props),
             );
-            props.native_props = Some(Prop::Static(properties));
+            props.native_props = Some(NativeProps::Json(Prop::Static(properties)));
             allocate(cx, NodeContent::Native { kind, slot: NativeSlot::Overlay })
         }
         Content::Text(text) => {
@@ -1408,7 +1438,11 @@ pub(crate) fn build_el(
     mount_prop(cx, node, props.id, |id| NodeChange::Id(Some(id)));
     mount_prop(cx, node, props.test_id, |id| NodeChange::TestId(Some(id)));
     mount_prop(cx, node, props.disabled, NodeChange::Disabled);
-    mount_prop(cx, node, props.native_props, NodeChange::NativeProps);
+    match props.native_props {
+        Some(NativeProps::Json(props)) => mount_prop(cx, node, Some(props), NodeChange::NativeProps),
+        Some(NativeProps::Typed(props)) => mount_prop(cx, node, Some(props), NodeChange::TypedNativeProps),
+        None => {}
+    }
     if let Some(signal) = props.image_state {
         cx.observe_image_state(node, signal);
     }

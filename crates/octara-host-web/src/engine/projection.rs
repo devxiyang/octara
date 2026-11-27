@@ -374,7 +374,7 @@ impl DomEngine {
         }
         for node in styles.iter() {
             if tree.is_live(node)
-                && let Some(slot) = tree.native(node).filter(|slot| slot.kind == "video")
+                && let Some(slot) = tree.native(node).filter(|slot| slot.kind == "video" && slot.typed_props.is_none())
             {
                 self.update_video(node, &slot.props)?;
             }

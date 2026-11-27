@@ -29,7 +29,8 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
     };
     let positioned_content = matches!(kind, NodeKind::Canvas | NodeKind::Icon | NodeKind::Media)
         || tree.paint(node).is_some_and(|paint| paint.custom.is_some())
-        || tree.editor(node).is_some_and(|editor| editor.is_rich());
+        || tree.editor(node).is_some_and(|editor| editor.is_rich())
+        || tree.native(node).is_some_and(|slot| slot.typed_props.is_some());
     let display = match l.display {
         Display::None => "none",
         Display::Flex if kind == NodeKind::Link => "inline",
@@ -279,7 +280,7 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
             let _ = write!(css, "width:{width}px;");
         }
     }
-    if kind == NodeKind::Native && tree.native(node).is_some_and(|slot| slot.kind == "video") {
+    if kind == NodeKind::Native && tree.native(node).is_some_and(|slot| slot.kind == "video" && slot.typed_props.is_none()) {
         css.push_str("object-fit:contain;");
     }
     if matches!(kind, NodeKind::Text | NodeKind::TextInput) || activatable {

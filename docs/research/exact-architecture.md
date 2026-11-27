@@ -71,7 +71,7 @@ Wayland 光标是个更小的分层例子。编辑器提供当前光标几何，
 
 ## 对 Octara 第 6 阶段的设计结论
 
-当前 `AppState::frame` 在全 App 轮次内推动任务、Signals、窗口生命周期与每窗准备。窗口准备会执行焦点、命令和布局反馈，其中有回调能写共享状态。准备之后，窗口提交仍检查全 App 的待执行工作。这里的全局屏障保护了真实存在的反馈依赖。要缩小它，首先要把两类工作从同一路径拆开。[App 结算和提交](../../crates/octara-runtime/src/turn.rs) · [窗口准备与结算](../../crates/octara-runtime/src/turn.rs) · [布局反馈的执行权限](../../crates/octara-runtime/src/engine.rs)
+当前 `AppState::frame` 在全 App 轮次内推动任务、Signals、窗口生命周期与每窗准备。窗口准备会执行焦点、命令和布局反馈，其中有回调能写共享状态。准备之后，窗口提交仍检查全 App 的待执行工作。这里的全局屏障保护了真实存在的反馈依赖。要缩小它，首先要把两类工作从同一路径拆开。[App 结算和提交](../../crates/octara-runtime/src/cycle.rs) · [窗口准备与结算](../../crates/octara-runtime/src/cycle.rs) · [布局反馈的执行权限](../../crates/octara-runtime/src/engine.rs)
 
 1. **有写权限的工作由 App 按因果顺序结算。** 让回调、Signals 传播、生命周期请求和需要回到应用的布局反馈保有明确的结算边界。尚未运行且可写任意 Signal 的回调，按可能影响所有窗口处理。上一轮的动态订阅只能描述上次读取，分支变化后可能写到别处。
 2. **纯窗口投影只消费已结算、带版本的数据。** 从这里逐步移除全 App 窗口轮次。只让可冻结、可续做的框架操作按窗调度。提交前核对 App 版本、窗口实例、视口与相关资源，任何需要调用应用的反馈回到有序协议。先保住当前公开入口可见的回调和 `settle` 语义。几何、命中、无障碍和原生放置应一致来自同一个已完成的窗口版本。[窗口输出与场景](../../crates/octara-host-native/src/presentation.rs)

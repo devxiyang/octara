@@ -3,7 +3,8 @@
 use crate::os::{self, HostEvent, KeyDispatch, OsHost, OsWindowContext};
 use crate::window::{Device, FileDrop, HostWindow, transparent_background};
 use crate::{NativeAppOptions, ShellConfig, ShellError, ShellHook, trace};
-use octara::runtime::turn::TurnError;
+use octara::module::HostLifecycleEvent;
+use octara::runtime::cycle::AppError;
 use octara::runtime::{HostCommand, Input, RestartState, WindowId};
 use octara::tree::editor::EditorSession;
 use octara::{App, AppDefinition, WindowOptions};
@@ -19,7 +20,7 @@ use octara_model::input::{
     Button, ContactTarget, DroppedFile, EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, Modifiers, PointerId, PointerKind,
     TextEdit, WheelPhase,
 };
-use octara_model::native::NativeEvent;
+use octara_model::native::{NativeEvent, TypedNativeCommand};
 use octara_model::theme::ColorScheme;
 use octara_model::window::{SystemPreferences, WindowMaterial};
 use octara_pipeline::{NativeEngine, NativeEngineConfig, NativePublication};
@@ -40,6 +41,7 @@ use winit::window::{Window, WindowId as HostId};
 pub enum ShellEvent {
     Wake,
     PlatformReady,
+    Lifecycle(HostLifecycleEvent),
     Device { generation: u64, notice: DeviceNotice },
     Input { window: WindowId, input: Input },
     Frame { window: WindowId, target: Instant },
@@ -72,6 +74,9 @@ pub(crate) struct Shell {
     app: App,
     os: Box<dyn OsHost>,
     proxy: EventLoopProxy<ShellEvent>,
+    pending_lifecycle: Vec<HostLifecycleEvent>,
+    foreground: Option<bool>,
+    focus_changed: bool,
     frame_sources: Rc<RefCell<BTreeMap<WindowId, NativePublication>>>,
     windows: BTreeMap<WindowId, HostWindow>,
     ids: HashMap<HostId, WindowId>,
@@ -106,6 +111,7 @@ impl Shell {
         });
         let thread_setup = os.utility_thread_setup().unwrap_or(|| {});
         app.runtime_mut().set_media_loader(crate::media::NativeMediaLoader { thread_setup });
+        app.runtime_mut().set_module_host_kind(os.module_surface_kind());
         let wake = proxy.clone();
         app.runtime_mut().set_wake(Some(Arc::new(move || {
             let _ = wake.send_event(ShellEvent::Wake);
@@ -121,6 +127,9 @@ impl Shell {
             app,
             os,
             proxy,
+            pending_lifecycle: Vec::new(),
+            foreground: None,
+            focus_changed: false,
             frame_sources,
             windows: BTreeMap::new(),
             ids: HashMap::new(),
@@ -203,10 +212,21 @@ impl Shell {
         host.initial_fullscreen = initial_fullscreen;
         self.ids.insert(window.id(), id);
         self.windows.insert(id, host);
+        self.lifecycle(HostLifecycleEvent::WindowAttached { window: id })?;
         if let Some(theme) = window.theme() {
             self.refresh_system_preferences(Some(color_scheme(theme)), None)?;
         }
         self.refresh_viewport(id)
+    }
+
+    fn detach_window(&mut self, id: WindowId) -> Result<(), String> {
+        self.frame_sources.borrow_mut().remove(&id);
+        if let Some(host) = self.windows.remove(&id) {
+            self.ids.remove(&host.window.id());
+            drop(host);
+            self.lifecycle(HostLifecycleEvent::WindowDetached { window: id })?;
+        }
+        Ok(())
     }
 
     fn dispatch(&mut self, id: WindowId, input: Input) -> Result<bool, String> {
@@ -236,7 +256,7 @@ impl Shell {
         }
         match receipt {
             Ok(receipt) => Ok(receipt.handled),
-            Err(TurnError::UnknownWindow(_)) => Ok(false),
+            Err(AppError::UnknownWindow(_)) => Ok(false),
             Err(error) => Err(error.to_string()),
         }
     }
@@ -246,12 +266,7 @@ impl Shell {
         for command in self.app.runtime_mut().take_host_commands() {
             match command {
                 HostCommand::Opened(id) => self.create_window(event_loop, id)?,
-                HostCommand::Closed(id) => {
-                    if let Some(host) = self.windows.remove(&id) {
-                        self.ids.remove(&host.window.id());
-                    }
-                    self.frame_sources.borrow_mut().remove(&id);
-                }
+                HostCommand::Closed(id) => self.detach_window(id)?,
                 HostCommand::Menus(menus) => self.os.set_menus(&menus),
                 HostCommand::UpdateWindowPresentation { window, title, color_scheme, material } => {
                     if let Some(host) = self.windows.get_mut(&window) {
@@ -315,7 +330,7 @@ impl Shell {
                         asks.withdraw_ask(id);
                     }
                 }
-                HostCommand::NativeCommand { window, command } => native_commands.push((window, command)),
+                command @ (HostCommand::NativeCommand { .. } | HostCommand::TypedNativeCommand { .. }) => native_commands.push(command),
                 HostCommand::OpenUrl { url } => self.os.open_url(&url),
                 HostCommand::Service { window, id, request } => {
                     let Some(host) = self.windows.get_mut(&window) else { continue };
@@ -339,17 +354,32 @@ impl Shell {
             }
         }
         self.synchronize()?;
-        for (window, command) in native_commands {
-            let live = self.app.runtime().window(window).is_some_and(|state| {
-                let tree = state.tree();
-                let node = command.id.node();
-                tree.is_live(node) && tree.native(node).is_some_and(|native| native.live)
-            });
-            if live && let Some(native) = self.windows.get_mut(&window).and_then(|host| host.os.native_views()) {
-                native.send_native_command(command);
+        for command in native_commands {
+            match command {
+                HostCommand::NativeCommand { window, command } => {
+                    if let Some(native) = self.live_native_host(window, command.id).and_then(|host| host.os.native_views()) {
+                        native.send_native_command(command);
+                    }
+                }
+                HostCommand::TypedNativeCommand { window, command } => self.send_typed_native_command(window, command),
+                _ => unreachable!("queued native commands only"),
             }
         }
         Ok(())
+    }
+
+    fn live_native_host(&mut self, window: WindowId, id: NativeId) -> Option<&mut HostWindow> {
+        let tree = self.app.runtime().window(window)?.tree();
+        let node = id.node();
+        let live = tree.is_live(node) && tree.native(node).is_some_and(|native| native.live);
+        if live { self.windows.get_mut(&window) } else { None }
+    }
+
+    fn send_typed_native_command(&mut self, window: WindowId, command: TypedNativeCommand) {
+        let dispatcher = self.app.runtime().module_dispatcher();
+        if let Some(host) = self.live_native_host(window, command.id) {
+            host.native_mounts.command(command, &dispatcher);
+        }
     }
 
     fn refresh_viewport(&mut self, window: WindowId) -> Result<(), String> {
@@ -404,29 +434,44 @@ impl Shell {
     fn synchronize(&mut self) -> Result<(), String> {
         let mut upcoming = Vec::new();
         self.os.drain_platform_events(&mut upcoming);
+        let kind = self.os.module_surface_kind();
+        let runtime = self.app.runtime_mut();
+        let dispatcher = runtime.module_dispatcher();
         for host in self.windows.values_mut() {
-            let Some(runtime) = self.app.runtime().window(host.id) else { continue };
+            if runtime.window(host.id).is_none() {
+                continue;
+            }
             if let Some(frame) = host.publication.latest().filter(|frame| Some(frame.number) != host.synchronized) {
-                host.synchronize(runtime, &frame);
-                if let Some(native_views) = host.os.native_views() {
-                    let tree = runtime.tree();
-                    for id in tree.native_nodes() {
-                        let native = tree.native(id).expect("indexed native");
-                        let live = native_views.shows_native(native.kind, native.slot);
-                        if live != native.live {
-                            upcoming.push(HostEvent {
-                                window: host.id,
-                                input: Input::Host(HostReply::NativeLive { target: tree.guard(id), live }),
-                            });
-                        }
+                host.synchronize_native(kind, runtime, &dispatcher);
+                let window = runtime.window(host.id).expect("attached runtime window");
+                host.synchronize(window, &frame);
+                let tree = window.tree();
+                let mut built_in = host.os.native_views();
+                for id in tree.native_nodes() {
+                    let native = tree.native(id).expect("indexed native");
+                    let live = if native.typed_props.is_some() {
+                        host.native_mounts.contains(id.into())
+                    } else {
+                        built_in.as_ref().is_some_and(|views| views.shows_native(native.kind, native.slot))
+                    };
+                    if live != native.live {
+                        upcoming.push(HostEvent {
+                            window: host.id,
+                            input: Input::Host(HostReply::NativeLive { target: tree.guard(id), live }),
+                        });
                     }
-                    for request in &frame.measurements {
-                        if let Some(size) = native_views.measure_native(request.clone()) {
-                            upcoming.push(HostEvent {
-                                window: host.id,
-                                input: Input::Host(HostReply::NativeMeasurement { ticket: request.ticket, size }),
-                            });
-                        }
+                }
+                for request in &frame.measurements {
+                    let size = if request.typed_props.is_some() {
+                        host.native_mounts.measure(request)
+                    } else {
+                        built_in.as_deref_mut().and_then(|views| views.measure_native(request.clone()))
+                    };
+                    if let Some(size) = size {
+                        upcoming.push(HostEvent {
+                            window: host.id,
+                            input: Input::Host(HostReply::NativeMeasurement { ticket: request.ticket, size }),
+                        });
                     }
                 }
             }
@@ -623,7 +668,7 @@ impl Shell {
 
     fn schedule(&mut self, event_loop: &ActiveEventLoop) {
         let limit = self.config.exit_after_frames.is_some_and(|count| self.frames >= count);
-        if self.definition.is_none() && self.windows.is_empty()
+        if self.definition.is_none() && self.windows.is_empty() && self.app.runtime().windows().next().is_none()
             || limit && (self.config.capture.is_none() || self.capture_finished) && self.first_frame.is_none()
             || self.hook.as_ref().is_some_and(|hook| hook.shutdown_requested())
         {
@@ -736,6 +781,7 @@ impl Shell {
             WindowEvent::Moved(_) => self.refresh_viewport(id)?,
             WindowEvent::RedrawRequested => self.draw(id, Instant::now())?,
             WindowEvent::Focused(active) => {
+                self.focus_changed |= self.os.follows_window_focus();
                 self.windows.get_mut(&id).expect("known window").os.text_input().focused(active);
                 self.dispatch(id, Input::Interaction(InteractionEvent::WindowActive(active)))?;
             }
@@ -854,7 +900,35 @@ impl Shell {
             self.refresh_system_preferences(event_loop.system_theme().map(color_scheme), self.os.reduced_motion())?;
             let restart = read_restart(&self.config)?;
             definition.launch(&mut self.app, restart).map_err(|error| error.to_string())?;
+            let (urls, files) = self.os.take_launch_items();
+            self.dispatch_lifecycle(HostLifecycleEvent::AppLaunched { urls, files })?;
+            for event in std::mem::take(&mut self.pending_lifecycle) {
+                self.dispatch_lifecycle(event)?;
+            }
         }
+        Ok(())
+    }
+
+    fn lifecycle(&mut self, event: HostLifecycleEvent) -> Result<(), String> {
+        let active = match &event {
+            HostLifecycleEvent::AppForeground => Some(true),
+            HostLifecycleEvent::AppBackground => Some(false),
+            _ => None,
+        };
+        if let Some(active) = active
+            && self.foreground.replace(active) == Some(active)
+        {
+            return Ok(());
+        }
+        if self.definition.is_some() {
+            self.pending_lifecycle.push(event);
+            return Ok(());
+        }
+        self.dispatch_lifecycle(event)
+    }
+
+    fn dispatch_lifecycle(&mut self, event: HostLifecycleEvent) -> Result<(), String> {
+        self.app.runtime_mut().dispatch_lifecycle(event).map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -877,16 +951,29 @@ impl ApplicationHandler<ShellEvent> for Shell {
             for host in shell.windows.values_mut() {
                 host.set_suspended(false);
             }
+            if shell.os.application_active().unwrap_or(true) {
+                shell.lifecycle(HostLifecycleEvent::AppForeground)?;
+            }
             shell.run_ready(event_loop)?;
             shell.schedule(event_loop);
             Ok(())
         });
     }
 
-    fn suspended(&mut self, _: &ActiveEventLoop) {
-        for host in self.windows.values_mut() {
-            host.set_suspended(true);
-        }
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.handle(event_loop, |shell| {
+            for host in shell.windows.values_mut() {
+                host.set_suspended(true);
+            }
+            if shell.os.application_active().is_none() {
+                shell.lifecycle(HostLifecycleEvent::AppBackground)?;
+            }
+            Ok(())
+        });
+    }
+
+    fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
+        self.handle(event_loop, |shell| shell.lifecycle(HostLifecycleEvent::MemoryWarning));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, raw: HostId, event: WindowEvent) {
@@ -917,6 +1004,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     shell.run_ready(event_loop)?;
                     shell.schedule(event_loop);
                 }
+                ShellEvent::Lifecycle(event) => shell.lifecycle(event)?,
                 ShellEvent::Input { window, input } => {
                     shell.dispatch(window, input)?;
                 }
@@ -940,6 +1028,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.handle(event_loop, |shell| {
             shell.flush_file_drops()?;
+            if std::mem::take(&mut shell.focus_changed) {
+                let active = shell.windows.values().any(|host| host.window.has_focus());
+                shell.lifecycle(if active { HostLifecycleEvent::AppForeground } else { HostLifecycleEvent::AppBackground })?;
+            }
             shell.run_ready(event_loop)?;
             shell.schedule(event_loop);
             Ok(())
@@ -947,11 +1039,26 @@ impl ApplicationHandler<ShellEvent> for Shell {
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
-        self.app.shutdown();
+        if self.definition.is_none()
+            && let Err(error) = self.dispatch_lifecycle(HostLifecycleEvent::WillTerminate)
+            && self.error.is_none()
+        {
+            self.os.report_error(&error);
+            self.error = Some(ShellError(error));
+        }
         self.capture_stage = None;
         self.capture_writer.take();
         self.drain = None;
-        self.windows.clear();
+        let windows: Vec<_> = self.windows.keys().copied().collect();
+        for id in windows {
+            if let Err(error) = self.detach_window(id)
+                && self.error.is_none()
+            {
+                self.os.report_error(&error);
+                self.error = Some(ShellError(error));
+            }
+        }
+        self.app.shutdown();
         if let Some(device) = self.device.take() {
             device.executor.shutdown();
         }

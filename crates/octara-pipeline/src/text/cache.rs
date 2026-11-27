@@ -2,7 +2,7 @@ use octara_tree::NodeId;
 use rustc_hash::FxHashMap;
 use std::ops::Deref;
 
-/// Records the first change to each node during a projection turn.
+/// Records the first change to each node during a projection cycle.
 pub(super) struct Cache<V> {
     entries: FxHashMap<NodeId, V>,
     previous: Option<FxHashMap<NodeId, Option<V>>>,

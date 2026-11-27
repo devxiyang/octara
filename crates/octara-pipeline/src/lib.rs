@@ -15,7 +15,7 @@ use layout::LayoutEngine;
 use octara_model::geometry::{LayoutBox, Point, Rect, WindowViewport};
 use octara_model::identity::{MeasureTicket, NativeId, ViewportRev, WindowRev};
 use octara_model::input::{ContactTarget, HostReply};
-use octara_model::native::{NativeChange, NativeMeasureRequest, NativeMeasureTicket, NativePlacement, NativeSlot};
+use octara_model::native::{NativeChange, NativeMeasureRequest, NativeMeasureTicket, NativePlacement, NativeSlot, TypedNativeProps};
 use octara_model::paint::{DisplayList, FontData, Item};
 use octara_model::semantics::TextClip;
 use octara_model::text::TextGeometry;
@@ -409,6 +409,7 @@ struct NativeView {
     kind: &'static str,
     slot: NativeSlot,
     props: serde_json::Value,
+    typed_props: Option<TypedNativeProps>,
     placement: NativePlacement,
     viewport: WindowViewport,
 }
@@ -450,6 +451,7 @@ impl NativeViews {
                     kind: native.kind,
                     slot: native.slot,
                     props: native.props.clone(),
+                    typed_props: native.typed_props.clone(),
                     viewport,
                     placement: NativePlacement {
                         id: NativeId::from(node),
@@ -484,6 +486,7 @@ impl NativeViews {
                     kind: native.kind.to_owned(),
                     slot: native.slot,
                     props: native.props.clone(),
+                    typed_props: native.typed_props.clone(),
                     viewport,
                 });
             }
@@ -506,15 +509,22 @@ impl NativeViews {
             let current = &self.staged[&node];
             let id = current.placement.id;
             match self.committed.get(&node) {
-                None => {
-                    changes.push(NativeChange::Create { id, kind: current.kind.into(), slot: current.slot, props: current.props.clone() })
+                None => changes.push(current.create()),
+                Some(previous) if previous.typed_props.is_none() && current.typed_props.is_some() => {
+                    changes.push(NativeChange::Destroy { id });
+                    changes.push(current.create());
                 }
                 Some(previous) if previous.revision != current.revision => {
-                    changes.push(NativeChange::Update { id, props: current.props.clone() })
+                    changes.push(match &current.typed_props {
+                        Some(props) => NativeChange::UpdateTyped { id, props: props.clone() },
+                        None => NativeChange::Update { id, props: current.props.clone() },
+                    });
                 }
                 _ => {}
             }
-            if self.committed.get(&node).is_none_or(|previous| previous.placement != current.placement) {
+            if self.committed.get(&node).is_none_or(|previous| {
+                previous.placement != current.placement || previous.typed_props.is_none() && current.typed_props.is_some()
+            }) {
                 placements.push(current.placement.clone());
             }
         }
@@ -538,6 +548,18 @@ impl NativeViews {
     fn rollback(&mut self) {
         self.staged.clear();
         self.staged_measurements.clear();
+    }
+}
+
+impl NativeView {
+    fn create(&self) -> NativeChange {
+        let id = self.placement.id;
+        let kind = self.kind.into();
+        let slot = self.slot;
+        match &self.typed_props {
+            Some(props) => NativeChange::CreateTyped { id, kind, slot, props: props.clone() },
+            None => NativeChange::Create { id, kind, slot, props: self.props.clone() },
+        }
     }
 }
 

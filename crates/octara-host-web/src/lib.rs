@@ -10,6 +10,7 @@ mod gpu;
 mod image;
 mod measure;
 mod media;
+mod native;
 mod navigation;
 mod rich;
 mod services;
@@ -24,10 +25,12 @@ pub use octara_render::{SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory};
 use dom::DomHandle;
 use edit::Editor;
 use js_sys::Array;
+use native::NativeViews;
 use navigation::{BrowserRoutes, HistoryBridge};
+use octara::module::{HostLifecycleEvent, HostSurfaceKind};
+use octara::runtime::cycle::{AppError, CycleReceipt};
 use octara::runtime::engine::{HostEngine, ProjectError, ProjectFeedback};
-use octara::runtime::turn::{TurnError, TurnReceipt};
-use octara::runtime::{BuildCx, Input, RestartState, WindowId, WindowOptions, WriteCx};
+use octara::runtime::{BuildCx, HostCommand, Input, RestartState, WindowId, WindowOptions, WriteCx};
 use octara::tree::{NodeFlags, Tree, TreeDelta};
 use octara::{App, AppDefinition, IntoView, Navigator};
 use octara_model::geometry::{LayoutBox, Point, Size, WindowViewport};
@@ -46,7 +49,7 @@ use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{
     Document, DragEvent, Element, Event, EventTarget, HtmlElement, MediaQueryList, MessageChannel, MessageEvent, MessagePort, MouseEvent,
-    Performance, PointerEvent, PopStateEvent, ResizeObserver, ResizeObserverEntry, Window as Browser,
+    PageTransitionEvent, Performance, PointerEvent, PopStateEvent, ResizeObserver, ResizeObserverEntry, Window as Browser,
 };
 
 /// Owns one Octara window and its browser event sources. Dropping it unmounts the window.
@@ -95,7 +98,7 @@ impl WebApp {
     fn start(
         mount: HtmlElement,
         engine: impl FnOnce(HtmlElement) -> Result<DomEngine, JsValue>,
-        open: impl FnOnce(&mut App, WindowViewport) -> Result<(), TurnError>,
+        open: impl FnOnce(&mut App, WindowViewport) -> Result<(), AppError>,
     ) -> Result<Self, JsValue> {
         let document = mount.owner_document().ok_or("Octara needs a browser document")?;
         let browser = document.default_view().ok_or("Octara needs a browser window")?;
@@ -153,6 +156,9 @@ impl WebApp {
                 clock,
                 app: RefCell::default(),
                 window: Cell::default(),
+                attached: Cell::default(),
+                visible: Cell::default(),
+                native_views: RefCell::default(),
                 dark_mode,
                 reduced_motion,
                 stopped: Cell::default(),
@@ -171,19 +177,20 @@ impl WebApp {
                 on_frame,
             }
         }));
-        let mut app = App::new({
-            let engine = Cell::new(Some(engine));
-            move |_, _| match engine.take() {
-                Some(engine) => Box::new(engine),
-                None => Box::new(ExtraWindow),
-            }
-        });
-        app.runtime_mut().set_media_loader(media::BrowserMediaLoader);
-        app.runtime_mut().set_wake(Some(Arc::new(wake)));
-        app.runtime_mut().set_system_preferences(host.0.system_preferences()).map_err(js_error)?;
-        let viewport = host.0.viewport();
-        open(&mut app, viewport).map_err(js_error)?;
         let window = {
+            let mut slot = host.0.app.borrow_mut();
+            let app = slot.insert(App::new({
+                let engine = Cell::new(Some(engine));
+                move |_, _| match engine.take() {
+                    Some(engine) => Box::new(engine),
+                    None => Box::new(ExtraWindow),
+                }
+            }));
+            app.runtime_mut().set_module_host_kind(HostSurfaceKind::Web);
+            app.runtime_mut().set_media_loader(media::BrowserMediaLoader);
+            app.runtime_mut().set_wake(Some(Arc::new(wake)));
+            app.runtime_mut().set_system_preferences(host.0.system_preferences()).map_err(js_error)?;
+            open(app, host.0.viewport()).map_err(js_error)?;
             let mut windows = app.runtime().windows();
             let Some((&window, _)) = windows.next() else { return Err("an Octara web app needs one window".into()) };
             if windows.next().is_some() {
@@ -192,14 +199,23 @@ impl WebApp {
             window
         };
         host.0.window.set(Some(window));
-        host.0.app.replace(Some(app));
         host.0.connect()?;
         host.0
-            .turn(|app, id| {
+            .cycle(|app, id| {
+                let urls = host.0.browser.location().href().into_iter().collect();
+                app.runtime_mut().dispatch_lifecycle(HostLifecycleEvent::AppLaunched { urls, files: Vec::new() })?;
+                if app.runtime().window(id).is_none() {
+                    return Ok(());
+                }
+                host.0.attached.set(true);
+                app.runtime_mut().dispatch_lifecycle(HostLifecycleEvent::WindowAttached { window: id })?;
+                if app.runtime().window(id).is_none() {
+                    return Ok(());
+                }
                 if !host.0.document.has_focus().unwrap_or(true) {
                     app.dispatch(id, Input::Interaction(InteractionEvent::WindowActive(false)))?;
                 }
-                Ok(())
+                host.0.set_visibility(app, !host.0.document.hidden())
             })
             .map_err(js_error)?;
         Ok(host)
@@ -213,12 +229,12 @@ impl WebApp {
         Some(read(self.0.app.try_borrow().ok()?.as_ref()?))
     }
 
-    pub fn update<R>(&self, write: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, TurnError> {
-        self.0.turn(|app, id| app.update_window(id, write))
+    pub fn update<R>(&self, write: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, AppError> {
+        self.0.cycle(|app, id| app.update_window(id, write))
     }
 
-    pub fn dispatch(&self, input: Input) -> Result<TurnReceipt, TurnError> {
-        self.0.turn(|app, id| app.dispatch(id, input))
+    pub fn dispatch(&self, input: Input) -> Result<CycleReceipt, AppError> {
+        self.0.cycle(|app, id| app.dispatch(id, input))
     }
 
     /// Synchronizes the window's navigator with browser URLs and same-document history.
@@ -271,6 +287,9 @@ struct Driver {
     clock_start: f64,
     app: RefCell<Option<App>>,
     window: Cell<Option<WindowId>>,
+    attached: Cell<bool>,
+    visible: Cell<Option<bool>>,
+    native_views: RefCell<NativeViews>,
     dark_mode: Option<MediaQueryList>,
     reduced_motion: Option<MediaQueryList>,
     stopped: Cell<bool>,
@@ -306,6 +325,7 @@ impl Driver {
         self.listen(self.mount.as_ref(), "click", false, |driver, event| {
             if let Some(input) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
                 && input.type_() == "checkbox"
+                && driver.dom.node(input.as_ref()).is_some()
             {
                 event.prevent_default();
                 if event.dyn_ref::<MouseEvent>().is_some_and(|mouse| mouse.detail() == 0) {
@@ -323,13 +343,13 @@ impl Driver {
                 if let Some(link) = event_element(&event).and_then(|element| element.closest("a").ok().flatten())
                     && driver.dom.node(link.as_ref()).is_some()
                 {
-                    // The window's pointer turn already decided the link activation.
+                    // The window's pointer cycle already decided the link activation.
                     event.prevent_default();
                 }
                 return;
             }
             // Keyboard, assistive-technology and programmatic clicks can arrive without a contact.
-            let Ok(consumed) = driver.turn(|app, id| {
+            let Ok(consumed) = driver.cycle(|app, id| {
                 let action = driver.contact(app, id, &event).and_then(|contact| contact.action);
                 let Some(target) = action else { return Ok(false) };
                 app.dispatch(id, Input::Host(HostReply::AccessibilityAction { target, action: A11yAction::Press }))
@@ -375,16 +395,32 @@ impl Driver {
                 driver.send(Input::Interaction(InteractionEvent::WindowActive(name == "focus")));
             })?;
         }
+        self.listen(self.document.as_ref(), "visibilitychange", false, |driver, _| {
+            driver.report_visibility(!driver.document.hidden());
+        })?;
+        self.listen(self.browser.as_ref(), "pagehide", false, |driver, event| {
+            driver.report_visibility(false);
+            if !event.dyn_ref::<PageTransitionEvent>().is_some_and(PageTransitionEvent::persisted) {
+                driver.stop();
+            }
+        })?;
+        self.listen(self.browser.as_ref(), "pageshow", false, |driver, _| {
+            driver.report_visibility(!driver.document.hidden());
+        })?;
         self.listen(self.browser.as_ref(), "resize", false, |driver, _| driver.schedule_frame())?;
         self.listen(self.document.as_ref(), "fullscreenchange", false, |driver, _| driver.schedule_frame())?;
         self.listen(self.browser.as_ref(), "popstate", false, |driver, event| {
             let Some(event) = event.dyn_ref::<PopStateEvent>() else { return };
-            if driver.history.borrow().is_none() {
-                return;
-            }
-            if let Err(error) = driver
-                .turn(|app, id| driver.history.borrow_mut().as_mut().map_or(Ok(()), |history| history.popstate(app, id, event.state())))
-            {
+            let url = driver.browser.location().href();
+            if let Err(error) = driver.cycle(|app, id| {
+                if let Some(history) = driver.history.borrow_mut().as_mut() {
+                    history.popstate(app, id, event.state())?;
+                }
+                if let Ok(url) = url {
+                    app.runtime_mut().dispatch_lifecycle(HostLifecycleEvent::OpenUrls(vec![url]))?;
+                }
+                Ok(())
+            }) {
                 driver.report_error(error);
             }
         })?;
@@ -395,8 +431,8 @@ impl Driver {
             {
                 let offset = undo::scroll_offset(element);
                 let at_end = offset.y >= (element.scroll_height() - element.client_height()) as f32 - 0.5;
-                match driver.turn(|app, id| {
-                    let tree = app.runtime().window(id).ok_or(TurnError::UnknownWindow(id))?.tree();
+                match driver.cycle(|app, id| {
+                    let tree = app.runtime().window(id).ok_or(AppError::UnknownWindow(id))?.tree();
                     if tree.scroll(node).is_none() {
                         return Ok(false);
                     }
@@ -491,7 +527,7 @@ impl Driver {
         let rect = self.mount.get_bounding_client_rect();
         let pos = Point::new(pointer.client_x() as f32 - rect.x() as f32, pointer.client_y() as f32 - rect.y() as f32);
         let mods = modifiers(pointer.shift_key(), pointer.ctrl_key(), pointer.alt_key(), pointer.meta_key());
-        let result = self.turn(|app, window| {
+        let result = self.cycle(|app, window| {
             let input = match name {
                 "pointerdown" => {
                     let button = match pointer.button() {
@@ -569,7 +605,7 @@ impl Driver {
         if files.is_empty() {
             return;
         }
-        if let Err(error) = self.turn(|app, window| {
+        if let Err(error) = self.cycle(|app, window| {
             let Some(target) = app.runtime().window(window).and_then(|runtime| runtime.file_drop_target(pos)) else { return Ok(()) };
             event.prevent_default();
             app.dispatch(window, Input::Host(HostReply::FilesDropped { target, files }))?;
@@ -600,16 +636,32 @@ impl Driver {
         Duration::from_secs_f64((self.clock.now() - self.clock_start).max(0.0) / 1000.0)
     }
 
-    fn turn<R>(&self, action: impl FnOnce(&mut App, WindowId) -> Result<R, TurnError>) -> Result<R, TurnError> {
-        if self.stopped.get() {
-            return Err(TurnError::AppFailed);
+    fn set_visibility(&self, app: &mut App, visible: bool) -> Result<(), AppError> {
+        if self.visible.replace(Some(visible)) != Some(visible) {
+            let event = if visible { HostLifecycleEvent::AppForeground } else { HostLifecycleEvent::AppBackground };
+            app.runtime_mut().dispatch_lifecycle(event)?;
         }
-        let mut slot = self.app.try_borrow_mut().map_err(|_| TurnError::AppFailed)?;
-        let app = slot.as_mut().ok_or(TurnError::AppFailed)?;
-        let id = self.window.get().ok_or(TurnError::AppFailed)?;
+        Ok(())
+    }
+
+    fn report_visibility(&self, visible: bool) {
+        if self.visible.get() != Some(visible)
+            && let Err(error) = self.cycle(|app, _| self.set_visibility(app, visible))
+        {
+            self.report_error(error);
+        }
+    }
+
+    fn cycle<R>(&self, action: impl FnOnce(&mut App, WindowId) -> Result<R, AppError>) -> Result<R, AppError> {
+        if self.stopped.get() {
+            return Err(AppError::AppFailed);
+        }
+        let mut slot = self.app.try_borrow_mut().map_err(|_| AppError::AppFailed)?;
+        let app = slot.as_mut().ok_or(AppError::AppFailed)?;
+        let id = self.window.get().ok_or(AppError::AppFailed)?;
         let result = (|| {
             let viewport = self.viewport();
-            let window = app.runtime().window(id).ok_or(TurnError::UnknownWindow(id))?;
+            let window = app.runtime().window(id).ok_or(AppError::UnknownWindow(id))?;
             let current = window.window_geometry();
             let current_viewport = window.options().viewport;
             let geometry = WindowGeometry {
@@ -630,14 +682,21 @@ impl Driver {
             app.advance_to(self.elapsed())?;
             action(app, id)
         })();
-        if matches!(&result, Err(TurnError::Project { window, .. }) if *window != id) {
+        if matches!(&result, Err(AppError::Project { window, .. }) if *window != id) {
             // The extra windows have no mount element. Remove them so their rejected
-            // projections do not block future turns for the existing browser window.
+            // projections do not block future cycles for the existing browser window.
             let extra: Vec<_> = app.runtime().windows().map(|(&window, _)| window).filter(|&window| window != id).collect();
             for window in extra {
                 let _ = app.close_window(window);
             }
         }
+        let dispatcher = app.runtime().module_dispatcher();
+        let result = if app.runtime().is_failed() {
+            result
+        } else {
+            let projection = self.native_views.borrow_mut().sync(app, id, &self.dom, &self.mount, &dispatcher);
+            result.and_then(|value| projection.map(|()| value))
+        };
         self.reconcile_editor(app, id);
         if result.is_ok()
             && let Some(history) = self.history.borrow_mut().as_mut()
@@ -649,30 +708,38 @@ impl Driver {
         let deadline = app.runtime().next_deadline();
         let closed = app.runtime().window(id).is_none() || app.runtime().is_failed();
         drop(slot);
-        if closed {
-            self.stop();
-        } else {
+        if !closed {
             for command in commands {
-                self.services.borrow_mut().apply(command);
+                match command {
+                    HostCommand::TypedNativeCommand { window, command } => {
+                        if window == id {
+                            let _guard = self.dom.project_guard();
+                            self.native_views.borrow_mut().command(command, &dispatcher);
+                        }
+                    }
+                    command => self.services.borrow_mut().apply(command),
+                }
             }
             self.arm(deadline);
+        } else {
+            self.stop();
         }
         result
     }
 
     fn send(&self, input: Input) {
-        if let Err(error) = self.turn(|app, id| app.dispatch(id, input)) {
+        if let Err(error) = self.cycle(|app, id| app.dispatch(id, input)) {
             self.report_error(error);
         }
     }
 
     fn tick(&self) {
-        if let Err(error) = self.turn(|_, _| Ok(())) {
+        if let Err(error) = self.cycle(|_, _| Ok(())) {
             self.report_error(error);
         }
     }
 
-    fn report_error(&self, error: TurnError) {
+    fn report_error(&self, error: AppError) {
         if !self.stopped.get() {
             web_sys::console::error_1(&js_error(error));
         }
@@ -730,6 +797,15 @@ impl Driver {
         self.services.borrow_mut().stop();
         if let Some(mut app) = self.app.take() {
             app.runtime_mut().set_wake(None);
+            if self.attached.replace(false)
+                && let Some(window) = self.window.get()
+            {
+                let _ = app.runtime_mut().dispatch_lifecycle(HostLifecycleEvent::WindowDetached { window });
+            }
+            if self.window.get().is_some() {
+                let _ = app.runtime_mut().dispatch_lifecycle(HostLifecycleEvent::WillTerminate);
+            }
+            self.native_views.borrow_mut().clear();
             app.shutdown();
         }
     }

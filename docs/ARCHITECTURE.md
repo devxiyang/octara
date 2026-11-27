@@ -6,13 +6,13 @@
 | --- | --- |
 | 值和协议 | `octara-model` 持有 identity、style IR、绘制值和输入协议。`octara-icons` 提供矢量路径，`octara-svg` 按需解析 SVG。`octara-release` 独立验证签名与发布序号。 |
 | 树 | `octara-tree` 持有紧凑节点、稀疏侧表、逻辑编辑器与交互仲裁。 |
-| 运行时与视图 | `octara-runtime` 持有类型分区存储、响应式依赖图、任务和 Turn。`octara` 提供视图和窗口原语。`octara-headless` 把行为和语义附加到调用方提供的元素上。`octara-kit` 组合 Headless 部件并应用主题、尺寸和布局预设。 |
+| 运行时与视图 | `octara-runtime` 持有类型分区存储、响应式依赖图、任务和 Cycle。`octara` 提供视图和窗口原语。`octara-headless` 把行为和语义附加到调用方提供的元素上。`octara-kit` 组合 Headless 部件并应用主题、尺寸和布局预设。 |
 | 文档与编辑 | `octara-markdown` 在公开 authoring API 之上构建流式文档、可替换的块级槽、矢量公式和富文本输入框。 |
 | 原生 | `octara-pipeline` 运行 Taffy、Parley、动画、子树绘制和增量 AccessKit 投影。`octara-render` 计划与编码绘制。`octara-gpu` 管理后台队列和原生回读。`octara-host-native` 通过独立窗口能力连接输入、原生视图、系统服务和呈现。 |
 | Web | `octara-host-web` 分阶段根据 TreeDelta 修补 DOM，通过撤销日志恢复失败投影，通过批量数值桥按需读取布局。已提交的退出元素由浏览器执行透明度动画。WebGPU 可按需启用。 |
 | 验证与交付 | `octara-inspect` 提供 guarded actions、回放、跨窗口确定性模拟和传输。`octara-cli` 提供源码词汇、技能和发布命令。 |
 
-## 一个 Turn
+## 一个 Cycle
 
 1. Ingress 核对目标和编辑器会话。交互仲裁器在同一规则下处理 Native、Web 和 Inspector 的输入。
 2. React 运行事件与就绪任务，按拓扑依次结算派生值、结构、绑定和 watch 来源。视图把静态和动态属性写入当前窗口的 `TxBuilder`。

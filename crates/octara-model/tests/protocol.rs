@@ -4,12 +4,32 @@ use octara_model::capture::{FrameReceipt, PaintSample};
 use octara_model::diagnostics::{Diagnostic, Severity, codes};
 use octara_model::identity::{FrameStamp, NodeId, TargetGuard, TreeId};
 use octara_model::input::{DroppedFile, HostReply};
+use octara_model::module::{AirspacePolicy, HostLifecycleEvent, ModuleError, ModuleId};
 use octara_model::native::{NativeSnapshot, NativeSnapshotRequest};
 use octara_model::paint::Picture;
 use octara_model::text::TextDocument;
 use serde_json::{json, to_value};
 use slotmap::SlotMap;
 use std::time::Duration;
+
+#[test]
+fn module_protocol_preserves_static_ids_and_owned_event_payloads() {
+    const MODULE_WIRE: &str = r#""octara.example""#;
+    let id = ModuleId("octara.example");
+    assert_eq!(serde_json::to_string(&id).unwrap(), MODULE_WIRE);
+    assert_eq!(serde_json::from_str::<ModuleId>(MODULE_WIRE).unwrap(), id);
+
+    let event = HostLifecycleEvent::AppLaunched { urls: vec!["example://open".into()], files: vec!["/workspace/local/notes.md".into()] };
+    let wire = to_value(&event).unwrap();
+    assert_eq!(wire, json!({"app_launched": {"urls": ["example://open"], "files": ["/workspace/local/notes.md"]}}));
+    assert_eq!(serde_json::from_value::<HostLifecycleEvent>(wire).unwrap(), event);
+
+    let error = ModuleError::InvalidArgs("missing index".into());
+    let wire = to_value(&error).unwrap();
+    assert_eq!(wire, json!({"invalid_args": "missing index"}));
+    assert_eq!(serde_json::from_value::<ModuleError>(wire).unwrap(), error);
+    assert_eq!(to_value(AirspacePolicy::default()).unwrap(), "underlay_preferred");
+}
 
 #[test]
 fn file_drop_preserves_its_guard_and_distinguishes_paths_from_bare_names() {

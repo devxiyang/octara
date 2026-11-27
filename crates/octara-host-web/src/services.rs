@@ -1,4 +1,4 @@
-//! Browser prompts and services. Start user-activation-sensitive requests in the initiating turn.
+//! Browser prompts and services. Start user-activation-sensitive requests in the initiating cycle.
 
 use crate::{Driver, Listener};
 use js_sys::Uint8Array;
@@ -75,6 +75,7 @@ impl Services {
             HostCommand::Opened(_)
             | HostCommand::Closed(_)
             | HostCommand::NativeCommand { .. }
+            | HostCommand::TypedNativeCommand { .. }
             | HostCommand::SetAppBadge { .. }
             | HostCommand::RequestUserAttention { .. } => {}
         }

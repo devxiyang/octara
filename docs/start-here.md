@@ -227,7 +227,7 @@ fn document(cx: &mut BuildCx<'_>) -> El {
 
 `cx.persisted` 使用作用域路径和业务键来识别可恢复状态。`AppDefinition::state_schema` 标识数据结构。退出、切换发布版本或更换进程时可以导出 `RestartState`，再从同一 schema 恢复持久值。用 `scope` 或列表行建立独立寿命，用 `cx.on_cleanup` 释放外部资源。清理回调中的 `CleanupCx` 提供采样能力。
 
-任务绑定到注册它的作用域。虚拟时钟驱动休眠，宿主在 Turn 中轮询就绪任务。`task.write` 在同步闭包内借出 `WriteCx`。
+任务绑定到注册它的作用域。虚拟时钟驱动休眠，宿主在 Cycle 中轮询就绪任务。`task.write` 在同步闭包内借出 `WriteCx`。
 
 ```rust
 use octara::prelude::*;

@@ -1,4 +1,4 @@
-# Octara v2 Spec 02: Reactive Runtime, Capability Contexts & Turn Engine (`octara-runtime` + `octara`)
+# Octara v2 Spec 02: Reactive Runtime, Capability Contexts & Cycle Engine (`octara-runtime` + `octara`)
 
 > Part of the [Octara v2 Clean-Sheet Architecture](../architecture-v2.md).
 
@@ -35,7 +35,7 @@ crates/octara-runtime/src/
     mod.rs           # TaskScheduler, VirtualClock, Sleep, Interval, Channel, Background (native)
     async_memo.rs    # AsyncMemo<T> integrated into ReactiveWorld
   engine.rs          # HostEngine trait, ProjectFeedback, ProjectError, CommitOutput, PlatformServices trait
-  turn.rs            # 5-Phase Turn Engine (Ingress -> React -> Commit -> Project -> Publish)
+  cycle.rs            # 5-Phase Cycle Engine (Ingress -> React -> Commit -> Project -> Publish)
   window.rs          # WindowRuntime (Tree + HostEngine + TxBuilder + handlers + feedback registries)
   app.rs             # AppRuntime (ReactiveWorld + TaskScheduler + multi-window map + panic latching)
 
@@ -175,7 +175,7 @@ A `BuildCx::read` closure takes a one-time untracked read of any reactive value,
 
 Use `BuildCx::derive_list` when keyed rows come from general reactive reads. The list emits keyed edits through the graph and retains row identity. Prefer list operators for transforming an existing list incrementally.
 
-`BuildCx::menus` contributes reactive menus from the current window scope. Publish sends the active window's menu after a successful turn. `BuildCx::on_chord` registers a scope-owned window shortcut. The focused control can consume the key first. The host resolves `mod` to Command on macOS or Control elsewhere.
+`BuildCx::menus` contributes reactive menus from the current window scope. Publish sends the active window's menu after a successful cycle. `BuildCx::on_chord` registers a scope-owned window shortcut. The focused control can consume the key first. The host resolves `mod` to Command on macOS or Control elsewhere.
 
 ### 3.3 `WriteCx<'a>`
 Passed to event handlers, `watch` callbacks, `TaskCx::write`, `App::update`.
@@ -230,7 +230,7 @@ impl WriteCx<'_> {
 `Writable<T>` covers signals, bindings, stores and store fields. Custom bindings run their writer on `set` and submit the resulting value after a successful edit. An edit passed to `mutate` must return `false` only when it leaves the observable value unchanged.
 
 ### 3.4 `TaskCx` (Borrow-Safe Async Tasks)
-Tasks run on the UI thread at Turn boundaries. `TaskCx` is a small handle that opens a scoped `WriteCx` **only synchronously between `.await` points**:
+Tasks run on the UI thread at Cycle boundaries. `TaskCx` is a small handle that opens a scoped `WriteCx` **only synchronously between `.await` points**:
 ```rust
 impl TaskCx {
     /// Runs `f` synchronously with full WriteCx capabilities. Returns None if task's scope was retired.
@@ -372,10 +372,10 @@ let rename = move |w: &mut WriteCx<'_>, next: String| {
 
 ---
 
-## 5. Five-Phase Turn Engine (`turn.rs`)
+## 5. Five-Phase Cycle Engine (`cycle.rs`)
 
 ```text
-Turn::run(app, incoming_event):
+run_cycle(app, incoming_event):
   assert!(!app.failed);
   arm panic_latch_guard(app);
 

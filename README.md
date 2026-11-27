@@ -6,7 +6,7 @@
 - 使用 `octara-kit` 的主题控件，或组合 `octara_kit::headless` 的行为部件和 `octara_kit::parts` 的样式。
 - 使用 `octara-markdown` 渲染流式文档，定制代码和图表等块级组件。链接胶囊按文字排版尺寸绘制，流式渐显默认遵循系统的减弱动态效果设置。启用 `math` 支持原生及 Web 矢量公式，启用 `composer` 为输入框添加光标锚定的富补全、原子提及和 Markdown 序列化。
 - 用 `octara audit` 检查文本裁剪、交互控件的无障碍名称和失效的焦点目标。
-- 了解 [crate 边界与 Turn](docs/ARCHITECTURE.md) 或查阅 [v2 架构规范](docs/design/architecture-v2.md)。
+- 了解 [crate 边界与 Cycle](docs/ARCHITECTURE.md) 或查阅 [v2 架构规范](docs/design/architecture-v2.md)。
 - 运行 [示例](examples/README.md) 和 [流式 Chat 应用](apps/chat/README.md)。
 
 在工作区根目录使用 Rust 1.100 或更高版本。

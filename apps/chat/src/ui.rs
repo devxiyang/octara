@@ -170,7 +170,7 @@ fn sidebar(b: &mut BuildCx<'_>, chat: Chat, nav: Navigator<Page>) -> El {
         },
         move |w, (rename, target), _| match (rename, target) {
             (Some(id), _) => w.focus(&format!("rename-{id}")),
-            // Revealing a virtual row can take another turn round. The scroll offset updates
+            // Revealing a virtual row can take another cycle. The scroll offset updates
             // after projection, so this retries once the row has had a chance to mount.
             (None, Some((id, _))) => w.focus(&format!("thread-{id}")),
             (None, None) => {}

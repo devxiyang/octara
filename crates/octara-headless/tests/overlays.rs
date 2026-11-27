@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use octara::{
-    ContactTarget, HostReply, Input, InteractionEvent, NodeId, PointerId, PointerKind, TargetGuard, Tree, TurnReceipt, WindowRuntime,
+    ContactTarget, CycleReceipt, HostReply, Input, InteractionEvent, NodeId, PointerId, PointerKind, TargetGuard, Tree, WindowRuntime,
     prelude::*,
 };
 use octara_headless::{
@@ -49,7 +49,7 @@ impl Mounted {
         assert_eq!(self.tree().focus(), Some(self.node(name)), "expected focus on {name}");
     }
 
-    fn send(&mut self, input: Input) -> TurnReceipt {
+    fn send(&mut self, input: Input) -> CycleReceipt {
         self.driver.dispatch(self.id, input).unwrap()
     }
 

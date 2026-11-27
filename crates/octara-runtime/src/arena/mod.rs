@@ -224,6 +224,7 @@ pub struct ReactiveWorld {
     pub(crate) text_streams: BTreeSet<ReactiveId>,
     pending: Pending,
     pub(crate) watch_effects: VecDeque<ReactiveId>,
+    pub(crate) module_work: crate::module::ModuleWork,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -249,6 +250,7 @@ impl ReactiveWorld {
             text_streams: BTreeSet::new(),
             pending: Pending::default(),
             watch_effects: VecDeque::new(),
+            module_work: crate::module::ModuleWork::default(),
             diagnostics: Vec::new(),
         };
         world.scopes.push(ScopeData::new(world.root_scope(), None, 0, String::new()));

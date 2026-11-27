@@ -8,6 +8,7 @@ pub mod geometry;
 pub mod identity;
 pub mod image;
 pub mod input;
+pub mod module;
 pub mod motion;
 pub mod native;
 pub mod overlay;

@@ -3,17 +3,17 @@
 use crate::HostEngine;
 use crate::arena::{PersistedState, ReactiveWorld, ScopeId};
 use crate::cx::{BuildCx, WriteCx};
+use crate::cycle::{AppError, CycleReceipt};
 use crate::graph::value::Signal;
 use crate::media::{MediaCacheBackend, MediaLoader, MediaScheduler};
 use crate::task::TaskScheduler;
-use crate::turn::{TurnError, TurnReceipt};
 use crate::window::{EngineFactory, MountCx, WindowOptions, WindowRoot, WindowRuntime};
 use octara_model::ask::{Answer, Ask, AskId, Menu, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::diagnostics::Diagnostic;
 use octara_model::geometry::Vec2;
 use octara_model::identity::{NativeId, TreeId, WindowId};
 use octara_model::input::{EditorEvent, HostReply, InteractionEvent, PasteEvent, TextEdit};
-use octara_model::native::NativeCommand;
+use octara_model::native::{NativeCommand, TypedNativeCommand};
 use octara_model::theme::{ColorScheme, Theme};
 use octara_model::window::{SystemPreferences, UserAttention, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowPresentation};
 use octara_tree::NodeId;
@@ -63,6 +63,7 @@ pub enum HostCommand {
     ToggleMaximizeWindow { window: WindowId },
     StartWindowDrag { window: WindowId },
     NativeCommand { window: WindowId, command: NativeCommand },
+    TypedNativeCommand { window: WindowId, command: TypedNativeCommand },
 }
 
 pub(crate) enum AppCommand {
@@ -80,8 +81,9 @@ pub(crate) enum AppCommand {
     Ask { window: WindowId, scope: ScopeId, ask: Ask, done: AnswerCallback },
     Service { window: WindowId, scope: ScopeId, request: ServiceRequest, done: ServiceCallback },
     EditorEdit { window: WindowId, event: EditorEvent },
-    Paste { window: WindowId, target: crate::turn::PasteTarget, event: PasteEvent },
+    Paste { window: WindowId, target: crate::cycle::PasteTarget, event: PasteEvent },
     NativeCommand { window: WindowId, command: NativeCommand },
+    TypedNativeCommand { window: WindowId, command: TypedNativeCommand },
 }
 
 pub(crate) enum PresentationUpdate {
@@ -123,6 +125,7 @@ pub(crate) struct PendingService {
 
 pub struct AppRuntime {
     pub(crate) world: ReactiveWorld,
+    pub(crate) modules: crate::module::ModuleRegistry,
     pub(crate) system_preferences: Signal<SystemPreferences>,
     host_preferences: Option<SystemPreferences>,
     pub(crate) windows: BTreeMap<WindowId, WindowRuntime>,
@@ -159,6 +162,7 @@ impl AppRuntime {
         let system_preferences = world.build(world.root_scope(), None).signal(SystemPreferences::default());
         Self {
             world,
+            modules: crate::module::ModuleRegistry::default(),
             system_preferences,
             host_preferences: None,
             windows: BTreeMap::new(),
@@ -224,10 +228,10 @@ impl AppRuntime {
     }
 
     /// Supplies the current preferences before the first native or web window builds.
-    pub fn set_system_preferences(&mut self, preferences: SystemPreferences) -> Result<(), TurnError> {
+    pub fn set_system_preferences(&mut self, preferences: SystemPreferences) -> Result<(), AppError> {
         self.require_active()?;
         self.guarded(|app| app.update_system_preferences(preferences));
-        self.run_turn(None)?;
+        self.run_cycle(None)?;
         Ok(())
     }
 
@@ -289,11 +293,27 @@ impl AppRuntime {
     }
 
     pub fn set_wake(&mut self, wake: Option<Arc<dyn Fn() + Send + Sync>>) {
-        self.tasks.set_wake(wake);
+        self.tasks.set_wake(wake.clone());
+        self.module_dispatcher().set_wake(wake);
     }
 
     pub fn take_host_commands(&mut self) -> Vec<HostCommand> {
         std::mem::take(&mut self.published_host)
+    }
+
+    /// Allow an embedded host to mount registered views while leaving its other commands for the caller.
+    pub fn take_typed_native_commands(&mut self) -> Vec<(WindowId, TypedNativeCommand)> {
+        self.published_host
+            .extract_if(.., |command| matches!(command, HostCommand::TypedNativeCommand { .. }))
+            .map(|command| match command {
+                HostCommand::TypedNativeCommand { window, command } => (window, command),
+                _ => unreachable!("selected typed native command"),
+            })
+            .collect()
+    }
+
+    pub fn report_native_view_mount_error(&mut self, error: &octara_model::module::ModuleError) {
+        self.diagnostics.push(Diagnostic::new(&octara_model::diagnostics::codes::NATIVE_VIEW_MOUNT_FAILED, error.to_string()));
     }
 
     pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
@@ -301,11 +321,11 @@ impl AppRuntime {
         std::mem::take(&mut self.diagnostics)
     }
 
-    pub fn open_window(&mut self, options: WindowOptions, root: impl FnOnce(&mut MountCx<'_>) + 'static) -> Result<WindowId, TurnError> {
+    pub fn open_window(&mut self, options: WindowOptions, root: impl FnOnce(&mut MountCx<'_>) + 'static) -> Result<WindowId, AppError> {
         self.require_active()?;
         let id = self.commands.windows.insert(());
         self.commands.queued.push_back(AppCommand::Open { id, options: Box::new(options), root: Box::new(root) });
-        if let Err(error) = self.run_turn(None) {
+        if let Err(error) = self.run_cycle(None) {
             self.remove_window(id);
             self.staged_host
                 .retain(|command| !matches!(command, HostCommand::Opened(window) | HostCommand::Closed(window) if *window == id));
@@ -341,10 +361,10 @@ impl AppRuntime {
         self.staged_host.push(HostCommand::Opened(id));
     }
 
-    pub fn close_window(&mut self, window: WindowId) -> Result<(), TurnError> {
+    pub fn close_window(&mut self, window: WindowId) -> Result<(), AppError> {
         self.require_active()?;
         self.commands.queued.push_back(AppCommand::Close(window));
-        self.run_turn(None)?;
+        self.run_cycle(None)?;
         Ok(())
     }
 
@@ -354,6 +374,7 @@ impl AppRuntime {
             self.remove_window(id);
         }
         self.world.dispose(self.world.root_scope());
+        self.shutdown_modules();
         self.media.clear(&mut self.tasks);
         self.tasks.shutdown();
         self.commands.queued.clear();
@@ -375,6 +396,7 @@ impl AppRuntime {
     }
 
     pub(crate) fn cancel_platform_work(&mut self) {
+        self.cancel_retired_module_work();
         self.asks.retain(|&id, pending| {
             if self.world.is_scope_alive(pending.scope) {
                 return true;
@@ -385,8 +407,8 @@ impl AppRuntime {
         self.services.retain(|_, pending| self.world.is_scope_alive(pending.scope));
     }
 
-    pub fn dispatch(&mut self, window: WindowId, input: Input) -> Result<TurnReceipt, TurnError> {
-        self.run_turn(Some((window, input)))
+    pub fn dispatch(&mut self, window: WindowId, input: Input) -> Result<CycleReceipt, AppError> {
+        self.run_cycle(Some((window, input)))
     }
 
     pub fn set_keyboard_open(&mut self, window: WindowId, open: bool) {
@@ -395,25 +417,25 @@ impl AppRuntime {
         }
     }
 
-    pub fn settle(&mut self) -> Result<TurnReceipt, TurnError> {
-        self.run_turn(None)
+    pub fn settle(&mut self) -> Result<CycleReceipt, AppError> {
+        self.run_cycle(None)
     }
 
     /// Schedule a fresh host projection after externally changed geometry.
-    pub fn invalidate_projection(&mut self, window: WindowId) -> Result<(), TurnError> {
+    pub fn invalidate_projection(&mut self, window: WindowId) -> Result<(), AppError> {
         self.require_active()?;
-        let window = self.windows.get_mut(&window).ok_or(TurnError::UnknownWindow(window))?;
+        let window = self.windows.get_mut(&window).ok_or(AppError::UnknownWindow(window))?;
         window.force_project = true;
         Ok(())
     }
 
-    pub fn advance_to(&mut self, deadline: Duration) -> Result<TurnReceipt, TurnError> {
+    pub fn advance_to(&mut self, deadline: Duration) -> Result<CycleReceipt, AppError> {
         self.require_active()?;
         self.guarded(|app| app.tasks.advance_to(deadline));
-        self.run_turn(None)
+        self.run_cycle(None)
     }
 
-    pub fn build<R>(&mut self, f: impl FnOnce(&mut BuildCx<'_>) -> R) -> Result<R, TurnError> {
+    pub fn build<R>(&mut self, f: impl FnOnce(&mut BuildCx<'_>) -> R) -> Result<R, AppError> {
         self.require_active()?;
         let scope = self.world.root_scope();
         let value = self.guarded(|app| {
@@ -421,14 +443,14 @@ impl AppRuntime {
                 app.world.build(scope, None).with_tasks(app.tasks.spawner()).with_system_preferences(app.system_preferences.read_only());
             f(&mut cx)
         });
-        self.run_turn(None)?;
+        self.run_cycle(None)?;
         Ok(value)
     }
 
-    pub fn update<R>(&mut self, window: Option<WindowId>, f: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, TurnError> {
+    pub fn update<R>(&mut self, window: Option<WindowId>, f: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, AppError> {
         self.require_active()?;
         let scope = match window {
-            Some(id) => self.windows.get(&id).ok_or(TurnError::UnknownWindow(id))?.scope,
+            Some(id) => self.windows.get(&id).ok_or(AppError::UnknownWindow(id))?.scope,
             None => self.world.root_scope(),
         };
         let value = self.guarded(|app| {
@@ -436,7 +458,7 @@ impl AppRuntime {
             cx.tree = window.and_then(|id| app.windows.get(&id)).map(|window| &window.tree);
             f(&mut cx)
         });
-        self.run_turn(None)?;
+        self.run_cycle(None)?;
         Ok(value)
     }
 
@@ -559,11 +581,30 @@ impl WriteCx<'_> {
     pub fn send_native_command(&mut self, target_test_id: &str, name: impl Into<String>, data: serde_json::Value) -> bool {
         let (Some(window), Some(tree)) = (self.window_id(), self.tree) else { return false };
         let [node] = tree.test_ids(target_test_id) else { return false };
-        if !tree.is_live(*node) || !tree.native(*node).is_some_and(|native| native.live) {
+        if !tree.is_live(*node) || !tree.native(*node).is_some_and(|native| native.live && native.typed_props.is_none()) {
             return false;
         }
         let command = NativeCommand { id: NativeId::from(*node), name: name.into(), data };
         self.commands().queued.push_back(AppCommand::NativeCommand { window, command });
+        true
+    }
+
+    /// Queues an in-process command for the unique mounted typed view with this test ID.
+    /// The instance may respond by emitting a typed native event.
+    pub fn send_typed_native_command<C: 'static>(&mut self, target_test_id: &str, command: C, inspect: Option<serde_json::Value>) -> bool {
+        let (Some(window), Some(tree)) = (self.window_id(), self.tree) else { return false };
+        let [node] = tree.test_ids(target_test_id) else { return false };
+        if !tree.is_live(*node) || !tree.native(*node).is_some_and(|native| native.live && native.typed_props.is_some()) {
+            return false;
+        }
+        let command = TypedNativeCommand {
+            id: NativeId::from(*node),
+            ticket: self.world.module_work.next_ticket(),
+            name: std::any::type_name::<C>(),
+            payload: Box::new(command),
+            inspect,
+        };
+        self.commands().queued.push_back(AppCommand::TypedNativeCommand { window, command });
         true
     }
 

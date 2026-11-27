@@ -10,6 +10,7 @@ mod windows_preferences;
 use crate::ShellEvent;
 use crate::os::{ActiveEditorView, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowAsks, WindowTextInput};
 use ime::WinitIme;
+use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::Input;
 use octara_model::ask::{Ask, AskId, ServiceId, ServiceRequest};
 use octara_model::input::{EditorEvent, HostReply};
@@ -19,7 +20,42 @@ use services::{Clipboard, Services};
 use std::rc::Rc;
 use std::sync::Arc;
 use winit::event::Ime;
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
+
+#[cfg(target_os = "windows")]
+pub(super) const SURFACE_KIND: HostSurfaceKind = HostSurfaceKind::Windows;
+#[cfg(not(target_os = "windows"))]
+pub(super) const SURFACE_KIND: HostSurfaceKind = HostSurfaceKind::Linux;
+
+#[cfg(target_os = "windows")]
+pub(super) fn raw_module_surface(window: &Window) -> Option<RawNativeSurface> {
+    use std::ptr::NonNull;
+
+    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else { return None };
+    Some(RawNativeSurface::Win32 {
+        hwnd: NonNull::new(handle.hwnd.get() as *mut _)?,
+        hinstance: handle.hinstance.and_then(|instance| NonNull::new(instance.get() as *mut _)),
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn raw_module_surface(window: &Window) -> Option<RawNativeSurface> {
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+
+    let handles = (window.window_handle().ok()?.as_raw(), window.display_handle().ok()?.as_raw());
+    match handles {
+        (RawWindowHandle::Wayland(window), RawDisplayHandle::Wayland(display)) => {
+            Some(RawNativeSurface::Wayland { display: display.display, surface: window.surface })
+        }
+        (RawWindowHandle::Xlib(window), RawDisplayHandle::Xlib(display)) => {
+            #[allow(clippy::unnecessary_cast, reason = "Xlib's unsigned long can be 32-bit")]
+            let id = window.window as u64;
+            Some(RawNativeSurface::Xlib { display: display.display?, window: id })
+        }
+        _ => None,
+    }
+}
 
 pub(super) fn create() -> Box<dyn OsHost> {
     Box::new(DesktopHost {
@@ -36,6 +72,10 @@ struct DesktopHost {
 }
 
 impl OsHost for DesktopHost {
+    fn follows_window_focus(&self) -> bool {
+        true
+    }
+
     #[cfg(target_os = "linux")]
     fn initialize(&mut self, proxy: winit::event_loop::EventLoopProxy<ShellEvent>) {
         self.preferences = linux_preferences::Observer::start(proxy).ok();

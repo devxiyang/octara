@@ -140,7 +140,7 @@ pub trait HostEngine {
     }
 }
 
-/// Platform requests are dispatched by the host after a successful turn.
+/// Platform requests are dispatched by the host after a successful cycle.
 pub trait PlatformServices {
     fn set_menus(&mut self, menus: &[Menu]);
     fn ask_route(&self, ask: &Ask) -> AskRoute;

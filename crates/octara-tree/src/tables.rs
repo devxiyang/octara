@@ -8,7 +8,7 @@ use octara_model::geometry::{Placed, Placement, Vec2};
 use octara_model::image::{ImageSource, ImageState, MediaAsset};
 use octara_model::input::{CursorStyle, DragPayload, DropAxis};
 use octara_model::motion::{Curve, TextReveal};
-use octara_model::native::NativeSlot as NativeLayer;
+use octara_model::native::{NativeSlot as NativeLayer, TypedNativeProps};
 use octara_model::overlay::AnchorTarget;
 use octara_model::paint::{CanvasOp, Image, NodeIcon, ObjectFit, PaintInput, PaintMount, PaintProgram};
 use octara_model::semantics::{Checked, Live, NumericRange, Relations, Role};
@@ -182,6 +182,7 @@ pub struct NativeSlot {
     pub kind: &'static str,
     pub slot: NativeLayer,
     pub props: serde_json::Value,
+    pub typed_props: Option<TypedNativeProps>,
     pub props_rev: u64,
     pub live: bool,
 }

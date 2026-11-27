@@ -6,9 +6,10 @@ use crate::{
 };
 use octara::{
     App,
+    module::ModuleObservation,
     runtime::{
         Input,
-        turn::{TurnError, TurnReceipt},
+        cycle::{AppError, CycleReceipt},
     },
     tree::editor::EditorSession,
 };
@@ -37,6 +38,7 @@ pub enum Event {
     Editor { window: WindowId, event: EditorEvent },
     Host { window: WindowId, reply: HostReply },
     Agent(AgentRequest),
+    Module(ModuleObservation),
     Redacted(Channel),
 }
 
@@ -107,6 +109,13 @@ impl Replay {
         if app.runtime().windows().any(|(_, window)| window.tree().id().namespace != self.namespace) {
             return Err(ReplayError::WrongNamespace);
         }
+        let observer = app.runtime_mut().set_module_observer(None);
+        let result = self.play_entries(app, inspector, host);
+        app.runtime_mut().set_module_observer(observer);
+        result
+    }
+
+    fn play_entries(&self, app: &mut App, inspector: &mut Inspector, host: &mut impl InspectHost) -> Result<Vec<Step>, ReplayError> {
         let mut steps = Vec::with_capacity(self.entries.len());
         for (index, entry) in self.entries.iter().enumerate() {
             let now = app.runtime().now();
@@ -114,13 +123,14 @@ impl Replay {
                 return Err(ReplayError::TimeWentBackwards { index });
             }
             if entry.at > now {
-                host.advance_clock(app, entry.at - now).map_err(|error| ReplayError::Turn { index, error })?;
+                host.advance_clock(app, entry.at - now).map_err(|error| ReplayError::Cycle { index, error })?;
             }
             let delivery = match &entry.event {
-                Event::Interaction { window, event } => raw(app, index, *window, Input::Interaction(*event))?,
-                Event::Editor { window, event } => raw(app, index, *window, Input::Editor(event.clone()))?,
-                Event::Host { window, reply } => raw(app, index, *window, Input::Host(reply.clone()))?,
+                Event::Interaction { window, event } => raw(app, host, index, *window, Input::Interaction(*event))?,
+                Event::Editor { window, event } => raw(app, host, index, *window, Input::Editor(event.clone()))?,
+                Event::Host { window, reply } => raw(app, host, index, *window, Input::Host(reply.clone()))?,
                 Event::Agent(request) => Step::Agent(Box::new(inspector.execute_replayed(app, host, request.clone()))),
+                Event::Module(observation) => Step::Module(observation.clone()),
                 Event::Redacted(channel) => Step::Redacted(*channel),
             };
             steps.push(delivery);
@@ -146,14 +156,19 @@ pub(crate) fn request_entry(app: &App, request: &AgentRequest) -> Entry {
     Entry { at: app.runtime().now(), event }
 }
 
-fn raw(app: &mut App, index: usize, window: WindowId, input: Input) -> Result<Step, ReplayError> {
-    app.dispatch(window, input).map(Step::Input).map_err(|error| ReplayError::Turn { index, error })
+fn raw(app: &mut App, host: &mut impl InspectHost, index: usize, window: WindowId, input: Input) -> Result<Step, ReplayError> {
+    let result = app.dispatch(window, input).and_then(|receipt| {
+        host.synchronize(app)?;
+        Ok(Step::Input(receipt))
+    });
+    result.map_err(|error| ReplayError::Cycle { index, error })
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Step {
-    Input(TurnReceipt),
+    Input(CycleReceipt),
     Agent(Box<AgentReceipt>),
+    Module(ModuleObservation),
     Redacted(Channel),
 }
 
@@ -161,7 +176,7 @@ pub enum Step {
 pub enum ReplayError {
     WrongNamespace,
     TimeWentBackwards { index: usize },
-    Turn { index: usize, error: TurnError },
+    Cycle { index: usize, error: AppError },
 }
 
 impl fmt::Display for ReplayError {
@@ -169,7 +184,7 @@ impl fmt::Display for ReplayError {
         match self {
             Self::WrongNamespace => f.write_str("replay requires the recorded application's namespace"),
             Self::TimeWentBackwards { index } => write!(f, "recorded time precedes the current clock at event {index}"),
-            Self::Turn { index, error } => write!(f, "replay event {index} failed: {error}"),
+            Self::Cycle { index, error } => write!(f, "replay event {index} failed: {error}"),
         }
     }
 }

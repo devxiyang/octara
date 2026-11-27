@@ -3,7 +3,7 @@
 use crate::{HeadlessDriver, inspector::snapshot, protocol::TargetRef};
 use octara::{
     prelude::*,
-    runtime::{HostCommand, Input, turn::TurnError},
+    runtime::{HostCommand, Input, cycle::AppError},
     tree::{editor::EditorSession, overlay::LayerPolicy},
 };
 use octara_model::{
@@ -119,7 +119,7 @@ struct SimWindow {
     pointer: Option<Point>,
 }
 
-fn open(driver: &mut HeadlessDriver) -> Result<SimWindow, TurnError> {
+fn open(driver: &mut HeadlessDriver) -> Result<SimWindow, AppError> {
     let capture = Rc::new(Cell::new(None));
     let result = capture.clone();
     let options = WindowOptions {
@@ -311,7 +311,7 @@ fn generate(config: SimConfig, rng: &mut Rng) -> Action {
     }
 }
 
-fn apply(driver: &mut HeadlessDriver, window: &mut SimWindow, action: Action) -> Result<(), TurnError> {
+fn apply(driver: &mut HeadlessDriver, window: &mut SimWindow, action: Action) -> Result<(), AppError> {
     let id = window.id;
     let rows = window.fixture.rows;
     let state = driver.app().runtime().window(id).expect("simulation window");

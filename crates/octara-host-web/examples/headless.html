@@ -73,7 +73,7 @@
         assert(editor.selectionStart === 1 && editor.selectionEnd === 3 && editor.selectionDirection === "backward",
             "changing the field label preserves the editor selection");
         assert(named(editor, "aria-labelledby") === label && label.textContent === "Display name",
-            "the renamed field label reaches the DOM in the same turn");
+            "the renamed field label reaches the DOM in the same cycle");
 
         const first = node("first-tab");
         const second = node("second-tab");

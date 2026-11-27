@@ -1,4 +1,4 @@
-//! A bounded single-producer queue drained at the start of an application turn.
+//! A bounded single-producer queue drained at the start of an application cycle.
 
 use octara_model::CacheLine;
 use std::cell::UnsafeCell;

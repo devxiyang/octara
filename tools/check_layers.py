@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check canonical workspace members and their production dependency edges."""
+"""Check canonical workspace members and their permitted dependency edges."""
 
 import json
 import re
@@ -10,6 +10,7 @@ import sys
 
 # Explicit edges make a new package or an upward dependency a reviewable decision.
 # Dev dependencies can host integration tests without entering the shipped library graph.
+# Applications and examples may opt into optional modules.
 ALLOWED = {
     "octara-model": set(),
     "octara-macros": set(),
@@ -51,6 +52,8 @@ APP_DIRS = {
     "octara-examples-desktop": "examples/desktop",
 }
 
+MODULE_ALLOWED = {"octara", "octara-icons", "octara-kit"}
+
 
 AUTHORING_PACKAGES = ("octara-headless", "octara-kit", "octara-markdown", *APP_DIRS)
 INTERNAL_IMPORT = re.compile(
@@ -60,8 +63,8 @@ INTERNAL_IMPORT = re.compile(
 )
 
 
-def authoring_import_violations(root, directories):
-    for package in AUTHORING_PACKAGES:
+def authoring_import_violations(root, directories, authoring_packages):
+    for package in authoring_packages:
         for source in sorted((directories[package] / "src").rglob("*.rs")):
             content = source.read_text()
             for match in INTERNAL_IMPORT.finditer(content):
@@ -71,41 +74,62 @@ def authoring_import_violations(root, directories):
 
 def violations(metadata):
     root = Path(metadata["workspace_root"]).resolve()
-    directories = {name: root / APP_DIRS.get(name, f"crates/{name}") for name in ALLOWED}
+    modules_root = root / "modules"
     members = set(metadata["workspace_members"])
     packages = [p for p in metadata["packages"] if p["id"] in members]
+    modules = {}
+    for package in packages:
+        name = package["name"]
+        directory = Path(package["manifest_path"]).resolve().parent
+        if name not in ALLOWED and directory.parent == modules_root:
+            modules[name] = directory
+
+    directories = {name: root / APP_DIRS.get(name, f"crates/{name}") for name in ALLOWED}
+    directories.update(modules)
     names = {p["name"] for p in packages}
     errors = [f"missing workspace member: {name}" for name in sorted(ALLOWED.keys() - names)]
     for package in packages:
         name = package["name"]
-        if name not in ALLOWED:
+        if name not in directories:
             errors.append(f"unexpected workspace member: {name}")
             continue
         expected_manifest = directories[name] / "Cargo.toml"
         if Path(package["manifest_path"]).resolve() != expected_manifest:
             errors.append(f"workspace member {name}: expected {expected_manifest.relative_to(root)}")
 
+        is_module = name in modules
+        is_app = name in APP_DIRS
+        allowed = MODULE_ALLOWED if is_module else ALLOWED[name]
+        if is_app:
+            allowed = allowed | modules.keys()
+
         # Cargo's declared dependencies include optional and target-specific edges.
         for dependency in package["dependencies"]:
-            if dependency["kind"] == "dev":
-                continue
             target = dependency["name"]
+            path = Path(dependency["path"]) if dependency.get("path") else None
+            resolved_path = path.resolve() if path else None
+            if dependency["kind"] == "dev":
+                if not is_app and not is_module and (
+                    target in modules or any(p is not None and p.is_relative_to(modules_root) for p in (path, resolved_path))
+                ):
+                    errors.append(f"forbidden development dependency: {name} -> {target}")
+                continue
             if name == "octara-headless" and target != "octara":
                 errors.append(f"forbidden production dependency: {name} -> {target}")
                 continue
-            path = Path(dependency["path"]) if dependency.get("path") else None
-            resolved_path = path.resolve() if path else None
             in_repo = path is not None and (
                 path.is_relative_to(root) or resolved_path.is_relative_to(root)
             )
-            if target not in ALLOWED and not in_repo:
+            if target not in directories and not in_repo:
+                if is_module and dependency["target"] is None:
+                    errors.append(f"production dependency {name} -> {target}: expected a target-specific dependency")
                 continue
-            if target not in ALLOWED[name]:
+            if target not in allowed:
                 errors.append(f"forbidden production dependency: {name} -> {target}")
             elif resolved_path != directories[target]:
                 expected = directories[target].relative_to(root)
                 errors.append(f"production dependency {name} -> {target}: expected path {expected}")
-    errors.extend(authoring_import_violations(root, directories))
+    errors.extend(authoring_import_violations(root, directories, (*AUTHORING_PACKAGES, *sorted(modules))))
     return errors
 
 

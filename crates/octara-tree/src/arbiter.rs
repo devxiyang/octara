@@ -45,7 +45,7 @@ impl Default for Tuning {
 
 #[derive(Clone, Copy, Default)]
 pub struct InteractionContext<'a> {
-    /// The turn's virtual monotonic time.
+    /// The cycle's virtual monotonic time.
     pub now: Duration,
     pub keyboard_open: bool,
     pub pointer: Option<PointerGeometry<'a>>,
@@ -186,7 +186,7 @@ pub enum TouchScrollStage {
     Post,
 }
 
-/// A captured touch delta. The turn offers it to Pre, the viewport, and Post in order.
+/// A captured touch delta. The cycle offers it to Pre, the viewport, and Post in order.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TouchScrollIntent {
     pub target: TargetGuard,
@@ -209,7 +209,7 @@ impl TouchScrollIntent {
     }
 
     /// Filter the requested viewport motion to the captured container's scroll axes.
-    /// The turn supplies the amount actually consumed using its current scroll bounds.
+    /// The cycle supplies the amount actually consumed using its current scroll bounds.
     pub fn viewport_delta(self, tree: &Tree, available: Vec2) -> Option<Vec2> {
         if !self.moves() {
             return None;

@@ -1,7 +1,7 @@
 use octara_model::geometry::{LayoutBox, Point, WindowViewport};
 use octara_model::input::{ContactTarget, EditorEvent};
 use octara_model::style::State;
-use octara_runtime::turn::{TurnError, WINDOW_ROUNDS};
+use octara_runtime::cycle::{AppError, WINDOW_ROUNDS};
 use octara_runtime::{AppRuntime, CommitOutput, HandlerEvent, HostEngine, Input, ProjectError, ProjectFeedback, WindowOptions};
 use octara_tree::editor::{EditorSession, EditorSlot};
 use octara_tree::tables::HandlerKind;
@@ -68,7 +68,7 @@ fn app() -> (AppRuntime, Arc<HostState>) {
 fn feedback_loop_rolls_back_at_the_causal_round_limit() {
     let (mut app, host) = app();
     host.bounce.set(true);
-    assert_eq!(app.open_window(WindowOptions::default(), |_| {}), Err(TurnError::LayoutLoop));
+    assert_eq!(app.open_window(WindowOptions::default(), |_| {}), Err(AppError::LayoutLoop));
     assert_eq!(host.projects.get(), WINDOW_ROUNDS);
     assert_eq!(host.rollbacks.get(), 1);
     assert_eq!(app.windows().count(), 0);
@@ -81,7 +81,7 @@ fn feedback_loop_rolls_back_at_the_causal_round_limit() {
 
 #[cfg(not(target_family = "wasm"))]
 #[test]
-fn worker_wakes_during_projection_wait_for_next_turn_and_notify_host() {
+fn worker_wakes_during_projection_wait_for_next_cycle_and_notify_host() {
     use octara_runtime::task::channel;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -109,8 +109,8 @@ fn worker_wakes_during_projection_wait_for_next_turn_and_notify_host() {
     host.publish_locally.set(Some(local));
     host.publish_from_worker.set(Some(worker));
     app.open_window(WindowOptions::default(), |_| {}).unwrap();
-    assert!(local_arrived.load(Ordering::Relaxed), "same-thread wakes settle in the current turn");
-    assert!(!worker_arrived.load(Ordering::Relaxed), "off-thread arrivals cannot extend the current turn");
+    assert!(local_arrived.load(Ordering::Relaxed), "same-thread wakes settle in the current cycle");
+    assert!(!worker_arrived.load(Ordering::Relaxed), "off-thread arrivals cannot extend the current cycle");
     assert_eq!(wakes.load(Ordering::Relaxed), 2);
     app.settle().unwrap();
     assert!(worker_arrived.load(Ordering::Relaxed));
@@ -171,7 +171,7 @@ fn a_panic_in_a_write_latches_publication_failure() {
     }));
     assert!(outcome.is_err());
     assert!(app.is_failed());
-    assert_eq!(app.settle(), Err(TurnError::AppFailed));
+    assert_eq!(app.settle(), Err(AppError::AppFailed));
 }
 
 #[test]

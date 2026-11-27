@@ -162,7 +162,7 @@ impl Canvases {
         let prune = !retired.is_empty();
         drop(state);
         if prune || !replaced.is_empty() || device.is_some() {
-            // Paint program destructors run outside the active runtime turn.
+            // Paint program destructors run outside the active runtime cycle.
             spawn_local(async move { drop((retired, replaced, device)) });
         }
         self.schedule(prune);

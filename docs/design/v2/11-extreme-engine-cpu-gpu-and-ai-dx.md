@@ -21,7 +21,7 @@
 ## 2. CPU Cache, Memory Systems & OS Architecture
 
 ### 2.1 Hierarchical 64-Bit Dirty Bitmaps (Replacing `FxHashSet<NodeId>`)
-- **Problem**: `TreeDelta`, `LayoutEngine::changed`, and `TextEngine::changed` allocate and hash 7+ `FxHashSet<NodeId>` instances every turn.
+- **Problem**: `TreeDelta`, `LayoutEngine::changed`, and `TextEngine::changed` allocate and hash 7+ `FxHashSet<NodeId>` instances every cycle.
 - **Design**: Dense slot-indexed **2-level bitmap (`DirtyBitmap`)**:
   - **L0**: `Vec<u64>` (1 bit per `SlotMap` index — 10,000 nodes = **1.25 KiB**, L1d resident).
   - **L1 Summary**: 1 bit per 64 L0 words (= 4,096 nodes per summary `u64`).
@@ -59,7 +59,7 @@
 ### 2.5 OS Virtual Memory (`mmap`) & Heterogeneous Core QoS Scheduling
 - **Zero-Copy `mmap` Fonts**: System/bundled CJK fonts (15–30 MiB) map directly via read-only `mmap` (`MADV_WILLNEED` / `MADV_DONTNEED`), sharing physical OS Page Cache pages across windows/processes with millisecond cold start.
 - **P-Core vs. E-Core QoS Affinity**:
-  - `USER_INTERACTIVE` (P-Cores): Turn engine, layout, input ingress, frame GPU encode.
+  - `USER_INTERACTIVE` (P-Cores): Cycle engine, layout, input ingress, frame GPU encode.
   - `UTILITY` / `BACKGROUND` (E-Cores): Offscreen syntax highlighting, image decoding, atlas compaction — keeping UI L2 cache warm and battery drain low.
 
 ### 2.6 `octara-runtime` Signals Kernel & Final-Form Public API (`Wave 1` + `Wave 1b`)

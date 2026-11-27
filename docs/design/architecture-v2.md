@@ -227,7 +227,7 @@ Signals (`Value`) and Collections/TextBuffers (`Delta`) live in **one unified de
   - **Phase 2a (Derivations)**: Recompute dirty `Memo`s and `ListView`s in ascending `depth` order.
   - **Phase 2b (Structure)**: Run dirty `Structure` regions (`show`, `each`, `virtual_each`) → emit creates/places/retires into `TxBuilder`.
   - **Phase 2c (Bindings)**: Run dirty property/style bindings only on surviving nodes → emit changes into the **same** `TxBuilder`.
-  - **Phase 2d (Watch Sources)**: Evaluate dirty `Watch` sources with `&mut ReadCx`; enqueue changed callbacks into the post-commit effect queue (bounded turn budget, zero mid-flush re-entrancy).
+  - **Phase 2d (Watch Sources)**: Evaluate dirty `Watch` sources with `&mut ReadCx`; enqueue changed callbacks into the post-commit effect queue (bounded cycle budget, zero mid-flush re-entrancy).
 
 Modularized `reactive/list/` split into `state_list.rs`, `seq.rs`, `filter.rs`, `map.rs`, `sort.rs`, `group.rs`, `join.rs`, `flatten.rs`.
 
@@ -286,7 +286,7 @@ Every mutation produces a compact **`TreeDelta`**:
 
 ---
 
-## 5. Five-Phase Turn Engine & Atomic Command-Stream Mounting
+## 5. Five-Phase Cycle Engine & Atomic Command-Stream Mounting
 
 ```text
 [1. Ingress]  Validate TargetGuard / EditorSession against settled state.
@@ -316,7 +316,7 @@ Every mutation produces a compact **`TreeDelta`**:
               Aborted/failed: HostEngine::rollback(), keeping last settled UI intact.
 ```
 
-Panic escaping a turn latches one-way `App` failure (`failed = true`) so corrupted state is never published.
+Panic escaping a cycle latches one-way `App` failure (`failed = true`) so corrupted state is never published.
 
 ---
 
@@ -400,7 +400,7 @@ Execute in an isolated worktree branched cleanly from `origin/init` (`branch: ar
 | --- | --- | --- |
 | **Phase 0** | Lock `docs/design/architecture-v2.md` & update `tools/check_layers.py` target DAG | Layer checker enforces v2 DAG |
 | **Phase 1** | `octara-model` + `octara-tree` (sparse ECS `NodeCore ≤ 48B`, `TreeDelta`, `InteractionArbiter`, logical `EditorSession`) | Unit + property tests pass; `size_of::<NodeCore>() <= 48` asserted; zero heavy deps |
-| **Phase 2** | `octara-runtime` (`TypedSlab`, All-`Copy` handles, `BuildCx`/`ReadCx`/`WriteCx`/`CleanupCx`/`TaskCx`, unified Value+Delta topological graph, 5-phase Turn Engine, `HostEngine`) + `octara` facade | Compile-fail doctests verify capability isolation (`WRITE_IN_DERIVE`, `WRITE_IN_BUILD`, `STRICT_READ_UNTRACKED`, `SIGNAL_BORROW`, `VIEW_READS_STATE`); 200-node mount = 1 `Transaction`; zero `thread_local!` |
+| **Phase 2** | `octara-runtime` (`TypedSlab`, All-`Copy` handles, `BuildCx`/`ReadCx`/`WriteCx`/`CleanupCx`/`TaskCx`, unified Value+Delta topological graph, 5-phase Cycle Engine, `HostEngine`) + `octara` facade | Compile-fail doctests verify capability isolation (`WRITE_IN_DERIVE`, `WRITE_IN_BUILD`, `STRICT_READ_UNTRACKED`, `SIGNAL_BORROW`, `VIEW_READS_STATE`); 200-node mount = 1 `Transaction`; zero `thread_local!` |
 | **Phase 3** | `octara-pipeline` (Taffy/Parley/Motion/Paint/AccessKit) + modular thread-agnostic `octara-render` + native `octara-gpu` (event-driven `DeviceExecutor`) + `octara-inspect` (with parallel DST fuzz tests) | Headless deterministic suite & DST fuzzing pass (rename, nested scroll, modal focus, virtual lists, selection, replay, CPU/GPU parity) |
 | **Phase 4** | `octara-host-native` (`OsHost`/`OsWindow`: macOS, iOS, desktop) + `octara-host-web` (Delta DOM, UndoLog, JS batch measure, Canvas/Blob images, opt WebGPU) | `cargo check --target wasm32-unknown-unknown -p octara-host-web` passes with zero forbidden deps; native builds & macOS/Chromium checks pass |
 | **Phase 5** | Migrate `octara-kit`, `octara-cli`, `apps/chat`, `examples`, docs, skills; delete all v1 legacy crates/shims | `python3 tools/check_layers.py`, `cargo test --workspace`, `cargo test -p octara-cli --doc`, `cargo clippy --workspace --all-targets`, skill export fresh, measurable metrics report |

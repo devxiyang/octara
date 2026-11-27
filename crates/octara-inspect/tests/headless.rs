@@ -3,6 +3,9 @@
 #[path = "headless/scrolling.rs"]
 mod scrolling;
 
+#[path = "headless/native_views.rs"]
+mod native_views;
+
 #[path = "headless/text_selection.rs"]
 mod text_selection;
 

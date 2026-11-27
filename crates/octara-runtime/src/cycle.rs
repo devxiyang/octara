@@ -1,4 +1,4 @@
-//! The atomic ingress, react, commit, project and publish turn.
+//! The atomic ingress, react, commit, project and publish cycle.
 
 mod text;
 
@@ -8,15 +8,17 @@ use crate::app::{AppCommand, AppRuntime, HostCommand, Input, PendingAsk, Pending
 use crate::arena::{NodeKind as ReactiveKind, ScopeId};
 use crate::engine::ProjectError;
 use crate::graph::FlushTier;
+use crate::module::{ModuleObservation, ModuleObservationKind};
 use crate::window::{FeedbackSignal, HandlerEvent, HandlerOutcome, MountCx, WindowRuntime};
 use octara_model::ask::{AskId, ServiceId, ServiceRequest};
 use octara_model::diagnostics::{Diagnostic, codes};
 use octara_model::geometry::{Point, Vec2};
-use octara_model::identity::WindowId;
+use octara_model::identity::{NativeId, WindowId};
 use octara_model::input::{
     BackPhase, ContextMenuEvent, ContextMenuItem, CopyFormat, EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, LinkEvent,
     LinkEventKind, Modifiers, PointerKind,
 };
+use octara_model::native::TypedNativeEvent;
 use octara_model::semantics::A11yAction;
 use octara_model::style::State;
 use octara_tree::arbiter::{
@@ -33,30 +35,34 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 pub const WINDOW_ROUNDS: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TurnError {
+pub enum AppError {
     AppFailed,
+    DuplicateModule(crate::module::ModuleId),
+    ModuleInstall { id: crate::module::ModuleId, error: crate::module::ModuleError },
     UnknownWindow(WindowId),
     Transaction { window: WindowId, reason: TreeError },
     Project { window: WindowId, error: ProjectError },
     LayoutLoop,
 }
 
-impl std::fmt::Display for TurnError {
+impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AppFailed => f.write_str("application stopped after a failed turn"),
+            Self::AppFailed => f.write_str("application stopped after a failed cycle"),
+            Self::DuplicateModule(id) => write!(f, "duplicate module {}", id.0),
+            Self::ModuleInstall { id, error } => write!(f, "installing module {} failed: {error}", id.0),
             Self::UnknownWindow(window) => write!(f, "unknown window {window:?}"),
             Self::Transaction { window, reason } => write!(f, "transaction for {window:?} rejected: {reason:?}"),
             Self::Project { window, error } => write!(f, "projection for {window:?} failed: {error}"),
-            Self::LayoutLoop => f.write_str("window projection exhausted its turn budget"),
+            Self::LayoutLoop => f.write_str("window projection exhausted its cycle budget"),
         }
     }
 }
 
-impl std::error::Error for TurnError {}
+impl std::error::Error for AppError {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TurnReceipt {
+pub struct CycleReceipt {
     pub delivered: bool,
     pub handled: bool,
     pub rounds: usize,
@@ -74,8 +80,8 @@ enum Routed {
 }
 
 impl AppRuntime {
-    pub(crate) fn require_active(&self) -> Result<(), TurnError> {
-        if self.failed { Err(TurnError::AppFailed) } else { Ok(()) }
+    pub(crate) fn require_active(&self) -> Result<(), AppError> {
+        if self.failed { Err(AppError::AppFailed) } else { Ok(()) }
     }
 
     pub(crate) fn guarded<R>(&mut self, run: impl FnOnce(&mut Self) -> R) -> R {
@@ -84,21 +90,21 @@ impl AppRuntime {
             Err(error) => {
                 self.failed = true;
                 self.rollback();
-                self.diagnostics.push(Diagnostic::new(&codes::APP_FAILED, "A panic escaped the application turn"));
+                self.diagnostics.push(Diagnostic::new(&codes::APP_FAILED, "A panic escaped the application cycle"));
                 resume_unwind(error);
             }
         }
     }
 
-    pub(crate) fn run_turn(&mut self, incoming: Option<(WindowId, Input)>) -> Result<TurnReceipt, TurnError> {
+    pub(crate) fn run_cycle(&mut self, incoming: Option<(WindowId, Input)>) -> Result<CycleReceipt, AppError> {
         self.require_active()?;
         if let Some((window, _)) = incoming.as_ref()
             && !self.windows.contains_key(window)
         {
-            return Err(TurnError::UnknownWindow(*window));
+            return Err(AppError::UnknownWindow(*window));
         }
         self.guarded(|app| {
-            let result = app.drive_turn(incoming);
+            let result = app.drive_cycle(incoming);
             if result.is_err() {
                 app.rollback();
             }
@@ -106,8 +112,9 @@ impl AppRuntime {
         })
     }
 
-    fn drive_turn(&mut self, incoming: Option<(WindowId, Input)>) -> Result<TurnReceipt, TurnError> {
-        self.tasks.begin_turn();
+    fn drive_cycle(&mut self, incoming: Option<(WindowId, Input)>) -> Result<CycleReceipt, AppError> {
+        self.tasks.begin_cycle();
+        self.drain_module_messages();
         let now = self.now();
         self.coalesce_text_streams(now);
         for window in self.windows.values_mut() {
@@ -116,7 +123,7 @@ impl AppRuntime {
             }
         }
 
-        let mut receipt = TurnReceipt::default();
+        let mut receipt = CycleReceipt::default();
         let mut routed = VecDeque::new();
         if let Some((window, input)) = incoming {
             receipt.delivered = self.ingress(window, input, &mut routed);
@@ -127,17 +134,19 @@ impl AppRuntime {
             if let Some(job) = routed.pop_front() {
                 receipt.handled |= self.route(job, &mut routed);
             }
-            self.tasks.poll_turn_ready(&mut self.world, &mut self.commands, |id| self.windows.get(&id).map(|window| &window.tree));
+            self.tasks.poll_cycle_ready(&mut self.world, &mut self.commands, |id| self.windows.get(&id).map(|window| &window.tree));
             self.drain_commands(&mut routed);
             self.react()?;
             self.prepare_presentation(&mut routed);
             self.commit(&mut routed)?;
             self.project(&mut routed)?;
+            self.dispatch_module_requests();
             self.sync_media();
             if routed.is_empty()
                 && self.commands.queued.is_empty()
                 && !self.world.has_pending_work()
-                && !self.tasks.has_turn_ready()
+                && !self.has_module_requests()
+                && !self.tasks.has_cycle_ready()
                 && self.windows.values().all(|window| window.pending.is_empty() && !window.force_project)
             {
                 self.update_tooltips(now);
@@ -148,8 +157,8 @@ impl AppRuntime {
                 return Ok(receipt);
             }
         }
-        self.diagnostics.push(Diagnostic::new(&codes::LAYOUT_LOOP, format!("Turn exhausted {WINDOW_ROUNDS} causal rounds")));
-        Err(TurnError::LayoutLoop)
+        self.diagnostics.push(Diagnostic::new(&codes::LAYOUT_LOOP, format!("Cycle exhausted {WINDOW_ROUNDS} causal rounds")));
+        Err(AppError::LayoutLoop)
     }
 
     fn ingress(&mut self, id: WindowId, input: Input, routed: &mut VecDeque<Routed>) -> bool {
@@ -834,6 +843,26 @@ impl AppRuntime {
         }
     }
 
+    pub(crate) fn route_typed_native_event(&mut self, window: WindowId, id: NativeId, event: TypedNativeEvent) -> bool {
+        let Some(state) = self.windows.get(&window) else { return false };
+        let node = id.node();
+        let Some(view) = state.tree.native(node) else { return false };
+        if state.settled.is_none() || !state.tree.is_live(node) || view.typed_props.is_none() {
+            return false;
+        }
+        if self.observes_modules() {
+            self.observe_module(ModuleObservation {
+                at: self.now(),
+                kind: ModuleObservationKind::NativeEvent,
+                module: view.kind.into(),
+                name: event.name.into(),
+                ticket: None,
+                payload: event.inspect.clone(),
+            });
+        }
+        self.invoke_node(window, node, HandlerKind::Native, HandlerEvent::TypedNative(&event)).consumed
+    }
+
     fn invoke_node(&mut self, id: WindowId, node: NodeId, kind: HandlerKind, event: HandlerEvent<'_>) -> HandlerOutcome {
         let handler = self.windows.get(&id).and_then(|window| window.tree.handler(node, kind));
         handler.map_or_default(|handler| self.invoke(id, handler, event))
@@ -979,11 +1008,14 @@ impl AppRuntime {
                     self.deliver_paste(window, Some(target), event, routed);
                 }
                 AppCommand::NativeCommand { window, command } => self.staged_host.push(HostCommand::NativeCommand { window, command }),
+                AppCommand::TypedNativeCommand { window, command } => {
+                    self.staged_host.push(HostCommand::TypedNativeCommand { window, command });
+                }
             }
         }
     }
 
-    fn react(&mut self) -> Result<(), TurnError> {
+    fn react(&mut self) -> Result<(), AppError> {
         let tasks = self.tasks.spawner();
         let system_preferences = self.system_preferences.read_only();
         for window in self.windows.values_mut() {
@@ -1060,8 +1092,8 @@ impl AppRuntime {
                 return Ok(());
             }
         }
-        self.diagnostics.push(Diagnostic::new(&codes::FLUSH_RUNAWAY, "Structure repeatedly registered more structure in one turn"));
-        Err(TurnError::LayoutLoop)
+        self.diagnostics.push(Diagnostic::new(&codes::FLUSH_RUNAWAY, "Structure repeatedly registered more structure in one cycle"));
+        Err(AppError::LayoutLoop)
     }
 
     fn register_work(world: &mut crate::arena::ReactiveWorld, window: &mut WindowRuntime) {
@@ -1075,14 +1107,14 @@ impl AppRuntime {
         }
     }
 
-    fn commit(&mut self, routed: &mut VecDeque<Routed>) -> Result<(), TurnError> {
+    fn commit(&mut self, routed: &mut VecDeque<Routed>) -> Result<(), AppError> {
         let now = self.now();
         for window in self.windows.values_mut() {
             let previous = window.tree.focus();
             window.discard_retiring_allocations(&self.world);
             if let Err(rejected) = window.commit_tree() {
                 self.failed = true;
-                return Err(TurnError::Transaction { window: window.id, reason: rejected.reason });
+                return Err(AppError::Transaction { window: window.id, reason: rejected.reason });
             }
             Self::note_focus(window, previous, routed);
             for scope in std::mem::take(&mut window.work.retire_scopes) {
@@ -1137,7 +1169,7 @@ impl AppRuntime {
         Ok(())
     }
 
-    fn project(&mut self, routed: &mut VecDeque<Routed>) -> Result<(), TurnError> {
+    fn project(&mut self, routed: &mut VecDeque<Routed>) -> Result<(), AppError> {
         let now = self.now().as_secs_f64();
         for window in self.windows.values_mut() {
             self.diagnostics.append(&mut window.pending.diagnostics);
@@ -1148,7 +1180,7 @@ impl AppRuntime {
             let feedback = window
                 .engine
                 .project(&window.tree, &window.pending, window.options.viewport, now)
-                .map_err(|error| TurnError::Project { window: window.id, error })?;
+                .map_err(|error| AppError::Project { window: window.id, error })?;
             window.staged.merge(std::mem::take(&mut window.pending));
             window.force_project = false;
             window.next_deadline = feedback.next_deadline;
@@ -1356,20 +1388,43 @@ impl AppRuntime {
             self.published_menus = menus().cloned().collect();
             self.staged_host.push(HostCommand::Menus(self.published_menus.clone()));
         }
-        self.staged_host.retain(|command| match command {
-            HostCommand::NativeCommand { window, command } => self.windows.get(window).is_some_and(|window| {
-                let tree = &window.tree;
-                let node = command.id.node();
-                tree.is_live(node) && tree.native(node).is_some_and(|native| native.live)
-            }),
-            _ => true,
+        let at = self.now();
+        let trace = self.observes_modules();
+        let mut observations = Vec::new();
+        self.staged_host.retain(|command| {
+            let (window, id, typed) = match command {
+                HostCommand::NativeCommand { window, command } => (window, command.id, None),
+                HostCommand::TypedNativeCommand { window, command } => (window, command.id, Some(command)),
+                _ => return true,
+            };
+            let Some(state) = self.windows.get(window) else { return false };
+            let node = id.node();
+            let Some(view) = state.tree.native(node) else { return false };
+            if !state.tree.is_live(node) || !view.live || view.typed_props.is_some() != typed.is_some() {
+                return false;
+            }
+            if trace && let Some(command) = typed {
+                observations.push(ModuleObservation {
+                    at,
+                    kind: ModuleObservationKind::NativeCommand,
+                    module: view.kind.into(),
+                    name: command.name.into(),
+                    ticket: Some(command.ticket),
+                    payload: command.inspect.clone(),
+                });
+            }
+            true
         });
+        for observation in observations {
+            self.observe_module(observation);
+        }
         self.published_host.append(&mut self.staged_host);
     }
 
     fn rollback(&mut self) {
-        self.staged_host.retain(|command| !matches!(command, HostCommand::NativeCommand { .. }));
-        self.commands.queued.retain(|command| !matches!(command, AppCommand::NativeCommand { .. }));
+        self.discard_module_requests();
+        self.staged_host.retain(|command| !matches!(command, HostCommand::NativeCommand { .. } | HostCommand::TypedNativeCommand { .. }));
+        self.commands.queued.retain(|command| !matches!(command, AppCommand::NativeCommand { .. } | AppCommand::TypedNativeCommand { .. }));
         for window in self.windows.values_mut().filter(|window| window.projection_open) {
             window.engine.rollback();
             window.staged.merge(std::mem::take(&mut window.pending));

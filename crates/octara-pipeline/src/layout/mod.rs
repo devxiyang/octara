@@ -77,8 +77,8 @@ enum AnchorPlacement {
     Placed(Placed),
 }
 
-/// Taffy may remain ahead of the published frame after an aborted turn. Record only
-/// the first value replaced for each projected entry until that turn is committed.
+/// Taffy may remain ahead of the published frame after an aborted cycle. Record only
+/// the first value replaced for each projected entry until that cycle is committed.
 struct Projected<T> {
     entries: FxHashMap<NodeId, T>,
     undo: FxHashMap<NodeId, Option<T>>,

@@ -4,16 +4,16 @@ use crate::app::AppCommands;
 use crate::arena::{ReactiveId, ReactiveWorld, ScopeId};
 use crate::authoring::WindowAuthoring;
 use crate::cx::{BuildCx, ReadCx, WriteCx};
+use crate::cycle::TextInteraction;
 use crate::engine::{CommitOutput, HostEngine};
 use crate::graph::value::{ReadSignal, Signal};
 use crate::task::TaskSpawner;
 use crate::tooltip::{HoverTooltip, HoveredTooltip};
-use crate::turn::TextInteraction;
 use octara_model::geometry::{LayoutBox, Point, Size, Vec2, WindowViewport};
 pub use octara_model::identity::WindowId;
 use octara_model::identity::{TreeId, ViewportRev, WindowRev};
 use octara_model::input::{ContactTarget, DroppedFile, KeyEvent, Modifiers};
-use octara_model::native::NativeEvent;
+use octara_model::native::{NativeEvent, TypedNativeEvent};
 use octara_model::semantics::{A11yAction, TextClip};
 use octara_model::theme::Breakpoint;
 pub use octara_model::window::{
@@ -89,6 +89,7 @@ pub enum HandlerEvent<'a> {
     Link(&'a octara_model::input::LinkEvent),
     ContextMenu(&'a octara_model::input::ContextMenuEvent),
     Native(&'a NativeEvent),
+    TypedNative(&'a TypedNativeEvent),
     Accessibility(&'a A11yAction),
 }
 
@@ -1071,6 +1072,7 @@ impl WindowRuntime {
             }
         }
         drop(delta.take_retired_assets());
+        drop(delta.take_retired_native_props());
         self.pending.merge(delta);
     }
 

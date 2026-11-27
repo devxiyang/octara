@@ -87,7 +87,7 @@
      - Double click: Unicode word selection (`unicode-segmentation`); `secure` inputs select all `(0, len)`; double-click + drag extends word-by-word.
      - Triple click: line/paragraph selection (`0..len` for single-line input, `\n`-bounded paragraph for multiline textarea, full text node for `SELECT_REGION`); triple-click + drag extends line-by-line.
      - Scrolled single-line horizontal & multiline vertical coordinates, empty/placeholder input (`-> 0`), multi-byte UTF-8 (CJK/Emoji).
-     - **IME composition**: clicking inside a composing editor settles composition (`TextEdit::Unmark`, fallback `CancelComposition`) and re-queues the pointer-down intent at the front of `routed` so geometry settles in the same turn before placing the caret.
+     - **IME composition**: clicking inside a composing editor settles composition (`TextEdit::Unmark`, fallback `CancelComposition`) and re-queues the pointer-down intent at the front of `routed` so geometry settles in the same cycle before placing the caret.
      - **Web host parity**: native DOM `<input>`/`<textarea>` and browser `Selection` stay authoritative without synthetic conflicts.
 2. **Cross-Platform Default Keyboard Editing & Selection Shortcuts**:
    - In `AppRuntime`, handle `Cmd/Ctrl+C` (copy active `SELECT_REGION` selection using `window.copy_selection`, including Markdown source copy!) and `Cmd/Ctrl+A` (select all within active `SELECT_REGION`) when no editor/app handler consumes the key.

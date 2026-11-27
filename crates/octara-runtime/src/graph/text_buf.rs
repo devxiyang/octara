@@ -274,7 +274,7 @@ mod stream_tests {
 
 #[cfg(test)]
 #[test]
-fn app_turn_publishes_one_stream_batch_per_frame() {
+fn app_cycle_publishes_one_stream_batch_per_frame() {
     use crate::AppRuntime;
 
     let mut app = AppRuntime::new(|_, _| unreachable!("the stream uses the app scope"));

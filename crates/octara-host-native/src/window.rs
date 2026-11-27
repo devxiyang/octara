@@ -2,7 +2,8 @@
 
 use crate::os::{ActiveEditorView, Drawable, DrawableAcquisition, OsWindow, surface_drawable};
 use crate::presentation::Presentation;
-use octara::runtime::{WindowId, WindowRuntime};
+use octara::module::{HostSurfaceKind, ModuleDispatcher, NativeViewMounts};
+use octara::runtime::{AppRuntime, WindowId, WindowRuntime};
 use octara::tree::editor::EditorSession;
 use octara::tree::resolve_cursor;
 use octara_gpu::{DeviceExecutor, DeviceGeneration, DrawWork, DrawnFrame, FrameProgress, GpuError, GpuTask, SurfaceRendererFactory};
@@ -74,6 +75,7 @@ pub(crate) struct FileDrop {
 
 pub(crate) struct HostWindow {
     pub id: WindowId,
+    pub native_mounts: NativeViewMounts,
     pub window: Arc<Window>,
     pub os: Box<dyn OsWindow>,
     pub a11y: accesskit_winit::Adapter,
@@ -108,6 +110,7 @@ impl HostWindow {
     ) -> Self {
         Self {
             id,
+            native_mounts: NativeViewMounts::default(),
             window,
             os,
             a11y,
@@ -231,16 +234,30 @@ impl HostWindow {
         Ok(true)
     }
 
-    pub fn synchronize(&mut self, runtime: &WindowRuntime, frame: &NativeFrame) {
-        if self.synchronized == Some(frame.number) {
+    pub fn synchronize_native(&mut self, kind: HostSurfaceKind, runtime: &mut AppRuntime, dispatcher: &ModuleDispatcher) {
+        let changes = self.publication.take_native_changes();
+        if changes.is_empty() {
             return;
         }
+        let surface = self.os.module_surface(&self.window, kind, self.id);
+        let mut built_in = Vec::new();
+        for change in changes {
+            match self.native_mounts.apply_change(&change, surface, runtime.native_views_mut(), dispatcher) {
+                Ok(false) => built_in.push(change),
+                Ok(true) => {}
+                Err(error) => runtime.report_native_view_mount_error(&error),
+            }
+        }
+        if !built_in.is_empty()
+            && let Some(native) = self.os.native_views()
+        {
+            native.sync_native_views(&built_in);
+        }
+    }
+
+    pub fn synchronize(&mut self, runtime: &WindowRuntime, frame: &NativeFrame) {
         self.synchronized = Some(frame.number);
-        let native_changes = self.publication.take_native_changes();
-        let has_underlay = self.os.native_views().is_some_and(|native| {
-            native.sync_native_views(&native_changes);
-            native.has_underlay()
-        });
+        let has_underlay = self.native_mounts.has_underlay() || self.os.native_views().is_some_and(|native| native.has_underlay());
         let transparent = transparent_background(&runtime.presentation().theme) || has_underlay || self.os.window_is_vibrant();
         if transparent != self.transparent {
             self.transparent = transparent;

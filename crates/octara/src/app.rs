@@ -5,8 +5,8 @@ use octara_model::ask::Menu;
 use octara_model::input::Chord;
 use octara_model::theme::Theme;
 use octara_model::window::{WindowMaterial, WindowPresentation};
+use octara_runtime::cycle::{AppError, CycleReceipt};
 use octara_runtime::media::{MediaCacheBackend, VideoSurfaceProvider};
-use octara_runtime::turn::{TurnError, TurnReceipt};
 use octara_runtime::window::WindowRoot;
 use octara_runtime::{
     AppRuntime, BuildCx, HostEngine, Input, MountCx, ReadCx, RestartState, WindowId, WindowOptions, WindowRuntime, WriteCx,
@@ -38,7 +38,7 @@ impl App {
         &mut self,
         options: WindowOptions,
         build: impl FnOnce(&mut BuildCx<'_>) -> V + 'static,
-    ) -> Result<WindowId, TurnError> {
+    ) -> Result<WindowId, AppError> {
         self.runtime.open_window(options, move |mount| {
             mount_view(mount, build);
             WindowTooltipLayer::default().mount(mount);
@@ -49,27 +49,27 @@ impl App {
         self.runtime.window(id).map(Window)
     }
 
-    pub fn close_window(&mut self, id: WindowId) -> Result<(), TurnError> {
+    pub fn close_window(&mut self, id: WindowId) -> Result<(), AppError> {
         self.runtime.close_window(id)
     }
 
-    pub fn build<R>(&mut self, build: impl FnOnce(&mut BuildCx<'_>) -> R) -> Result<R, TurnError> {
+    pub fn build<R>(&mut self, build: impl FnOnce(&mut BuildCx<'_>) -> R) -> Result<R, AppError> {
         self.runtime.build(build)
     }
 
-    pub fn update<R>(&mut self, update: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, TurnError> {
+    pub fn update<R>(&mut self, update: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, AppError> {
         self.runtime.update(None, update)
     }
 
-    pub fn update_window<R>(&mut self, id: WindowId, update: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, TurnError> {
+    pub fn update_window<R>(&mut self, id: WindowId, update: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, AppError> {
         self.runtime.update(Some(id), update)
     }
 
-    pub fn dispatch(&mut self, id: WindowId, input: Input) -> Result<TurnReceipt, TurnError> {
+    pub fn dispatch(&mut self, id: WindowId, input: Input) -> Result<CycleReceipt, AppError> {
         self.runtime.dispatch(id, input)
     }
 
-    pub fn advance_to(&mut self, time: Duration) -> Result<TurnReceipt, TurnError> {
+    pub fn advance_to(&mut self, time: Duration) -> Result<CycleReceipt, AppError> {
         self.runtime.advance_to(time)
     }
 
@@ -107,7 +107,7 @@ impl<'a> Window<'a> {
     }
 }
 
-type Startup = Box<dyn FnOnce(&mut App) -> Result<(), TurnError>>;
+type Startup = Box<dyn FnOnce(&mut App) -> Result<(), AppError>>;
 
 #[derive(Default)]
 pub struct AppDefinition {
@@ -116,6 +116,7 @@ pub struct AppDefinition {
     windows: Vec<WindowDefinition>,
     media_cache: Option<Arc<dyn MediaCacheBackend>>,
     video: Option<Arc<dyn VideoSurfaceProvider>>,
+    modules: Vec<Box<dyn crate::module::OctaraModule>>,
 }
 
 impl AppDefinition {
@@ -123,12 +124,18 @@ impl AppDefinition {
         Self::default()
     }
 
+    /// Install a module before application startup and window construction.
+    pub fn with_module(mut self, module: impl crate::module::OctaraModule) -> Self {
+        self.modules.push(Box::new(module));
+        self
+    }
+
     pub fn state_schema(mut self, schema: impl Into<String>) -> Self {
         self.state_schema = schema.into();
         self
     }
 
-    pub fn startup(mut self, startup: impl FnOnce(&mut App) -> Result<(), TurnError> + 'static) -> Self {
+    pub fn startup(mut self, startup: impl FnOnce(&mut App) -> Result<(), AppError> + 'static) -> Self {
         self.startup = Some(Box::new(startup));
         self
     }
@@ -148,7 +155,7 @@ impl AppDefinition {
         self
     }
 
-    pub fn launch(self, app: &mut App, restart: Option<RestartState>) -> Result<Vec<WindowId>, TurnError> {
+    pub fn launch(self, app: &mut App, restart: Option<RestartState>) -> Result<Vec<WindowId>, AppError> {
         self.launch_with_window_options(app, restart, |_| {})
     }
 
@@ -158,16 +165,17 @@ impl AppDefinition {
         app: &mut App,
         restart: Option<RestartState>,
         mut configure: impl FnMut(&mut WindowOptions),
-    ) -> Result<Vec<WindowId>, TurnError> {
+    ) -> Result<Vec<WindowId>, AppError> {
         app.runtime.set_state_schema(self.state_schema);
         if let Some(backend) = self.media_cache {
             app.runtime.set_media_cache_backend(backend);
         }
-        if let Some(video) = self.video {
-            app.build(|build| build.provide::<Arc<dyn VideoSurfaceProvider>>(video))?;
-        }
         if let Some(restart) = restart {
             app.import_persisted(restart);
+        }
+        app.runtime.install_modules(self.modules)?;
+        if let Some(video) = self.video {
+            app.build(|build| build.provide::<Arc<dyn VideoSurfaceProvider>>(video))?;
         }
         if let Some(startup) = self.startup {
             startup(app)?;

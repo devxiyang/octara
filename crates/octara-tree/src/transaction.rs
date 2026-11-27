@@ -11,7 +11,7 @@ use octara_model::CacheLine;
 use octara_model::geometry::Placement;
 use octara_model::image::ImageSource;
 use octara_model::motion::TextReveal;
-use octara_model::native::NativeSlot;
+use octara_model::native::{NativeSlot, TypedNativeProps};
 use octara_model::overlay::AnchorTarget;
 use octara_model::paint::{CanvasOp, Image, NodeIcon, ObjectFit};
 use octara_model::text::{InlineAttachment, RichSpan};
@@ -131,6 +131,7 @@ pub enum NodeChange {
     Icon(Arc<NodeIcon>),
     Canvas(Arc<[CanvasOp]>),
     NativeProps(serde_json::Value),
+    TypedNativeProps(TypedNativeProps),
     Paint(Box<PaintSlot>),
     Semantics(Box<SemanticsSlot>),
     Handler {
@@ -156,7 +157,7 @@ impl NodeChange {
             Self::ImageSource { .. } => Some(NodeKind::Media),
             Self::Icon(_) => Some(NodeKind::Icon),
             Self::Canvas(_) => Some(NodeKind::Canvas),
-            Self::NativeProps(_) => Some(NodeKind::Native),
+            Self::NativeProps(_) | Self::TypedNativeProps(_) => Some(NodeKind::Native),
             _ => None,
         }
     }

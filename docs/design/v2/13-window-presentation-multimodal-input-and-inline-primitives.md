@@ -37,7 +37,7 @@ Eliminate the split between startup-only `WindowOptions` (`theme`, `material`, `
 1. **Single Window Presentation Source of Truth**:
    - Define `WindowPresentation { pub title: Arc<str>, pub theme: Theme, pub material: WindowMaterial }` in `octara-model` / `octara-runtime`.
    - Support declarative reactive bindings on window setup (`WindowDefinition::theme_with`, `material_with`, `title_with`, or unified `presentation_with`) AND imperative updates (`WriteCx::set_window_theme`, `set_window_material`, `set_window_title`) feeding the **same** settled `WindowPresentation` state.
-   - In Phase 5 (`Publish`), diff the settled `WindowPresentation` once per turn:
+   - In Phase 5 (`Publish`), diff the settled `WindowPresentation` once per cycle:
      - On `theme` change: dispatch `RuntimeOp::ThemeChanged(Box::new(theme))` into `Tree` (invalidating all theme-sensitive subtrees + `logical_portals` + overlay scrollbars), updating GPU clear color (`tree.theme().get(ColorToken::Background)` when opaque) automatically.
      - Emit a single `HostCommand::UpdateWindowPresentation { window, title, color_scheme, material }` to `OsWindow::apply_presentation(...)`:
        - **macOS**: update `NSWindow.appearance` (`NSAppearanceNameDarkAqua` / `NSAppearanceNameAqua`), attach/detach/update `NSVisualEffectView` live without recreating the window, update `transparent_window` clear mode, and update `NSWindow.title`.
@@ -101,7 +101,7 @@ Keep `Ask` (native filesystem path dialogs) and `ServiceRequest` (cross-platform
    - In `crates/octara-tree/src/arbiter.rs`, stop suppressing link activation for all non-empty modifiers; suppress synthetic link `Press` **only** when `Shift` is extending an active text selection. `Cmd`, `Ctrl`, `Alt`, and non-selecting `Shift` clicks all dispatch `LinkEventKind::Press` with exact `modifiers`.
 2. **Ordered SPSC `TextStreamOp` + Synchronous Drain**:
    - Upgrade `crates/octara-runtime/src/graph/text_stream.rs` ring slots from `Option<String>` to `Option<TextStreamOp>` where `enum TextStreamOp { Append(String), Clear, Replace(String) }`, keeping the 128 B cache-line-aligned lock-free SPSC layout intact.
-   - Expose `TextStreamSink::try_clear(&mut self) -> Result<(), TextStreamError>` and `TextStreamSink::try_replace(&mut self, text: String) -> Result<(), TextStreamError>` (returning typed `TextStreamOp` or value on full/closed), plus `WriteCx::drain_text_stream(&mut self, buffer: TextBuffer) -> bool` for immediate synchronous catch-up on turn boundaries.
+   - Expose `TextStreamSink::try_clear(&mut self) -> Result<(), TextStreamError>` and `TextStreamSink::try_replace(&mut self, text: String) -> Result<(), TextStreamError>` (returning typed `TextStreamOp` or value on full/closed), plus `WriteCx::drain_text_stream(&mut self, buffer: TextBuffer) -> bool` for immediate synchronous catch-up on cycle boundaries.
 3. **Layered Global Hover Tooltip (Zero Host-Side Widget Drawing)**:
    - **Layer 1 (`octara-runtime` + `octara-tree`)**:
      - Track the single hovered node with a non-empty `semantics.tooltip` in the window runtime using the virtual clock (default open delay `450 ms`, warm-hop grace `250 ms`, immediate dismiss on pointer press/leave/key/scroll/modal change).

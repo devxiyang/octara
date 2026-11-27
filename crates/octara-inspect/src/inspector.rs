@@ -9,7 +9,7 @@ use octara::{
     App,
     runtime::{
         Input, WindowRuntime,
-        turn::{TurnError, TurnReceipt},
+        cycle::{AppError, CycleReceipt},
     },
     tree::{NodeKind, editor::EditorSession, tables::HandlerKind},
 };
@@ -21,7 +21,7 @@ use octara_model::{
     input::{Button, ContactTarget, HostReply, InteractionEvent, Modifiers, PointerId, PointerKind, WheelPhase},
     semantics::{Relations, Role},
 };
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc, time::Duration};
 
 /// The presentation observations and capture sources supplied by an inspection host.
 pub trait InspectHost {
@@ -39,8 +39,12 @@ pub trait InspectHost {
         false
     }
 
-    fn advance_clock(&mut self, app: &mut App, elapsed: Duration) -> Result<(), TurnError> {
+    fn advance_clock(&mut self, app: &mut App, elapsed: Duration) -> Result<(), AppError> {
         app.advance_to(app.runtime().now().saturating_add(elapsed))?;
+        self.synchronize(app)
+    }
+
+    fn synchronize(&mut self, _app: &mut App) -> Result<(), AppError> {
         Ok(())
     }
 
@@ -68,7 +72,7 @@ struct InspectionState {
     contacts: BTreeMap<WindowId, (PointerId, TargetRef)>,
     tap_sequence: u64,
     rules: Vec<Arc<dyn AuditRule>>,
-    recorder: Option<Box<dyn TraceRecorder>>,
+    recorder: Option<Rc<RefCell<dyn TraceRecorder>>>,
 }
 
 impl Inspector {
@@ -86,23 +90,40 @@ impl Inspector {
 
     /// Record agent commands and raw inputs through a privacy-filtered trace sink.
     pub fn with_trace_recorder(mut self, recorder: impl TraceRecorder + 'static) -> Self {
-        self.state.recorder = Some(Box::new(recorder));
+        self.state.recorder = Some(Rc::new(RefCell::new(recorder)));
         self
+    }
+
+    /// Replace the runtime's module trace sink with this inspector's recorder, if configured.
+    pub fn attach_module_trace(&self, app: &mut App) {
+        let observer = self.state.recorder.clone().map(|recorder| {
+            let record = move |observation: octara::module::ModuleObservation| {
+                recorder.borrow_mut().record(replay::Entry { at: observation.at, event: replay::Event::Module(observation) });
+            };
+            Box::new(record) as Box<dyn FnMut(_)>
+        });
+        app.runtime_mut().set_module_observer(observer);
     }
 
     /// Process a complete payload on the application's owning thread.
     pub fn exchange(&mut self, app: &mut App, host: &mut impl InspectHost, payload: &[u8]) -> Vec<u8> {
+        if self.state.recorder.is_some() {
+            self.attach_module_trace(app);
+        }
         self.transport.exchange(payload, &mut |request| self.state.execute(app, host, request))
     }
 
     /// Record host input before dispatch. Agent commands are recorded by `execute` and `exchange`.
     pub fn record_input(&mut self, app: &App, window: WindowId, input: &Input) {
-        if let Some(recorder) = &mut self.state.recorder {
-            recorder.record(replay::input_entry(app, window, input));
+        if let Some(recorder) = &self.state.recorder {
+            recorder.borrow_mut().record(replay::input_entry(app, window, input));
         }
     }
 
     pub fn execute(&mut self, app: &mut App, host: &mut impl InspectHost, request: AgentRequest) -> AgentReceipt {
+        if self.state.recorder.is_some() {
+            self.attach_module_trace(app);
+        }
         self.state.execute(app, host, request)
     }
 
@@ -113,8 +134,8 @@ impl Inspector {
 
 impl InspectionState {
     fn execute(&mut self, app: &mut App, host: &mut impl InspectHost, request: AgentRequest) -> AgentReceipt {
-        if let Some(recorder) = &mut self.recorder {
-            recorder.record(replay::request_entry(app, &request));
+        if let Some(recorder) = &self.recorder {
+            recorder.borrow_mut().record(replay::request_entry(app, &request));
         }
         self.dispatch_request(app, host, request)
     }
@@ -125,6 +146,10 @@ impl InspectionState {
             receipt.fail(&codes::INSPECT_PROTOCOL, "expected the octara.inspect/2 protocol", false);
             return receipt;
         }
+        if let Err(error) = host.synchronize(app) {
+            receipt.fail(app_error_code(&error), error.to_string(), false);
+            return receipt;
+        }
         if matches!(request.command, AgentCommand::ExportRestartState | AgentCommand::Shutdown) {
             if request.window.is_some() {
                 receipt.fail(&codes::INSPECT_REQUEST, "restart commands are scoped to the application", false);
@@ -132,7 +157,7 @@ impl InspectionState {
                 match request.command {
                     AgentCommand::ExportRestartState if host.supports_restart_state() => {
                         if app.runtime().is_failed() {
-                            receipt.fail(&codes::APP_FAILED, "application stopped after a failed turn", false);
+                            receipt.fail(&codes::APP_FAILED, "application stopped after a failed cycle", false);
                         } else {
                             receipt.restart_state = Some(app.export_persisted());
                         }
@@ -171,7 +196,7 @@ impl InspectionState {
             && let AgentCommand::AdvanceClock { ms } = request.command
         {
             if let Err(error) = host.advance_clock(app, Duration::from_millis(ms)) {
-                receipt.fail(turn_code(&error), error.to_string(), false);
+                receipt.fail(app_error_code(&error), error.to_string(), false);
             }
             receipt.diagnostics = app.runtime_mut().take_diagnostics();
             return receipt;
@@ -195,7 +220,7 @@ impl InspectionState {
         {
             receipt.fail(&codes::STALE_TARGET, "target no longer identifies a live allocation in this window", false);
         } else if app.runtime().is_failed() {
-            receipt.fail(&codes::APP_FAILED, "application stopped after a failed turn", false);
+            receipt.fail(&codes::APP_FAILED, "application stopped after a failed cycle", false);
         } else if state.settled().is_none() && !matches!(request.command, AgentCommand::AdvanceClock { .. }) {
             receipt.fail(&codes::NOT_SETTLED, "window has no settled observation", false);
         } else {
@@ -206,14 +231,19 @@ impl InspectionState {
                 }
                 AgentCommand::Audit => receipt.findings = Some(audit::run(state, app.runtime().world(), &self.rules)),
                 AgentCommand::Act { target, action } => match self.act(app, id, target, action) {
-                    Ok(turn) => receipt.handled = Some(turn.handled),
+                    Ok(cycle) => {
+                        receipt.handled = Some(cycle.handled);
+                        if let Err(error) = host.synchronize(app) {
+                            receipt.fail(app_error_code(&error), error.to_string(), true);
+                        }
+                    }
                     Err(error) => receipt.fail(error.code, error.message, error.delivered),
                 },
                 AgentCommand::Capture { source, settle_ms } => {
                     if settle_ms > 0
                         && let Err(error) = host.advance_clock(app, Duration::from_millis(settle_ms))
                     {
-                        receipt.fail(turn_code(&error), error.to_string(), false);
+                        receipt.fail(app_error_code(&error), error.to_string(), false);
                     } else if let Some(window) = app.runtime().window(id).filter(|window| window.settled().is_some()) {
                         match host.capture(window, source, app.runtime().now()) {
                             Ok(capture) => receipt.capture = Some(capture),
@@ -225,7 +255,7 @@ impl InspectionState {
                 }
                 AgentCommand::AdvanceClock { ms } => {
                     if let Err(error) = host.advance_clock(app, Duration::from_millis(ms)) {
-                        receipt.fail(turn_code(&error), error.to_string(), false);
+                        receipt.fail(app_error_code(&error), error.to_string(), false);
                     }
                 }
                 AgentCommand::SetPicking { enabled } => {
@@ -240,7 +270,7 @@ impl InspectionState {
         receipt
     }
 
-    fn act(&mut self, app: &mut App, id: WindowId, target: TargetRef, action: AgentAction) -> Result<TurnReceipt, ActionError> {
+    fn act(&mut self, app: &mut App, id: WindowId, target: TargetRef, action: AgentAction) -> Result<CycleReceipt, ActionError> {
         let state = app.runtime().window(id).expect("validated window");
         let tree = state.tree();
         let input = match action {
@@ -334,7 +364,7 @@ impl InspectionState {
         target: TargetRef,
         pos: Point,
         modifiers: Modifiers,
-    ) -> Result<TurnReceipt, ActionError> {
+    ) -> Result<CycleReceipt, ActionError> {
         if self.contacts.contains_key(&id) {
             return Err(ActionError::rejected("another agent pointer is already down in this window"));
         }
@@ -365,7 +395,7 @@ impl InspectionState {
         let up =
             dispatch(app, id, Input::Interaction(InteractionEvent::PointerUp { id: pointer, target: release.ok(), pos, mods: modifiers }))
                 .map_err(ActionError::after_dispatch)?;
-        Ok(TurnReceipt { delivered: true, handled: down.handled || up.handled, rounds: down.rounds + up.rounds })
+        Ok(CycleReceipt { delivered: true, handled: down.handled || up.handled, rounds: down.rounds + up.rounds })
     }
 }
 
@@ -397,20 +427,22 @@ fn guarded_hit(window: &WindowRuntime, target: TargetRef, pos: Point, button: Bu
     Ok(hit)
 }
 
-fn dispatch(app: &mut App, id: WindowId, input: Input) -> Result<TurnReceipt, ActionError> {
+fn dispatch(app: &mut App, id: WindowId, input: Input) -> Result<CycleReceipt, ActionError> {
     let receipt = app.dispatch(id, input).map_err(|error| ActionError {
-        code: turn_code(&error),
+        code: app_error_code(&error),
         message: error.to_string(),
-        delivered: !matches!(error, TurnError::UnknownWindow(_) | TurnError::AppFailed),
+        delivered: !matches!(error, AppError::UnknownWindow(_) | AppError::AppFailed),
     })?;
     if receipt.delivered { Ok(receipt) } else { Err(ActionError::stale("runtime rejected the input's target or revision", false)) }
 }
 
-fn turn_code(error: &TurnError) -> &'static Code {
+fn app_error_code(error: &AppError) -> &'static Code {
     match error {
-        TurnError::UnknownWindow(_) => &codes::STALE_TARGET,
-        TurnError::AppFailed => &codes::APP_FAILED,
-        TurnError::Transaction { .. } | TurnError::Project { .. } | TurnError::LayoutLoop => &codes::NOT_SETTLED,
+        AppError::UnknownWindow(_) => &codes::STALE_TARGET,
+        AppError::AppFailed => &codes::APP_FAILED,
+        AppError::DuplicateModule(_) => &codes::DUPLICATE_MODULE,
+        AppError::ModuleInstall { .. } => &codes::MODULE_INSTALL_FAILED,
+        AppError::Transaction { .. } | AppError::Project { .. } | AppError::LayoutLoop => &codes::NOT_SETTLED,
     }
 }
 
@@ -491,6 +523,7 @@ pub(crate) fn snapshot(window: &WindowRuntime, picking: bool) -> TreeSnapshot {
                 }),
                 value,
                 text: tree.text(node).map(|slot| slot.text.to_string()),
+                native_props: tree.native(node).and_then(|view| view.typed_props.as_ref()?.inspect.clone()),
                 geometry: window.geometry(node),
                 scroll_offset: tree.scroll(node).map(|slot| slot.offset),
                 shown: tree.is_shown(node),

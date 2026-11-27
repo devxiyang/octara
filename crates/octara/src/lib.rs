@@ -5,6 +5,14 @@ extern crate self as octara;
 mod app;
 mod authoring;
 pub mod declarative;
+pub mod module {
+    //! Explicit application modules and platform view extension points.
+    pub use octara_model::native::{
+        NativeChange, NativeMeasureRequest, NativePlacement, NativeSlot, NativeSnapshot, NativeSnapshotRequest, TypedNativeCommand,
+        TypedNativeEvent, TypedNativeProps,
+    };
+    pub use octara_runtime::module::*;
+}
 pub mod view;
 
 pub use app::{App, AppDefinition, Window, WindowActions, WindowDefinition};
@@ -22,8 +30,8 @@ pub use octara_model::{
     paint::{DisplayList, Item as PaintItem, Picture},
     text::{AtomicRange, CommitKind, TextEdit},
 };
+pub use octara_runtime::cycle::{AppError, CycleReceipt};
 pub use octara_runtime::media::{CancellationToken, LoadedMedia, MediaFuture, MediaLoader, MediaProgress, MediaRequest};
-pub use octara_runtime::turn::{TurnError, TurnReceipt};
 pub use octara_runtime::{AppRuntime, CommitOutput, HostCommand, HostEngine, Input, ProjectError, ProjectFeedback, WindowRuntime};
 pub use octara_tree::{
     NodeId, Tree,
@@ -35,7 +43,7 @@ pub mod prelude {
     pub use crate::authoring::*;
     pub use crate::view::*;
     pub use crate::{
-        App, AppDefinition, AtomicRange, EditorBackend, EditorRichText, EditorRope, EditorState, Store, Window, WindowActions,
+        App, AppDefinition, AppError, AtomicRange, EditorBackend, EditorRichText, EditorRope, EditorState, Store, Window, WindowActions,
         WindowDefinition, ui,
     };
 }

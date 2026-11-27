@@ -659,7 +659,7 @@ impl Views {
                 NativeChange::Create { id, kind, slot, props } => self.create(*id, kind, *slot, props),
                 NativeChange::Update { id, props } => self.update(*id, props),
                 NativeChange::Place { placements } => {
-                    for placement in placements {
+                    for placement in placements.iter().filter(|placement| self.hosted.contains_key(&placement.id)) {
                         self.pending.retain(|current| current.id != placement.id);
                         self.pending.push(placement.clone());
                     }
@@ -668,6 +668,7 @@ impl Views {
                     self.pending.retain(|placement| placement.id != *id);
                     self.destroy(*id);
                 }
+                NativeChange::CreateTyped { .. } | NativeChange::UpdateTyped { .. } => {}
             }
         }
     }

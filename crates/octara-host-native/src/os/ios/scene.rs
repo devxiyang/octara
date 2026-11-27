@@ -4,13 +4,15 @@ use crate::ShellEvent;
 use objc2::rc::{Retained, Weak as ObjcWeak};
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_foundation::NSRect;
+use objc2_foundation::{NSRect, NSSet, NSURL, NSUserActivity, NSUserActivityTypeBrowsingWeb};
 use objc2_ui_kit::{
-    UIApplication, UIScene, UISceneActivationState, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIView, UIViewAutoresizing,
-    UIViewController, UIWindow, UIWindowScene,
+    UIApplication, UIOpenURLContext, UIScene, UISceneActivationState, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIView,
+    UIViewAutoresizing, UIViewController, UIWindow, UIWindowScene,
 };
+use octara::module::HostLifecycleEvent;
 use octara_model::geometry::{Rect, Size, WindowViewport};
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use winit::event_loop::EventLoopProxy;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -21,6 +23,7 @@ struct SceneBridge {
     proxy: Option<EventLoopProxy<ShellEvent>>,
     scene: Option<Retained<UIWindowScene>>,
     windows: Vec<Weak<SceneWindow>>,
+    launch_items: Option<OpenedItems>,
 }
 
 thread_local! {
@@ -37,14 +40,23 @@ define_class!(
 
     unsafe impl UISceneDelegate for SceneDelegate {
         #[unsafe(method(scene:willConnectToSession:options:))]
-        fn connect(&self, scene: &UIScene, _: &UISceneSession, _: &UISceneConnectionOptions) {
+        fn connect(&self, scene: &UIScene, _: &UISceneSession, options: &UISceneConnectionOptions) {
             let Ok(scene) = scene.retain().downcast::<UIWindowScene>() else { return };
+            let mut items = OpenedItems::from_contexts(&options.URLContexts());
+            for url in options.userActivities().iter().filter_map(|activity| browsing_url(&activity)) {
+                items.push(&url);
+            }
             let proxy = BRIDGE.with_borrow_mut(|bridge| {
                 bridge.scene = Some(scene.clone());
+                if let Some(launch) = &mut bridge.launch_items {
+                    launch.urls.append(&mut items.urls);
+                    launch.files.append(&mut items.files);
+                }
                 bridge.proxy.clone()
             });
             if let Some(proxy) = proxy {
                 let _ = proxy.send_event(ShellEvent::PlatformReady);
+                items.forward(&proxy);
             }
             for window in scene_windows() {
                 window.attach(&scene);
@@ -69,8 +81,93 @@ define_class!(
         fn deactivate(&self, scene: &UIScene) {
             scene_activity(scene, false);
         }
+
+        #[unsafe(method(sceneWillEnterForeground:))]
+        fn enter_foreground(&self, scene: &UIScene) {
+            forward_activity(scene, HostLifecycleEvent::AppForeground);
+        }
+
+        #[unsafe(method(sceneDidEnterBackground:))]
+        fn enter_background(&self, scene: &UIScene) {
+            forward_activity(scene, HostLifecycleEvent::AppBackground);
+        }
+
+        #[unsafe(method(scene:openURLContexts:))]
+        fn open_urls(&self, _: &UIScene, contexts: &NSSet<UIOpenURLContext>) {
+            if let Some(proxy) = BRIDGE.with_borrow(|bridge| bridge.proxy.clone()) {
+                OpenedItems::from_contexts(contexts).forward(&proxy);
+            }
+        }
+
+        #[unsafe(method(scene:continueUserActivity:))]
+        fn continue_activity(&self, _: &UIScene, activity: &NSUserActivity) {
+            if let Some(url) = browsing_url(activity)
+                && let Some(proxy) = BRIDGE.with_borrow(|bridge| bridge.proxy.clone())
+            {
+                let mut items = OpenedItems::default();
+                items.push(&url);
+                items.forward(&proxy);
+            }
+        }
     }
 );
+
+#[derive(Default)]
+struct OpenedItems {
+    urls: Vec<String>,
+    files: Vec<PathBuf>,
+}
+
+impl OpenedItems {
+    fn from_contexts(contexts: &NSSet<UIOpenURLContext>) -> Self {
+        let mut items = Self::default();
+        for context in contexts {
+            items.push(&context.URL());
+        }
+        items
+    }
+
+    fn push(&mut self, url: &NSURL) {
+        if url.isFileURL() {
+            self.files.extend(url.path().map(|path| PathBuf::from(path.to_string())));
+        } else {
+            self.urls.extend(url.absoluteString().map(|url| url.to_string()));
+        }
+    }
+
+    fn forward(self, proxy: &EventLoopProxy<ShellEvent>) {
+        if !self.urls.is_empty() {
+            let _ = proxy.send_event(ShellEvent::Lifecycle(HostLifecycleEvent::OpenUrls(self.urls)));
+        }
+        if !self.files.is_empty() {
+            let _ = proxy.send_event(ShellEvent::Lifecycle(HostLifecycleEvent::OpenFiles(self.files)));
+        }
+    }
+}
+
+fn browsing_url(activity: &NSUserActivity) -> Option<Retained<NSURL>> {
+    // SAFETY: This is Foundation's static universal-link activity type.
+    if &*activity.activityType() == unsafe { NSUserActivityTypeBrowsingWeb } { activity.webpageURL() } else { None }
+}
+
+fn forward_activity(scene: &UIScene, event: HostLifecycleEvent) {
+    let proxy = BRIDGE.with_borrow(|bridge| {
+        if bridge.scene.as_ref().is_some_and(|current| std::ptr::eq(current.as_super(), scene)) { bridge.proxy.clone() } else { None }
+    });
+    if let Some(proxy) = proxy {
+        let _ = proxy.send_event(ShellEvent::Lifecycle(event));
+    }
+}
+
+pub(super) fn foreground() -> Option<bool> {
+    let scene = BRIDGE.with_borrow(|bridge| bridge.scene.clone())?;
+    Some(matches!(scene.activationState(), UISceneActivationState::ForegroundActive | UISceneActivationState::ForegroundInactive))
+}
+
+pub(super) fn take_launch_items() -> (Vec<String>, Vec<PathBuf>) {
+    let items = BRIDGE.with_borrow_mut(|bridge| bridge.launch_items.take()).unwrap_or_default();
+    (items.urls, items.files)
+}
 
 fn scene_windows() -> Vec<Rc<SceneWindow>> {
     BRIDGE.with_borrow_mut(|bridge| {
@@ -106,7 +203,10 @@ pub(super) fn prepare_window(window: &Window) -> Result<(), String> {
 
 pub(super) fn register(proxy: EventLoopProxy<ShellEvent>) {
     let _ = SceneDelegate::class();
-    BRIDGE.with_borrow_mut(|bridge| bridge.proxy = Some(proxy));
+    BRIDGE.with_borrow_mut(|bridge| {
+        bridge.proxy = Some(proxy);
+        bridge.launch_items = Some(OpenedItems::default());
+    });
 }
 
 struct SceneWindow {

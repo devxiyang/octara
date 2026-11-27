@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Octara browser modules</title>
+<body data-result="waiting">
+<output>Running Octara browser module regression…</output>
+<script type="module">
+    import init, { run_web_modules } from "./web_modules.js";
+
+    const output = document.querySelector("output");
+    try {
+        await init();
+        const transition = (name, persisted) => window.dispatchEvent(new PageTransitionEvent(name, { persisted }));
+        const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Native view event was not delivered")), 3000));
+        await Promise.race([run_web_modules(transition), timeout]);
+        document.body.dataset.result = "passed";
+        output.value = "Octara browser module regression passed.";
+    } catch (error) {
+        document.body.dataset.result = "failed";
+        output.value = document.body.dataset.panic ?? String(error);
+        throw error;
+    }
+</script>

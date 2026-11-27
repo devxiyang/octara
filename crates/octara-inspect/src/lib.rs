@@ -18,6 +18,8 @@ pub mod driver;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod dst;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+mod module;
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use driver::HeadlessDriver;
 
 pub use protocol::{AgentAction, AgentCommand, AgentReceipt, AgentRequest, TargetRef};

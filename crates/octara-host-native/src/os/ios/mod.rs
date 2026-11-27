@@ -17,6 +17,7 @@ use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_foundation::{NSDictionary, NSString, NSURL};
 use objc2_ui_kit::{UIApplication, UIPasteboard, UIUserInterfaceStyle, UIView};
+use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::{Input, WindowId};
 use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::{Size, WindowViewport};
@@ -26,11 +27,20 @@ use octara_model::theme::ColorScheme;
 use octara_model::window::{WindowGeometry, WindowGeometryRequest, WindowMaterial};
 use scene::SceneConnection;
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use winit::event::KeyEvent;
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::PhysicalKey;
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
+
+pub(super) const SURFACE_KIND: HostSurfaceKind = HostSurfaceKind::Ios;
+
+pub(super) fn raw_module_surface(window: &Window) -> Option<RawNativeSurface> {
+    let RawWindowHandle::UiKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
+    Some(RawNativeSurface::UiKit { ui_view: handle.ui_view, ui_view_controller: handle.ui_view_controller? })
+}
 
 pub(super) fn create() -> Box<dyn OsHost> {
     Box::new(IosHost)
@@ -42,6 +52,14 @@ impl OsHost for IosHost {
     fn initialize(&mut self, proxy: EventLoopProxy<ShellEvent>) {
         super::scheduling::interactive();
         scene::register(proxy);
+    }
+
+    fn take_launch_items(&mut self) -> (Vec<String>, Vec<PathBuf>) {
+        scene::take_launch_items()
+    }
+
+    fn application_active(&self) -> Option<bool> {
+        scene::foreground()
     }
 
     fn frame_thread_setup(&self) -> Option<fn()> {

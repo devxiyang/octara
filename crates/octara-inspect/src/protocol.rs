@@ -244,6 +244,8 @@ pub struct NodeSnapshot {
     pub relations: Relations<TargetRef>,
     pub value: Option<String>,
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_props: Option<serde_json::Value>,
     pub geometry: Option<LayoutBox>,
     pub scroll_offset: Option<Vec2>,
     pub shown: bool,

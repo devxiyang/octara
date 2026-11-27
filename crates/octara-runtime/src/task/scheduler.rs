@@ -217,7 +217,7 @@ impl TaskSpawner {
     }
 
     /// Media transport starts after the authored projection has been published.
-    pub(crate) fn defer_until_next_turn(&self, id: TaskId) {
+    pub(crate) fn defer_until_next_cycle(&self, id: TaskId) {
         let mut state = self.0.inbox.state.lock().expect("task wakes");
         if state.ready.remove(&id) {
             state.external.insert(id);
@@ -287,7 +287,7 @@ impl TaskScheduler {
     }
 
     /// Sets the notification called when work becomes ready. The host may receive
-    /// this notification from another thread and should arrange an app turn.
+    /// this notification from another thread and should arrange an app cycle.
     pub fn set_wake(&self, wake: Option<HostWake>) {
         if !self.spawner.0.closed.get() {
             let retired = std::mem::replace(&mut *self.spawner.0.inbox.host.lock().expect("task host wake"), wake);
@@ -311,7 +311,7 @@ impl TaskScheduler {
         self.ready(true)
     }
 
-    pub(crate) fn has_turn_ready(&self) -> bool {
+    pub(crate) fn has_cycle_ready(&self) -> bool {
         self.ready(false)
     }
 
@@ -324,8 +324,8 @@ impl TaskScheduler {
         !state.ready.is_empty() || !state.deferred.is_empty() || (include_external && !state.external.is_empty())
     }
 
-    /// Snapshots producer-thread arrivals at the ingress of the next application turn.
-    pub(crate) fn begin_turn(&self) {
+    /// Snapshots producer-thread arrivals at the ingress of the next application cycle.
+    pub(crate) fn begin_cycle(&self) {
         let mut state = self.spawner.0.inbox.state.lock().expect("task wakes");
         let WakeState { ready, external, .. } = &mut *state;
         ready.append(external);
@@ -376,12 +376,12 @@ impl TaskScheduler {
     }
 
     pub fn poll_ready(&mut self, world: &mut ReactiveWorld, commands: &mut AppCommands) -> usize {
-        self.begin_turn();
-        self.poll_turn_ready(world, commands, |_| None)
+        self.begin_cycle();
+        self.poll_cycle_ready(world, commands, |_| None)
     }
 
-    /// Polls a bounded snapshot in spawn order. Local wakes remain part of this turn.
-    pub(crate) fn poll_turn_ready<'a>(
+    /// Polls a bounded snapshot in spawn order. Local wakes remain part of this cycle.
+    pub(crate) fn poll_cycle_ready<'a>(
         &mut self,
         world: &mut ReactiveWorld,
         commands: &mut AppCommands,

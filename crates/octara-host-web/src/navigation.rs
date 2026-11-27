@@ -2,7 +2,7 @@
 
 use js_sys::Array;
 use octara::runtime::navigation::{RouteEntry, RouteHistory};
-use octara::{App, Navigator, TurnError, WindowId};
+use octara::{App, AppError, Navigator, WindowId};
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{History, Location, Window};
 
@@ -25,7 +25,7 @@ impl<R> RouteCodec<R> {
 
 pub(crate) trait HistoryBridge {
     fn sync(&mut self, app: &App) -> Result<(), JsValue>;
-    fn popstate(&mut self, app: &mut App, window: WindowId, state: JsValue) -> Result<(), TurnError>;
+    fn popstate(&mut self, app: &mut App, window: WindowId, state: JsValue) -> Result<(), AppError>;
 }
 
 pub(crate) struct BrowserRoutes<R> {
@@ -169,7 +169,7 @@ impl<R: Clone + 'static> HistoryBridge for BrowserRoutes<R> {
         Ok(())
     }
 
-    fn popstate(&mut self, app: &mut App, window: WindowId, state: JsValue) -> Result<(), TurnError> {
+    fn popstate(&mut self, app: &mut App, window: WindowId, state: JsValue) -> Result<(), AppError> {
         let Some(routes) = self.routes(app) else { return Ok(()) };
         self.revision = None;
         let pending = self.pending.take();

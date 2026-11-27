@@ -181,7 +181,7 @@ pub(crate) fn create_element(doc: &Document, tree: &Tree, node: NodeId) -> Resul
     let tag = match core.kind {
         NodeKind::TextInput => editor_tag(tree.editor(node).expect("mounted editor")),
         NodeKind::Image => "canvas",
-        NodeKind::Native if tree.native(node).is_some_and(|slot| slot.kind == "video") => "video",
+        NodeKind::Native if tree.native(node).is_some_and(|slot| slot.kind == "video" && slot.typed_props.is_none()) => "video",
         NodeKind::Link => "a",
         NodeKind::Box if checkbox => "input",
         NodeKind::Box if tree.semantics(node).and_then(|slot| slot.role) == Some(Role::Button) || tree.has_activation_handler(node) => {
@@ -194,12 +194,19 @@ pub(crate) fn create_element(doc: &Document, tree: &Tree, node: NodeId) -> Resul
     if core.kind == NodeKind::TextInput {
         element.set_attribute("data-octara-editor", "")?;
     }
+    if tree.native(node).is_some_and(|slot| slot.typed_props.is_some()) {
+        element.set_attribute("data-octara-native-view", "")?;
+    }
     if checkbox {
         element.set_attribute("type", "checkbox")?;
     } else if tag == "button" {
         element.set_attribute("type", "button")?;
     }
     Ok(element)
+}
+
+pub(crate) fn native_view_host(element: &Element) -> Option<Element> {
+    element.closest("[data-octara-native-view]").ok().flatten()
 }
 
 pub(crate) fn html(doc: &Document, tag: &str) -> Result<HtmlElement, JsValue> {

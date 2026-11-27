@@ -3,6 +3,7 @@
 mod asks;
 mod chrome;
 mod editor;
+mod lifecycle;
 mod menus;
 mod metal_frame;
 mod native;
@@ -20,6 +21,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSApplication, NSRequestUserAttentionType, NSView, NSWorkspace};
 use objc2_foundation::{NSString, NSURL};
 use objc2_quartz_core::CATransaction;
+use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::{Input, WindowId};
 use octara::{TitlebarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
@@ -33,12 +35,30 @@ use octara_model::window::UserAttention;
 use octara_render::{gpu::OutputColor, wgpu};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use winit::event_loop::EventLoopProxy;
 use winit::platform::macos::WindowAttributesExtMacOS;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Window, WindowAttributes};
+
+pub(super) const SURFACE_KIND: HostSurfaceKind = HostSurfaceKind::MacOs;
+
+pub(super) fn raw_module_surface(window: &Window) -> Option<RawNativeSurface> {
+    let view = content_view(window).ok()?;
+    let window = view.window()?;
+    Some(RawNativeSurface::AppKit { ns_window: NonNull::from(&*window).cast(), ns_view: NonNull::from(&*view).cast() })
+}
+
+fn content_view(window: &Window) -> Result<Retained<NSView>, String> {
+    let _mtm = MainThreadMarker::new().ok_or("AppKit windows must be accessed on the main thread")?;
+    let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|error| error.to_string())?.as_raw() else {
+        return Err("winit did not supply an AppKit window".into());
+    };
+    // SAFETY: The AppKit raw handle is the live winit NSView on its owning thread.
+    unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) }.ok_or_else(|| "AppKit content view is unavailable".into())
+}
 
 #[derive(Default)]
 struct MenuRouting {
@@ -51,6 +71,7 @@ struct MacHost {
     menu_bar: Option<menus::MenuBar>,
     routing: Rc<RefCell<MenuRouting>>,
     preferences: Option<preferences::Observer>,
+    lifecycle: Option<lifecycle::ActivationObserver>,
 }
 
 pub(super) fn create() -> Box<dyn OsHost> {
@@ -74,14 +95,19 @@ pub(super) fn create() -> Box<dyn OsHost> {
             let _ = proxy.send_event(ShellEvent::Wake);
         }
     });
-    Box::new(MacHost { menu_bar, routing, preferences: None })
+    Box::new(MacHost { menu_bar, routing, preferences: None, lifecycle: None })
 }
 
 impl OsHost for MacHost {
     fn initialize(&mut self, proxy: EventLoopProxy<ShellEvent>) {
         super::scheduling::interactive();
-        self.preferences = Some(preferences::Observer::new(proxy));
+        self.preferences = Some(preferences::Observer::new(proxy.clone()));
+        self.lifecycle = lifecycle::ActivationObserver::new(proxy);
         self.set_menus(&[]);
+    }
+
+    fn application_active(&self) -> Option<bool> {
+        MainThreadMarker::new().map(|main| NSApplication::sharedApplication(main).isActive())
     }
 
     fn reduced_motion(&self) -> Option<bool> {
@@ -106,11 +132,7 @@ impl OsHost for MacHost {
     fn create_window(&mut self, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String> {
         let OsWindowContext { window, id, backend, config, proxy } = context;
         let mtm = MainThreadMarker::new().ok_or("AppKit windows must be created on the main thread")?;
-        let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|error| error.to_string())?.as_raw() else {
-            return Err("winit did not supply an AppKit window".into());
-        };
-        // SAFETY: The AppKit raw handle is the live winit NSView on its owning thread.
-        let view = unsafe { Retained::<NSView>::retain(handle.ns_view.as_ptr().cast()) }.ok_or("AppKit content view is unavailable")?;
+        let view = content_view(window)?;
         let ns_window = view.window().ok_or("AppKit content view has no window")?;
         let number = ns_window.windowNumber();
         let chrome = chrome::Chrome::new(ns_window, proxy.clone(), id);

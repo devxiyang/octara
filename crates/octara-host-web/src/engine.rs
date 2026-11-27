@@ -326,7 +326,7 @@ impl HostEngine for DomEngine {
         self.fallback_focus = None;
         let active = self.document.active_element();
         if let Some(next) = pending.focus.and_then(|node| self.dom.element(node)) {
-            if active.as_ref() != Some(next.as_ref()) {
+            if active.as_ref() != Some(next.as_ref()) && active.as_ref().and_then(dom::native_view_host).as_ref() != Some(next.as_ref()) {
                 let _ = undo::focus(&next);
                 if let Some(selection) = pending.focus.and_then(|node| self.entries.get(&node)?.rich_selection) {
                     let _ = crate::rich::select(&next, selection);
@@ -334,6 +334,7 @@ impl HostEngine for DomEngine {
             }
         } else if let Some(active) = active.and_then(|active| active.dyn_into::<HtmlElement>().ok())
             && self.surface.contains(Some(&active))
+            && dom::native_view_host(&active).is_none()
         {
             let _ = active.blur();
         }

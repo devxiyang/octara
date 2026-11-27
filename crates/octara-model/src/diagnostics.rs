@@ -97,13 +97,13 @@ pub mod codes {
             "A dynamic read reaches a computation already on the evaluation stack.",
             "docs/design/v2/02-reactive-runtime.md";
         FLUSH_RUNAWAY: Error,
-            "Reactive updates exhausted the turn budget.",
+            "Reactive updates exhausted the cycle budget.",
             "Post-commit effects keep writing values that cause more effects to run.",
-            "docs/design/v2/02-reactive-runtime.md#5-five-phase-turn-engine-turnrs";
+            "docs/design/v2/02-reactive-runtime.md#5-five-phase-cycle-engine-cyclers";
         LAYOUT_LOOP: Warning,
             "A window did not settle within the projection round budget.",
             "Geometry feedback changed state that kept invalidating the inputs to layout.",
-            "docs/design/v2/02-reactive-runtime.md#5-five-phase-turn-engine-turnrs";
+            "docs/design/v2/02-reactive-runtime.md#5-five-phase-cycle-engine-cyclers";
         READ_DISPOSED: Error,
             "A reactive handle was read after its owning scope was disposed.",
             "A copy of the handle survived the runtime allocation it names.",
@@ -183,11 +183,23 @@ pub mod codes {
         NOT_SETTLED: Warning,
             "The requested window has an incomplete update.",
             "Pending work or a failed projection prevented publication of a new settled frame.",
-            "docs/design/v2/02-reactive-runtime.md#5-five-phase-turn-engine-turnrs";
+            "docs/design/v2/02-reactive-runtime.md#5-five-phase-cycle-engine-cyclers";
         APP_FAILED: Error,
             "An application operation panicked and the runtime stopped publishing updates.",
             "A panic can leave application values partially changed. Shut down this application and create a new one.",
-            "docs/design/architecture-v2.md#5-five-phase-turn-engine--atomic-command-stream-mounting";
+            "docs/design/architecture-v2.md#5-five-phase-cycle-engine--atomic-command-stream-mounting";
+        DUPLICATE_MODULE: Error,
+            "The application registered more than one module with the same ID.",
+            "Each registered module must declare a unique ID within the application.",
+            "docs/design/v2/14-octara-module-architecture.md";
+        MODULE_INSTALL_FAILED: Error,
+            "The application could not install a registered module.",
+            "The module returned an error during installation.",
+            "docs/design/v2/14-octara-module-architecture.md";
+        NATIVE_VIEW_MOUNT_FAILED: Warning,
+            "A registered native view could not mount.",
+            "Its factory is unavailable on this host or could not create the view.",
+            "docs/design/v2/14-octara-module-architecture.md";
         MISSING_THEME_TOKEN: Warning,
             "An element references a token missing from its theme.",
             "The active theme does not define a value for that token.",

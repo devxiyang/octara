@@ -275,7 +275,7 @@ where
             }
         }
         // Predict where the next spacer plan puts the retained anchor. Geometry already
-        // includes any compensation applied to the measured layout during this turn.
+        // includes any compensation applied to the measured layout during this cycle.
         let compensation = anchored.map_or(0.0, |(rank, measured_y)| {
             pinned.push(rank);
             self.origin + self.order.offset(rank) - measured_y

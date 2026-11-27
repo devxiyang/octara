@@ -21,7 +21,7 @@ crates/
   octara-tree/         # Layer 1: Sparse ECS micro-kernel, StyleResolver, Transaction, TreeDelta,
                        #          InteractionArbiter, Logical EditorSession (-> octara-model)
   octara-runtime/      # Layer 1: TypedSlab ReactiveWorld, Pull-on-Demand Value+Delta DAG,
-                       #          Capability Contexts, 5-Phase Turn Engine, HostEngine trait
+                       #          Capability Contexts, 5-Phase Cycle Engine, HostEngine trait
                        #          (-> octara-model, octara-tree)
 
   octara/              # Layer 2: Clean public authoring facade (View, El, Styled, each, virtual_each, App, Window)
@@ -258,7 +258,7 @@ The following v1 runtime diagnostics are **permanently deleted** because v2 enfo
 
 Remaining runtime diagnostics (truly dynamic conditions):
 - `CYCLE` (dynamic reactive dependency cycle)
-- `FLUSH_RUNAWAY` (post-commit watch loop exceeding turn budget)
+- `FLUSH_RUNAWAY` (post-commit watch loop exceeding cycle budget)
 - `LAYOUT_LOOP` (causal project loop exceeding `WINDOW_ROUNDS = 16`)
 - `READ_DISPOSED` / `WRITE_DISPOSED` (using a `Copy` handle whose owning scope was disposed)
 - `WRONG_RUNTIME` (passing a `ReactiveId` into a different `App`)

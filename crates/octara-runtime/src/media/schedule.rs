@@ -259,7 +259,7 @@ impl MediaScheduler {
             .await;
             events.lock().expect("media events").push(JobEvent::Finished(job_key, result));
         });
-        spawner.defer_until_next_turn(task);
+        spawner.defer_until_next_cycle(task);
         let variant_started = key.variant.is_some().then(|| tasks.now());
         self.jobs.insert(key, Job { task, cancel, probed: None, variant_started });
     }

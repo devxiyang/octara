@@ -16,7 +16,9 @@ mod tuple;
 
 pub use behavior::Behavior;
 pub use control::{keyed, keyed_or_else, scope, scoped, show};
-pub use el::{El, TextInput, canvas, col, el, icon, image, image_source, input, native_view, row, spacer, text, textarea, video};
+pub use el::{
+    El, TextInput, canvas, col, el, icon, image, image_source, input, native_view, row, spacer, text, textarea, typed_native_view, video,
+};
 pub use list::{VirtualOptions, each, virtual_each, virtual_each_with_copy};
 pub use navigation::{RouteMount, route_stack};
 pub use octara_macros::{Store, tw, ui};

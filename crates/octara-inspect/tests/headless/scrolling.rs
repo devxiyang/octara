@@ -92,7 +92,7 @@ fn keyboard_focus_reveals_a_new_inline_link_using_current_text_layout() {
 }
 
 #[test]
-fn programmatic_scroll_precedes_follow_tail_when_the_range_changes_in_the_same_turn() {
+fn programmatic_scroll_precedes_follow_tail_when_the_range_changes_in_the_same_cycle() {
     let mut driver = driver();
     let height = driver.app_mut().build(|b| b.signal(180)).unwrap();
     let id = driver

@@ -4,6 +4,7 @@ use octara_model::{
     geometry::Point,
     image::ImageSource,
     motion::TextReveal,
+    native::TypedNativeProps,
     overlay::AnchorTarget,
     paint::PaintInput,
     semantics::{Checked, NumericRange},
@@ -112,6 +113,7 @@ static_prop! {
     NumericRange => [NumericRange],
     PaintInput => [PaintInput, [f32; 4]],
     serde_json::Value => [serde_json::Value],
+    TypedNativeProps => [TypedNativeProps],
 }
 
 impl IntoProp<Option<String>> for &str {

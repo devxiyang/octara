@@ -118,7 +118,7 @@ pub struct StreamingOptions {
     /// Overrides the scoped renderer's reveal effect when present.
     pub effects: Option<StreamingEffects>,
     /// Batches recent input into words and table rows. Set to false to render
-    /// source edits in the same turn while keeping the streaming filter and reveal.
+    /// source edits in the same cycle while keeping the streaming filter and reveal.
     pub pace: bool,
 }
 

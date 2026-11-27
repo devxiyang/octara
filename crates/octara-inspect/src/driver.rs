@@ -1,28 +1,31 @@
-//! Headless execution using the same turns, geometry, and hit testing as the native host.
+//! Headless execution using the same cycles, geometry, and hit testing as the native host.
+
+mod native;
 
 use crate::{
     InspectHost, Inspector,
     protocol::{AgentReceipt, AgentRequest, Capture},
 };
+use native::NativeHost;
 use octara::{
     App, AppDefinition,
     runtime::{
         HostCommand, Input, WindowRuntime,
-        turn::{TurnError, TurnReceipt},
+        cycle::{AppError, CycleReceipt},
     },
 };
 use octara_model::{
     capture::{CaptureSource, PaintSample},
     identity::WindowId,
 };
-use octara_pipeline::{NativeEngine, NativeEngineConfig};
+use octara_pipeline::NativeEngineConfig;
 use octara_render::CpuRenderer;
 use std::time::Duration;
 
 pub struct HeadlessDriver {
+    host: HeadlessHost,
     app: App,
     inspector: Inspector,
-    host: PaintedCapture,
 }
 
 impl Default for HeadlessDriver {
@@ -33,25 +36,28 @@ impl Default for HeadlessDriver {
 
 impl HeadlessDriver {
     pub fn new(config: NativeEngineConfig) -> Self {
-        Self::with_app(App::new(move |_, _| Box::new(NativeEngine::new(config))))
+        let host = HeadlessHost::default();
+        let app = App::new(host.native.engine_factory(config));
+        Self { app, inspector: Inspector::default(), host }
     }
 
     pub fn with_namespace(namespace: [u64; 2], config: NativeEngineConfig) -> Self {
-        Self::with_app(App::with_namespace(namespace, move |_, _| Box::new(NativeEngine::new(config))))
-    }
-
-    fn with_app(app: App) -> Self {
-        Self { app, inspector: Inspector::default(), host: PaintedCapture::default() }
+        let host = HeadlessHost::default();
+        let app = App::with_namespace(namespace, host.native.engine_factory(config));
+        Self { app, inspector: Inspector::default(), host }
     }
 
     /// Install the application's audit rules, payload codec, or trace recorder before launch.
     pub fn with_inspector(mut self, inspector: Inspector) -> Self {
         self.inspector = inspector;
+        self.inspector.attach_module_trace(&mut self.app);
         self
     }
 
-    pub fn launch(&mut self, definition: AppDefinition) -> Result<Vec<WindowId>, TurnError> {
-        definition.launch(&mut self.app, None)
+    pub fn launch(&mut self, definition: AppDefinition) -> Result<Vec<WindowId>, AppError> {
+        let windows = definition.launch(&mut self.app, None)?;
+        self.sync_native_views()?;
+        Ok(windows)
     }
 
     pub fn app(&self) -> &App {
@@ -70,13 +76,22 @@ impl HeadlessDriver {
         self.inspector.exchange(&mut self.app, &mut self.host, payload)
     }
 
-    pub fn dispatch(&mut self, window: WindowId, input: Input) -> Result<TurnReceipt, TurnError> {
+    pub fn dispatch(&mut self, window: WindowId, input: Input) -> Result<CycleReceipt, AppError> {
         self.inspector.record_input(&self.app, window, &input);
-        self.app.dispatch(window, input)
+        let receipt = self.app.dispatch(window, input)?;
+        self.sync_native_views()?;
+        Ok(receipt)
     }
 
-    pub fn advance_to(&mut self, time: Duration) -> Result<TurnReceipt, TurnError> {
-        self.app.advance_to(time)
+    pub fn advance_to(&mut self, time: Duration) -> Result<CycleReceipt, AppError> {
+        let receipt = self.app.advance_to(time)?;
+        self.sync_native_views()?;
+        Ok(receipt)
+    }
+
+    /// Synchronize registered native views after using the application directly through `app_mut`.
+    pub fn sync_native_views(&mut self) -> Result<(), AppError> {
+        self.host.synchronize(&mut self.app)
     }
 
     pub fn replay(&mut self, recording: &crate::replay::Replay) -> Result<Vec<crate::replay::Step>, crate::replay::ReplayError> {
@@ -85,6 +100,22 @@ impl HeadlessDriver {
 
     pub fn take_host_commands(&mut self) -> Vec<HostCommand> {
         self.app.runtime_mut().take_host_commands()
+    }
+}
+
+#[derive(Default)]
+struct HeadlessHost {
+    native: NativeHost,
+    capture: PaintedCapture,
+}
+
+impl InspectHost for HeadlessHost {
+    fn synchronize(&mut self, app: &mut App) -> Result<(), AppError> {
+        self.native.sync(app)
+    }
+
+    fn capture(&mut self, window: &WindowRuntime, source: CaptureSource, now: Duration) -> Result<Capture, String> {
+        self.capture.capture(window, source, now)
     }
 }
 

@@ -4,6 +4,7 @@ use crate::tables::PaintSlot;
 use crate::{DirtyBitmap, NodeId};
 use octara_model::diagnostics::Diagnostic;
 use octara_model::identity::ExitTicket;
+use octara_model::native::TypedNativeProps;
 use rustc_hash::FxHashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +44,7 @@ pub struct TreeDelta {
     pub geometry_demands: FxHashSet<GeometryDemand>,
     pub diagnostics: Vec<Diagnostic>,
     pub(crate) retired_assets: Vec<PaintSlot>,
+    pub(crate) retired_native_props: Vec<TypedNativeProps>,
 }
 
 impl TreeDelta {
@@ -73,10 +75,16 @@ impl TreeDelta {
         self.geometry_demands.extend(next.geometry_demands);
         self.diagnostics.extend(next.diagnostics);
         self.retired_assets.extend(next.retired_assets);
+        self.retired_native_props.extend(next.retired_native_props);
     }
 
     /// Release these assets outside the tree borrow, before entering user code again.
     pub fn take_retired_assets(&mut self) -> Vec<PaintSlot> {
         std::mem::take(&mut self.retired_assets)
+    }
+
+    /// Release replaced native props outside the tree borrow.
+    pub fn take_retired_native_props(&mut self) -> Vec<TypedNativeProps> {
+        std::mem::take(&mut self.retired_native_props)
     }
 }
