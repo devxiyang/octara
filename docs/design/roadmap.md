@@ -56,6 +56,9 @@
   1. **iOS & Web Production Closure (C3 + C4)**: iOS `UIAccessibility` VoiceOver bridge + `StatusBarStyle` + scene-local keyboard layout; Web `visualViewport`, `document.title`/`theme-color`, `beforeunload`, unified multimodal `WriteClipboard`, and modal ARIA focus trap + `inert`.
   2. **100% `winit` & `accesskit_winit` Removal**: Pure platform-neutral `OsHost` / `OsWindow` / `PlatformEvent` SPI in `octara-host-native`; direct macOS `15.4+` AppKit host (`NSApplication` / `NSWindow` / `NSPanel` / `NSTextInputClient` / `accesskit_macos`), direct iOS `18.4+` UIKit host (`UIApplicationMain` / `UIWindowSceneDelegate` / `UIViewController`), and direct Linux Wayland (`smithay-client-toolkit`, `zwp_text_input_v3`, `zwp_pointer_gestures_v1`, `wp_fractional_scale_v1`, `wl_data_device`, XDG Portal) + X11 (`x11rb`) host.
   3. **Desktop Drag-Out, Window Levels/Panels & Airspace Closure (C5 + C6)**: `DragItem` / `el.on_drag_start` (`NSDraggingSession`, Web `DataTransfer`, Linux `wl_data_device`), `WindowLevel` + native macOS `NSPanel`, and `AirspacePolicy::SnapshotOnOcclude`.
+  4. **Layout Isolation & Hybrid Fast-Path (Planned Core Optimization)**:
+     - **`RelayoutBoundary` & CSS-Standard `Contain` (`Contain::LAYOUT | Contain::SIZE`)**: Automatic tight-constraint relayout boundaries + explicit `.contain(...)` (projects to CSS `contain` on Web) so localized edits/hovers inside a fixed-size row or scroll container relayout only the 5–10 nodes inside the boundary without dirtying ancestors or sibling rows.
+     - **Text Intrinsic-Probe Cache & `LayoutPartialTree` Hybrid Dispatch**: Small multi-slot measure probe cache (`MinContent` / `MaxContent` / `Definite(w)`) per text node to eliminate redundant Parley shaping during nested Flex mounting, plus O(1) single-pass fast-path for simple leaves / fixed-size boxes while delegating true Flex/Grid to `taffy::compute_flexbox_layout` / `compute_grid_layout`.
 
 ---
 
