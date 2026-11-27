@@ -19,10 +19,10 @@
 
 | # | Pillar | Core vs. Module Boundary | Target Milestone |
 | --- | --- | --- | --- |
-| **1** | **High-Frequency Platform Modules** (`notifications`, `secure-store`, `desktop-shell`, `storage`, `share`, `network`) | Optional `modules/*` (SPI-7) | `0.0.9` |
-| **2** | **Four-Platform Core Interaction & Forms** (unified gestures, Pull-to-Refresh, soft-keyboard & OTP traits, scroll-dismiss keyboard, Drag Out, `WindowLevel`/`NSPanel`, Linux Wayland IME/HiDPI/Portal) | Core (`octara-model` / `tree` / `runtime` / `host-*`) | `0.0.10` |
-| **3** | **Full Accessibility & Internationalization** (macOS/Linux AccessKit, Web ARIA Focus Trap/`inert`, **iOS `UIAccessibility` VoiceOver**, BiDi/RTL layout, Dynamic Type `text_scale`, `locale`, `high_contrast`) | Core (`octara-model` / `tree` / `pipeline` / `host-*`) | `0.0.10` |
-| **4** | **WebView & Airspace Completeness** (`WKWebsiteDataStore`, `WKUserScript`, download policy, `AirspacePolicy::SnapshotOnOcclude`, Linux `WebKitGTK`) | Airspace in Core; WebView in `modules/octara-webview` | `0.0.9` – `0.0.11` |
+| **1** | **Four-Platform Core Interaction & Forms** (unified gestures, Pull-to-Refresh, soft-keyboard & OTP traits, scroll-dismiss keyboard, Drag Out, `WindowLevel`/`NSPanel`, Linux Wayland IME/HiDPI/Portal) | Core (`octara-model` / `tree` / `runtime` / `host-*`) | `0.0.9` |
+| **2** | **Full Accessibility & Internationalization** (macOS/Linux AccessKit, Web ARIA Focus Trap/`inert`, **iOS `UIAccessibility` VoiceOver**, BiDi/RTL layout, Dynamic Type `text_scale`, `locale`, `high_contrast`) | Core (`octara-model` / `tree` / `pipeline` / `host-*`) | `0.0.9` |
+| **3** | **Airspace & WebView Completeness** (`AirspacePolicy::SnapshotOnOcclude`, `WKWebsiteDataStore`, `WKUserScript`, download policy, Linux `WebKitGTK`) | Airspace in Core (`0.0.9`); WebView in `modules/octara-webview` (`0.0.10`–`0.0.11`) | `0.0.9` – `0.0.11` |
+| **4** | **High-Frequency Platform Modules** (`notifications`, `secure-store`, `desktop-shell`, `storage`, `share`, `network`) | Optional `modules/*` (SPI-7) | `0.0.10` |
 | **5** | **Production Complex Components** (`DataTable`, `TreeView`, `SplitPane`, gesture `BottomSheet`/`Drawer`, `Toast` stack, `DatePicker`/`ColorPicker`, `CommandPalette`, `Form Validation`) | `octara-headless` + `octara-kit` | `0.0.11` |
 | **6** | **Modern Graphics, Motion & Export** (GPU `backdrop-filter` blur, spring physics & FLIP layout transitions, 120Hz frame pacing telemetry, vector PDF/print export from `DisplayList`) | `octara-pipeline` + `octara-render` + `octara-gpu` | `0.0.11` |
 | **7** | **Advanced Hardware Modules** (`biometrics`, `audio`, `camera`, `location`, declarative deep-link routing helpers) | Optional `modules/*` (SPI-7) | `0.0.11` |
@@ -40,32 +40,33 @@
 
 ---
 
-### `0.0.9` — High-Frequency System Modules & WebView Persistence *(Next)*
-- **Spec**: [15 — High-Frequency System Modules & WebView Depth (`0.0.9`)](v2/15-high-frequency-modules.md)
-- **Scope (Tier-1 Platforms: macOS, iOS, Web, Linux + Headless `mock()`)**:
-  1. **`modules/octara-notifications`**: Local notifications, permission state machine, remote push token registration, tap/action deep-link wake (`UNUserNotificationCenter`, Linux `org.freedesktop.Notifications` D-Bus, Web Notification API).
-  2. **`modules/octara-secure-store`**: Encrypted credential/secret store with mandatory `SENSITIVE = true` redaction (Apple Keychain, Linux Secret Service D-Bus, Web Crypto AES-GCM + IndexedDB).
-  3. **`modules/octara-desktop-shell`**: System tray (`NSStatusItem` / Linux StatusNotifierItem D-Bus) with reactive menus & click events, global hotkeys (macOS / Linux XDG GlobalShortcuts portal), and launch-at-login (`SMAppService` / Linux autostart `.desktop`).
-  4. **`modules/octara-storage`**: Standard app directories (`AppData` / `Cache` / `Temp` / `Documents`) + atomic KV store (Native filesystem/SQLite + Web IndexedDB/OPFS) + one-line `RestartState` persistence integration.
-  5. **`modules/octara-share`**: Native share sheets (`UIActivityViewController`, `NSSharingServicePicker`, Linux portal/fallback, Web Share API).
-  6. **`modules/octara-network`**: Reactive `ReadSignal<NetworkStatus>` + change events (`NWPathMonitor`, Linux NetworkManager/netlink, Web `navigator.onLine`).
-  7. **`modules/octara-webview` Depth**: `WebViewProfile::{Persistent, Ephemeral}` (`WKWebsiteDataStore`), cookie/cache management, `WKUserScript` injection (`DocumentStart` / `DocumentEnd`), CSP policy helpers, and download interception (`WKDownloadDelegate`).
-
----
-
-### `0.0.10` — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure
-- **Planned Spec**: `v2/16-four-platform-core-polish.md` (detailed before implementation)
+### `0.0.9` — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure *(Next — Core First)*
+- **Spec**: [15 — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure (`0.0.9`)](v2/15-four-platform-core-polish.md)
+- **Why Core First**: Finalizing gestures, input traits, iOS VoiceOver, Web `visualViewport`/`inert`, Drag Out, `WindowLevel`/`NSPanel`, Airspace `SnapshotOnOcclude`, and RTL stabilizes the core public API before scaling out the `modules/*` ecosystem.
 - **Scope**:
-  1. **Unified Gesture Engine**: `GestureEvent::{Pinch, Rotate, LongPress, DoubleTap, Pan}` across macOS trackpad (`magnifyWithEvent:` / `rotateWithEvent:`), iOS multi-touch, Linux touchpad, and Web Pointer/Wheel; `PullToRefresh` primitive and mobile overscroll physics.
+  1. **Unified Gesture Engine**: `GestureEvent::{Pinch, Rotate, LongPress, DoubleTap}` across macOS trackpad (`magnifyWithEvent:` / `rotateWithEvent:`), iOS multi-touch, Linux touchpad, and Web Pointer/Wheel; `PullToRefresh` primitive and mobile overscroll physics.
   2. **Forms & Soft-Keyboard Semantics**: `KeyboardType`, `ReturnKeyType`, `AutoCapitalize`, `Autocorrect`, `TextContentType` (password/OTP autofill), and `ScrollDismissesKeyboard::{Never, Immediately, Interactively}` mapped to iOS `UITextInputTraits` and Web `inputmode`/`enterkeyhint`/`autocomplete`.
   3. **iOS Native Closure**: **`UIAccessibility` / VoiceOver** semantic tree bridge; `StatusBarStyle::{Auto, Light, Dark, Hidden}` synced with `WindowPresentation.theme`; portrait/landscape + Dynamic Island safe-area verification.
-  4. **Web Production Closure**: `window.visualViewport` → `WindowViewport.keyboard_inset`; `document.title` & `<meta name="theme-color">` sync; `beforeunload` wired to `Window::on_close_request`; multimodal clipboard write (image/HTML); complete modal ARIA focus trap + `inert`.
+  4. **Web Production Closure**: `window.visualViewport` → `WindowViewport.keyboard_inset`; `document.title` & `<meta name="theme-color">` sync; `beforeunload` wired to `Window::on_close_request`; multimodal clipboard write (text/image); complete modal ARIA focus trap + `inert`.
   5. **macOS & Linux Desktop Closure**:
      - **Drag Out**: macOS `NSDraggingSession`, Linux Wayland/X11 drag source, and Web `draggable`/`dataTransfer`.
      - **Window Levels & Panels**: `WindowLevel::{Normal, Floating, AlwaysOnTop}` and non-activating floating panel (`NSPanel` semantics).
      - **Linux Native Polish**: Wayland `text-input-v3` IME, fractional HiDPI scaling, XDG Desktop Portal dark-mode/preferences integration.
   6. **Airspace Occlusion**: Implement `AirspacePolicy::SnapshotOnOcclude` automatic GPU snapshot freeze and live-view hide whenever an Octara overlay intersects an overlay native view.
   7. **Internationalization & Accessibility Preferences**: BiDi/RTL `Direction::{Ltr, Rtl}` with logical spacing/alignment (`start`/`end`), plus `SystemPreferences::{locale, text_scale, high_contrast}`.
+
+---
+
+### `0.0.10` — High-Frequency System Modules & WebView Persistence
+- **Spec**: [16 — High-Frequency System Modules & WebView Depth (`0.0.10`)](v2/16-high-frequency-modules.md)
+- **Scope (Tier-1 Platforms: macOS, iOS, Web, Linux + Headless `mock()`)**:
+  1. **`modules/octara-notifications`**: Local notifications, permission state machine, remote push token registration, tap/action deep-link wake (`UNUserNotificationCenter`, Linux `org.freedesktop.Notifications` D-Bus, Web Notification API).
+  2. **`modules/octara-secure-store`**: Encrypted credential/secret store with mandatory `SENSITIVE = true` redaction (Apple Keychain, Linux Secret Service D-Bus, Web Crypto AES-GCM + IndexedDB).
+  3. **`modules/octara-desktop-shell`**: System tray (`NSStatusItem` / Linux StatusNotifierItem D-Bus) with reactive menus & click events, global hotkeys (macOS / Linux XDG GlobalShortcuts portal), and launch-at-login (`SMAppService` / Linux autostart `.desktop`).
+  4. **`modules/octara-storage`**: Standard app directories (`AppData` / `Cache` / `Temp` / `Documents`) + atomic KV store (Native filesystem + Web IndexedDB/OPFS) + one-line `RestartState` persistence integration.
+  5. **`modules/octara-share`**: Native share sheets (`UIActivityViewController`, `NSSharingServicePicker`, Linux portal/fallback, Web Share API).
+  6. **`modules/octara-network`**: Reactive `ReadSignal<NetworkStatus>` + change events (`NWPathMonitor`, Linux NetworkManager/netlink, Web `navigator.onLine`).
+  7. **`modules/octara-webview` Depth**: `WebViewProfile::{Persistent, Ephemeral}` (`WKWebsiteDataStore`), cookie/cache management, `WKUserScript` injection (`DocumentStart` / `DocumentEnd`), CSP policy helpers, and download interception (`WKDownloadDelegate`).
 
 ---
 

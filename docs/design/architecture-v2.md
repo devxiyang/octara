@@ -21,7 +21,8 @@ This document is the architectural overview. Exact crate layouts, naming convent
 12. [12 — Pluggable SPI Architecture: Modular Extension Boundaries](v2/12-pluggable-spi-architecture.md)
 13. [13 — Window Presentation, Dual-Parent Inheritance, Multimodal Input & Real-Metric Inline Primitives (`0.0.7`)](v2/13-window-presentation-multimodal-input-and-inline-primitives.md)
 14. [14 — Cycle Terminology Cleanup & `octara::module` Platform Extension Architecture (`0.0.8`)](v2/14-octara-module-architecture.md)
-15. [15 — High-Frequency System Modules & WebView Depth (`0.0.9`)](v2/15-high-frequency-modules.md)
+15. [15 — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure (`0.0.9`)](v2/15-four-platform-core-polish.md)
+16. [16 — High-Frequency System Modules & WebView Depth (`0.0.10`)](v2/16-high-frequency-modules.md)
 
 See also: [Octara Master Roadmap (`0.0.8` → `0.1.0` → `0.2.0`)](roadmap.md).
 

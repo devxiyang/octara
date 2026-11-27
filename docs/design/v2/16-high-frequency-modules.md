@@ -1,7 +1,8 @@
-# 15 — High-Frequency System Modules & WebView Depth (`0.0.9`)
+# 16 — High-Frequency System Modules & WebView Depth (`0.0.10`)
 
-> **Design premise**: Deliver the six highest-frequency application capabilities across **Tier-1 platforms (macOS, iOS, Web, Linux + Headless DST)** purely as optional first-party `modules/*` crates on top of `0.0.8`'s `octara::module` SPI — with **zero new core crates and zero core bloat**.  
-> **Prerequisite**: `0.0.8` (`docs/design/v2/14-octara-module-architecture.md` Wave 1 & Wave 2) complete and published.
+> **Design premise**: Deliver the six highest-frequency application capabilities across **Tier-1 platforms (macOS, iOS, Web, Linux + Headless DST)** purely as optional first-party `modules/*` crates on top of `0.0.8`'s `octara::module` SPI and `0.0.9`'s finalized core APIs — with **zero new core crates and zero core bloat**.
+>
+> **Prerequisite**: `0.0.8` (`docs/design/v2/14-octara-module-architecture.md`) and `0.0.9` (`docs/design/v2/15-four-platform-core-polish.md`) complete.
 
 ---
 
@@ -292,7 +293,7 @@ Extend `modules/octara-webview` (from `0.0.8`) without breaking its core `Native
 
 ---
 
-## 3. Execution Waves & Verification Gates (`0.0.9`)
+## 3. Execution Waves & Verification Gates (`0.0.10`)
 
 ### Wave A — Core Utility & Security Modules (`storage`, `secure-store`, `network`)
 - Implement `modules/octara-storage`, `modules/octara-secure-store`, and `modules/octara-network` with macOS/iOS/Linux/Web backends, `octara-module.toml`, Headless `mock()`, and `RestartState` integration tests.
@@ -302,7 +303,7 @@ Extend `modules/octara-webview` (from `0.0.8`) without breaking its core `Native
 
 ### Wave C — `modules/octara-webview` Persistence, Scripts & Downloads + Release Gate
 - Upgrade `modules/octara-webview` (`WebViewProfile`, `WKUserScript`, `WKDownloadDelegate`, `ClearData`, `WebViewSandboxPolicy`).
-- Run full `0.0.9` release gate:
+- Run full `0.0.10` release gate:
   1. `python3 tools/check_layers.py` (confirm zero core crate depends on any `modules/*` crate).
   2. `cargo clippy --workspace --all-targets -- -D warnings`.
   3. Cross-target checks: `wasm32-unknown-unknown` (default + `webgpu` + all `modules/*`), `aarch64-apple-ios-sim` (`octara-host-native` + all `modules/*`).
