@@ -19,6 +19,16 @@ pub struct PaintScene {
 }
 
 impl PaintScene {
+    pub(super) fn matches(&self, size: Size, background: Color, root: Option<&Arc<PaintNode>>) -> bool {
+        self.size == size
+            && self.background == background
+            && self.root.as_ref().zip(root).map_or(self.root.is_none() && root.is_none(), |(a, b)| Arc::ptr_eq(a, b))
+    }
+
+    pub(super) fn timed_at(&self, time: f64) -> bool {
+        self.root.as_ref().is_some_and(|root| root.timing.timed_at(time))
+    }
+
     pub fn continuously_animated(&self, time: f64) -> bool {
         self.root.as_ref().is_some_and(|root| root.motion_at(time))
     }
@@ -43,6 +53,7 @@ pub(super) struct Element {
     pub visual: Visual,
     pub bounds: Rect,
     pub clip: Rect,
+    pub visible: bool,
     pub child_clip: Option<(Rect, bool)>,
     pub decoration: Arc<Decoration>,
     pub own: Arc<[Item]>,
@@ -379,7 +390,7 @@ impl Element {
         }
 
         let offset = Vec2::new(bounds.x, bounds.y);
-        let visible = !bounds.intersect(&self.clip).is_empty();
+        let visible = if bounds == self.bounds { self.visible } else { !bounds.intersect(&self.clip).is_empty() };
         let ring_visible = visual.ring.and_then(|ring| ring_rect(bounds, ring)).is_some_and(|rect| !rect.intersect(&self.clip).is_empty());
         if visible || ring_visible || self.decoration.shadows_meet(bounds, self.clip) {
             let items = if visual != self.visual || bounds.w != self.bounds.w || bounds.h != self.bounds.h {

@@ -3,7 +3,8 @@ export function octara_exit_style(element, visibleOnly) {
     if (!element.isConnected || element.ownerDocument.hidden || typeof element.animate !== "function") return null;
     const view = element.ownerDocument.defaultView;
     const rect = element.getBoundingClientRect();
-    if (!rect.width || !rect.height || view.getComputedStyle(element).visibility !== "visible") return null;
+    const elementStyle = view.getComputedStyle(element);
+    if (!rect.width || !rect.height || elementStyle.visibility !== "visible") return null;
     let left = 0, top = 0, right = view.innerWidth, bottom = view.innerHeight;
     for (let parent = element.parentElement; parent; parent = parent.parentElement) {
         const style = view.getComputedStyle(parent);
@@ -25,7 +26,7 @@ export function octara_exit_style(element, visibleOnly) {
         || Math.max(left, rect.left) >= Math.min(right, rect.right))) return null;
     const clip = [top - rect.top, rect.right - right, rect.bottom - bottom, left - rect.left]
         .map(value => `${value}px`).join(" ");
-    return `${element.style.cssText};position:fixed;inset:auto;left:${rect.x}px;top:${rect.y}px;margin:0;
+    return `${element.style.cssText};color-scheme:${elementStyle.colorScheme};position:fixed;inset:auto;left:${rect.x}px;top:${rect.y}px;margin:0;
         box-sizing:border-box;width:${rect.width}px;height:${rect.height}px;min-width:0;min-height:0;
         max-width:none;max-height:none;pointer-events:none;transition:none;clip-path:inset(${clip});`;
 }

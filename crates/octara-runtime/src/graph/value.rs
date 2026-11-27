@@ -173,7 +173,7 @@ impl ReactiveWorld {
             state.pending = Some(value);
             true
         });
-        self.node_mut(id).watch_effect = Some(Box::new(move |w, id| {
+        self.cold_mut(id).watch_effect = Some(Box::new(move |w, id| {
             let state = w.world.value_mut::<WatchValue<T>>(id);
             let value = state.pending.take().expect("changed watch value");
             let delivered = state.delivered.take();

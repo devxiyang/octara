@@ -1,6 +1,7 @@
 //! Lifetime and capacity accounting for one native GPU device.
 
 use crate::executor::{GpuError, Inbox};
+use octara_model::CacheLine;
 use octara_render::gpu::DeviceLoss;
 use octara_render::wgpu;
 use std::any::Any;
@@ -46,9 +47,9 @@ struct ReadbackAllocation {
 }
 
 pub struct DeviceGeneration {
-    number: u64,
+    number: CacheLine<u64>,
     loss: DeviceLoss,
-    stopped: AtomicBool,
+    stopped: CacheLine<AtomicBool>,
     work: Mutex<Work>,
     inbox: OnceLock<Weak<Inbox>>,
     notifier: Option<DeviceNotifier>,
@@ -57,9 +58,9 @@ pub struct DeviceGeneration {
 impl DeviceGeneration {
     pub fn new(number: u64, notifier: Option<DeviceNotifier>) -> Self {
         Self {
-            number,
+            number: CacheLine(number),
             loss: DeviceLoss::default(),
-            stopped: AtomicBool::new(false),
+            stopped: CacheLine(AtomicBool::new(false)),
             work: Mutex::default(),
             inbox: OnceLock::new(),
             notifier,
@@ -67,11 +68,11 @@ impl DeviceGeneration {
     }
 
     pub fn number(&self) -> u64 {
-        self.number
+        self.number.0
     }
 
     pub fn successor(&self) -> Self {
-        Self::new(self.number.checked_add(1).expect("device generation exhausted"), self.notifier.clone())
+        Self::new(self.number().checked_add(1).expect("device generation exhausted"), self.notifier.clone())
     }
 
     pub fn capacity(&self) -> DeviceCapacity {
@@ -95,7 +96,7 @@ impl DeviceGeneration {
 
     /// Ignore callbacks from retired generations when deciding whether to replace the current device.
     pub fn loss_for(&self, number: u64) -> Option<&(wgpu::DeviceLostReason, String)> {
-        self.loss.get().filter(|_| self.number == number)
+        self.loss.get().filter(|_| self.number() == number)
     }
 
     pub(super) fn attach(&self, inbox: &Arc<Inbox>) -> std::io::Result<()> {
@@ -108,7 +109,7 @@ impl DeviceGeneration {
 
     pub(super) fn unavailable(&self, may_have_submitted: bool) -> Option<GpuError> {
         if self.is_lost() {
-            Some(GpuError::DeviceLost { generation: self.number, may_have_submitted })
+            Some(GpuError::DeviceLost { generation: self.number(), may_have_submitted })
         } else if self.is_stopped() {
             Some(GpuError::Stopped { may_have_submitted })
         } else {
@@ -119,7 +120,7 @@ impl DeviceGeneration {
     pub(super) fn notify(&self, notice: DeviceNotice) {
         if let Some(notify) = &self.notifier {
             // A user callback can run inside wgpu's device-poll or on a dying worker.
-            let _ = catch_unwind(AssertUnwindSafe(|| notify(self.number, notice)));
+            let _ = catch_unwind(AssertUnwindSafe(|| notify(self.number(), notice)));
         }
     }
 

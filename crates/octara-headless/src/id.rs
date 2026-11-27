@@ -5,8 +5,10 @@ pub(crate) struct Id(u64);
 
 impl Id {
     pub(crate) fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        Self(NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).expect("headless ids exhausted"))
+        #[repr(align(128))]
+        struct Counter(AtomicU64);
+        static NEXT: Counter = Counter(AtomicU64::new(1));
+        Self(NEXT.0.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).expect("headless ids exhausted"))
     }
 
     pub(crate) fn part(self, name: &str) -> String {

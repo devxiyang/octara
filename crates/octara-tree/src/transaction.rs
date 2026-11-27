@@ -7,6 +7,7 @@ use crate::tables::{
     AuthoredStyle, CommandSlot, Component, DragDrop, EditorSlot, HandlerId, HandlerKind, LinkSlot, PaintSlot, SemanticsSlot,
 };
 use crate::{NodeFlags, NodeId, NodeKind, RowKey, Tree, TreeId, TreeRev};
+use octara_model::CacheLine;
 use octara_model::geometry::Placement;
 use octara_model::image::ImageSource;
 use octara_model::motion::TextReveal;
@@ -187,7 +188,8 @@ pub struct TxBuilder(Transaction);
 
 impl TxBuilder {
     pub fn new(tree: TreeId, base_rev: TreeRev) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        use std::sync::atomic::AtomicU64;
+        static NEXT: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(1));
         use std::sync::atomic::Ordering::Relaxed;
         let ns = NEXT.try_update(Relaxed, Relaxed, |next| next.checked_add(1)).expect("transaction namespace exhausted");
         let batch_ns = (u128::from(tree.namespace[0]) << 64) | u128::from(ns);
@@ -592,9 +594,10 @@ impl Tree {
         };
 
         let mut style_roots = FxHashSet::default();
+        let mut theme_roots = FxHashSet::default();
         for op in tx.ops {
             if let TxOp::Change(node, change) = op {
-                self.commit_change(resolve(node), change, &resolve, &mut style_roots, &mut delta);
+                self.commit_change(resolve(node), change, &resolve, &mut style_roots, &mut theme_roots, &mut delta);
             }
         }
         for &(_, _, child) in &topology.placements {
@@ -611,7 +614,7 @@ impl Tree {
         if !focus_ancestors.is_empty() && !delta.topology_dirty.is_empty() {
             self.reconcile_focus_states(focus_ancestors, self.focus_visible(), &mut style_roots, &mut delta);
         }
-        self.resolve_dirty_styles(style_roots, &mut delta);
+        self.resolve_dirty_styles(style_roots, theme_roots, &mut delta);
         self.reconcile_focus(&mut delta);
         self.revalidate_selection(selections, &mut delta);
         self.rev = revision;

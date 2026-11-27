@@ -108,8 +108,8 @@ impl Tree {
         let mounts: FxHashSet<_> = delta
             .overlay_dirty
             .iter()
-            .filter(|&&node| self.is_live(node))
-            .filter_map(|&node| self.overlay(node)?.mount.map(|mount| (mount.owner, mount.order)))
+            .filter(|&node| self.is_live(node))
+            .filter_map(|node| self.overlay(node)?.mount.map(|mount| (mount.owner, mount.order)))
             .collect();
         if mounts.is_empty() {
             return;

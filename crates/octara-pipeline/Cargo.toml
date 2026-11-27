@@ -29,3 +29,6 @@ slotmap.workspace = true
 smallvec.workspace = true
 taffy.workspace = true
 unicode-segmentation.workspace = true
+
+[target.'cfg(any(unix, windows))'.dependencies]
+memmap2 = "0.9.12"

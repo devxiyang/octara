@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const DEFAULT_DELTA_LOG_CAP: usize = 4096;
 const DEFAULT_DELTA_LOG_BYTES: usize = 1024 * 1024;
-static NEXT_LOG: AtomicU64 = AtomicU64::new(1);
+static NEXT_LOG: octara_model::CacheLine<AtomicU64> = octara_model::CacheLine(AtomicU64::new(1));
 
 /// The next entry to read from one particular log.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

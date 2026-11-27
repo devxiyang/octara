@@ -58,7 +58,7 @@ fn focus_states_track_modality_and_resist_direct_writes() {
     assert_eq!(state(&tree, parent), State::FOCUS_WITHIN | State::HOVER);
     assert_eq!(state(&tree, child), State::FOCUS_WITHIN | State::FOCUSED);
     let delta = tree.apply_runtime(RuntimeOp::SetFocus { node: Some(child), visible: true });
-    assert_eq!(delta.semantics_dirty.into_iter().collect::<Vec<_>>(), [child]);
+    assert_eq!(delta.semantics_dirty.iter().collect::<Vec<_>>(), [child]);
     assert_eq!(state(&tree, child), State::TREE_DERIVED);
     assert!(tree.apply_runtime(RuntimeOp::SetState { node: child, state: State::TREE_DERIVED, on: false }).is_empty());
     assert_eq!(state(&tree, child), State::TREE_DERIVED);

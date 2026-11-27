@@ -660,7 +660,7 @@ fn color_glyphs_keep_their_atlas_color_with_sampled_opacity() {
     };
     let run = GlyphRun {
         source: NodeId::default(),
-        font: FontFace { id: FontId(42), data: Arc::new([]), index: 0 },
+        font: FontFace { id: FontId(42), data: (&[] as &[u8]).into(), index: 0 },
         size: 16.0,
         coords: vec![],
         embolden: false,

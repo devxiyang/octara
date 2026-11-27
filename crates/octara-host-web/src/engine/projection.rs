@@ -3,7 +3,7 @@
 use super::{DomEngine, EntryState, exit::ExitPlan, subtrees};
 use crate::{css, dom, rich};
 use octara::runtime::engine::ProjectFeedback;
-use octara::tree::{NodeFlags, NodeId, RetiredNode, Tree, TreeDelta};
+use octara::tree::{DirtyBitmap, NodeFlags, NodeId, RetiredNode, Tree, TreeDelta};
 use octara_model::geometry::WindowViewport;
 use octara_model::input::{CursorStyle, HostReply};
 use octara_model::paint::Image;
@@ -57,7 +57,7 @@ impl DomEngine {
                 created.insert(node);
             }
         }
-        for &node in &delta.editor_dirty {
+        for node in delta.editor_dirty.iter() {
             let Some(editor) = tree.editor(node) else { continue };
             let Some(element) = self.dom.element(node) else { continue };
             if element.local_name() == dom::editor_tag(editor) {
@@ -118,7 +118,7 @@ impl DomEngine {
         }
 
         let mut moved = FxHashSet::default();
-        for &parent in &delta.topology_dirty {
+        for parent in delta.topology_dirty.iter() {
             self.reorder(tree, parent, &mut moved)?;
         }
 
@@ -132,15 +132,15 @@ impl DomEngine {
         created: &FxHashSet<NodeId>,
         moved: &FxHashSet<NodeId>,
         modal_changed: bool,
-    ) -> Result<FxHashSet<NodeId>, JsValue> {
+    ) -> Result<DirtyBitmap, JsValue> {
         let modal = tree.front_modal();
         let mut styles = delta.layout_dirty.clone();
-        styles.extend(&delta.paint_dirty);
-        styles.extend(created);
-        styles.extend(moved);
-        styles.extend(delta.scroll_dirty.iter().chain(&delta.topology_dirty).copied().filter(|&node| tree.scroll(node).is_some()));
+        styles.union_with(&delta.paint_dirty);
+        styles.extend(created.iter().copied());
+        styles.extend(moved.iter().copied());
+        styles.extend(delta.scroll_dirty.iter().chain(delta.topology_dirty.iter()).filter(|&node| tree.scroll(node).is_some()));
         let mut semantics = delta.semantics_dirty.clone();
-        semantics.extend(created);
+        semantics.extend(created.iter().copied());
         if modal_changed || (modal.is_some() && !delta.semantics_dirty.is_disjoint(&delta.overlay_dirty)) {
             semantics.extend(tree.subtree(tree.root()));
         } else if modal.is_some() {
@@ -156,7 +156,7 @@ impl DomEngine {
                 .collect()
         });
         let mut actions = FxHashSet::default();
-        for &node in semantics.iter().chain(moved).chain(&delta.overlay_dirty) {
+        for node in semantics.iter().chain(moved.iter().copied()).chain(delta.overlay_dirty.iter()) {
             if tree.is_live(node) {
                 let action = dom::action(tree, node, modal);
                 if let Some(previous) = self.dom.set_action(node, action) {
@@ -181,7 +181,7 @@ impl DomEngine {
         }
         // A local change can alter descendant cursors even when the node's own cursor stays the same.
         let mut cursor_roots = moved.clone();
-        for &node in styles.union(&semantics) {
+        for node in styles.iter().chain(semantics.iter().filter(|node| !styles.contains(node))) {
             if !tree.is_live(node) {
                 continue;
             }
@@ -210,7 +210,7 @@ impl DomEngine {
             }
         }
         styles.extend(subtrees(tree, cursor_roots));
-        for &node in &semantics {
+        for node in semantics.iter() {
             if tree.is_live(node)
                 && let Some(element) = self.projected_element(node)
             {
@@ -218,7 +218,7 @@ impl DomEngine {
             }
         }
         if !delta.layout_dirty.is_empty() || !delta.topology_dirty.is_empty() || !delta.retired.is_empty() || !semantics.is_empty() {
-            let related: Vec<_> = self.relations.difference(&semantics).copied().collect();
+            let related: Vec<_> = self.relations.iter().copied().filter(|node| !semantics.contains(node)).collect();
             for node in related {
                 if tree.is_live(node)
                     && let Some(element) = self.projected_element(node)
@@ -236,12 +236,12 @@ impl DomEngine {
         delta: &TreeDelta,
         viewport: WindowViewport,
         viewport_changed: bool,
-        styles: &mut FxHashSet<NodeId>,
+        styles: &mut DirtyBitmap,
     ) -> Result<(), JsValue> {
-        styles.extend(&delta.overlay_dirty);
+        styles.union_with(&delta.overlay_dirty);
         let generation = Image::pixel_generation();
         if self.pending().inline_pixel_generation.unwrap_or(self.inline_pixel_generation) != generation {
-            styles.extend(&self.inline_images);
+            styles.extend(self.inline_images.iter().copied());
             self.pending().inline_pixel_generation = Some(generation);
         }
         let portals =
@@ -257,7 +257,7 @@ impl DomEngine {
                 styles.insert(node);
             }
         }
-        for &node in styles.iter() {
+        for node in styles.iter() {
             if !tree.is_live(node) {
                 continue;
             }
@@ -310,12 +310,12 @@ impl DomEngine {
         tree: &Tree,
         delta: &TreeDelta,
         created: &FxHashSet<NodeId>,
-        styles: &FxHashSet<NodeId>,
+        styles: &DirtyBitmap,
     ) -> Result<(), JsValue> {
         let mut fields = delta.editor_dirty.clone();
-        fields.extend(created);
-        fields.extend(styles.iter().copied().filter(|&node| tree.editor(node).is_some_and(|editor| editor.is_rich())));
-        for node in fields {
+        fields.extend(created.iter().copied());
+        fields.extend(styles.iter().filter(|&node| tree.editor(node).is_some_and(|editor| editor.is_rich())));
+        for node in fields.iter() {
             let Some(element) = self.projected_element(node) else { continue };
             let Some(editor) = tree.editor(node) else { continue };
             let composing = self.dom.composing() == Some(node);
@@ -351,10 +351,10 @@ impl DomEngine {
         Ok(())
     }
 
-    pub(super) fn patch_images(&mut self, tree: &Tree, styles: &FxHashSet<NodeId>) -> Result<FxHashSet<NodeId>, JsValue> {
+    pub(super) fn patch_images(&mut self, tree: &Tree, styles: &DirtyBitmap) -> Result<FxHashSet<NodeId>, JsValue> {
         let mut changed = FxHashSet::default();
         let mut image_nodes = self.images.clone();
-        image_nodes.extend(styles.iter().copied().filter(|&node| {
+        image_nodes.extend(styles.iter().filter(|&node| {
             tree.image(node).is_some() || tree.media_source(node).is_some() || tree.inline_media_on(node).next().is_some()
         }));
         for node in image_nodes {
@@ -377,7 +377,7 @@ impl DomEngine {
                 self.update_inline_media(tree, node)?;
             }
         }
-        for &node in styles {
+        for node in styles.iter() {
             if tree.is_live(node)
                 && let Some(slot) = tree.native(node).filter(|slot| slot.kind == "video")
             {
@@ -392,25 +392,50 @@ impl DomEngine {
             return Ok(());
         }
         let Some(element) = self.projected_element(parent) else { return Ok(()) };
-        let mut order = Vec::new();
+        let mut order = Vec::with_capacity(tree.children(parent).len());
         let pending = self.pending.as_ref().expect("an open DOM projection");
+        let projected = |child| self.projected_element(child).map(|element| (child, element));
         for &child in tree.children(parent) {
-            order.push(child);
+            order.extend(projected(child));
             if !tree.is_live(child) {
                 // Independently fading descendants need their own opacity context.
-                order.extend(tree.subtree(child).skip(1).filter(|node| self.exits.contains_key(node) || pending.exits.contains_key(node)));
+                order.extend(
+                    tree.subtree(child)
+                        .skip(1)
+                        .filter(|node| self.exits.contains_key(node) || pending.exits.contains_key(node))
+                        .filter_map(projected),
+                );
             }
         }
+        let mut ranks = FxHashMap::default();
+        let mut current = element.first_element_child();
+        let mut rank = 0;
+        while let Some(child) = current {
+            let node = self
+                .parked
+                .as_ref()
+                .filter(|parked| child.is_same_node(Some(&parked.stand_in)))
+                .map(|parked| parked.node)
+                .or_else(|| self.dom.node(child.as_ref()));
+            if let Some(node) = node {
+                ranks.insert(node, rank);
+            }
+            rank += 1;
+            current = child.next_element_sibling();
+        }
+        let stationary = octara::tree::reconcile::stationary_indices(order.iter().map(|(child, _)| ranks.get(child).copied()));
         let mut next: Option<HtmlElement> = None;
-        for child in order.into_iter().rev() {
-            let Some(mut current) = self.projected_element(child) else { continue };
+        for ((child, mut current), stationary) in order.into_iter().zip(stationary).rev() {
             let next_node = next.as_ref().map(|element| element.as_ref());
-            let already_placed = current.parent_element().as_ref() == Some(element.as_ref())
-                && next.as_ref().is_none_or(|next| current.next_element_sibling().as_ref() == Some(next.as_ref()));
-            if !already_placed {
+            if !stationary {
                 if let Some((node, active)) = self.active_editor(tree)
                     && current.contains(Some(&active))
                 {
+                    if self.pending().undo.try_move_connected(&current, &element, next_node) {
+                        moved.insert(child);
+                        next = Some(current);
+                        continue;
+                    }
                     self.park_editor(node, active)?;
                     current = self.projected_element(child).expect("projected child");
                 }

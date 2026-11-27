@@ -11,7 +11,7 @@ use octara_model::geometry::{Edges, LayoutBox, Placed, Point, Rect, Side, Size, 
 use octara_model::style::{Display, FlexDirection, LayoutLength, Overflow, Position, State};
 use octara_model::text::TextStyle;
 use octara_runtime::engine::ScrollRange;
-use octara_tree::{NodeFlags, NodeId, NodeKind, RetiredNode, RuntimeOp, Tree, TreeDelta};
+use octara_tree::{DirtyBitmap, NodeFlags, NodeId, NodeKind, RetiredNode, RuntimeOp, Tree, TreeDelta};
 use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
@@ -181,9 +181,9 @@ pub(crate) struct LayoutEngine {
     keyboard_focus: Option<NodeId>,
     committed_keyboard_focus: Option<NodeId>,
     links: Projected<Frame>,
-    changed: FxHashSet<NodeId>,
-    scrolled: FxHashSet<NodeId>,
-    animated_scrolls: FxHashSet<NodeId>,
+    changed: DirtyBitmap,
+    scrolled: DirtyBitmap,
+    animated_scrolls: DirtyBitmap,
     anchors: AnchorIndex,
     placement: Projected<AnchorPlacement>,
     fits: FxHashMap<NodeId, Fit>,
@@ -211,9 +211,9 @@ impl Default for LayoutEngine {
             keyboard_focus: None,
             committed_keyboard_focus: None,
             links: Projected::default(),
-            changed: FxHashSet::default(),
-            scrolled: FxHashSet::default(),
-            animated_scrolls: FxHashSet::default(),
+            changed: DirtyBitmap::default(),
+            scrolled: DirtyBitmap::default(),
+            animated_scrolls: DirtyBitmap::default(),
             anchors: AnchorIndex::default(),
             placement: Projected::default(),
             fits: FxHashMap::default(),
@@ -232,7 +232,7 @@ impl Default for LayoutEngine {
 impl LayoutEngine {
     pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, viewport: WindowViewport, text: &mut TextEngine) -> Vec<RuntimeOp> {
         self.sync(tree, delta);
-        self.changed = FxHashSet::default();
+        self.changed.clear();
 
         if self.font_generation != text.font_generation() {
             self.font_generation = text.font_generation();
@@ -275,8 +275,10 @@ impl LayoutEngine {
                 projection.queue_anchor(tree, node);
             }
         } else {
-            let mut roots: Vec<_> = delta.scroll_dirty.union(&delta.editor_dirty).copied().collect();
-            roots.extend(delta.overlay_dirty.iter().copied());
+            let mut marked = delta.scroll_dirty.clone();
+            marked.union_with(&delta.editor_dirty);
+            marked.union_with(&delta.overlay_dirty);
+            let mut roots: Vec<_> = marked.iter().collect();
             roots.sort_unstable_by_key(|&node| (physical_depth(tree, node), node));
             let mut visited = FxHashSet::default();
             for node in roots {
@@ -285,10 +287,10 @@ impl LayoutEngine {
                 }
             }
         }
-        for &node in &delta.overlay_dirty {
+        for node in delta.overlay_dirty.iter() {
             projection.queue_anchor(tree, node);
         }
-        for &node in &delta.layout_dirty {
+        for node in delta.layout_dirty.iter() {
             if tree.text(node).is_some() {
                 self.queue_anchor_watchers(tree, node, &mut projection);
             }
@@ -319,15 +321,11 @@ impl LayoutEngine {
         self.place_anchors(tree, text, &mut projection, &mut updates);
         self.report_scroll(tree, &projection.scroll, &mut updates);
         self.record_scroll_anchors(tree, &projection.scroll);
-        self.scrolled = self
-            .frames
-            .before_project
-            .iter()
-            .filter_map(|(&node, previous)| {
-                let frame = self.frames.entries.get(&node)?;
-                (frame.scroll.is_some() && previous.is_some_and(|previous| previous.offset != frame.offset)).then_some(node)
-            })
-            .collect();
+        self.scrolled.clear();
+        self.scrolled.extend(self.frames.before_project.iter().filter_map(|(&node, previous)| {
+            let frame = self.frames.entries.get(&node)?;
+            (frame.scroll.is_some() && previous.is_some_and(|previous| previous.offset != frame.offset)).then_some(node)
+        }));
         self.changed.extend(self.frames.changes());
         self.placement.before_project = FxHashMap::default();
         text.project(tree, delta, self);
@@ -337,7 +335,7 @@ impl LayoutEngine {
 
     fn sync(&mut self, tree: &Tree, delta: &TreeDelta) {
         let extent = self.viewport.map_or_else(Size::default, |viewport| viewport.size);
-        for &node in &delta.overlay_dirty {
+        for node in delta.overlay_dirty.iter() {
             self.anchors.sync(tree, node);
         }
         // A merged delta can retire a node and create another in the same slot.
@@ -372,7 +370,7 @@ impl LayoutEngine {
             self.keys.insert(node, key);
         }
 
-        for &node in &delta.topology_dirty {
+        for node in delta.topology_dirty.iter() {
             let Some(&key) = self.keys.get(node) else { continue };
             let children: Vec<_> = tree
                 .children(node)
@@ -385,7 +383,7 @@ impl LayoutEngine {
             }
         }
 
-        for &node in delta.layout_dirty.union(&delta.overlay_dirty) {
+        for node in delta.layout_dirty.iter().chain(delta.overlay_dirty.iter().filter(|node| !delta.layout_dirty.contains(node))) {
             let Some(&key) = self.keys.get(node) else { continue };
             let anchored = tree.overlay(node).is_some_and(|slot| slot.target.is_some());
             let fit = if anchored { self.fits.get(&node).copied().unwrap_or_default() } else { Fit::default() };
@@ -811,13 +809,14 @@ impl LayoutEngine {
     }
 
     fn project_links(&mut self, tree: &Tree, text: &TextEngine) {
-        let mut dirty: FxHashSet<_> = text.changed_links().iter().copied().collect();
-        for &node in &self.changed {
+        let mut dirty = DirtyBitmap::default();
+        dirty.union_with(text.changed_links());
+        for node in self.changed.iter() {
             if let Some(text) = tree.text(node) {
                 dirty.extend(text.links.iter().copied());
             }
         }
-        for node in dirty {
+        for node in dirty.iter() {
             self.work.links += 1;
             let frame = (|| {
                 let parent = self.frames.entries.get(&tree.parent(node)?)?;
@@ -860,7 +859,7 @@ impl LayoutEngine {
         self.keyboard_focus = self.committed_keyboard_focus;
         self.links.rollback();
         self.placement.rollback();
-        self.changed = FxHashSet::default();
+        self.changed.clear();
         // A full pass can change geometry outside the authored delta. Project those warm Taffy results again on retry.
         self.needs_collection |= std::mem::take(&mut self.stage_collected);
     }
@@ -923,11 +922,11 @@ impl LayoutEngine {
         self.frames.entries.get(&node).map_or_else(Vec2::default, |frame| frame.offset)
     }
 
-    pub(crate) fn changed(&self) -> &FxHashSet<NodeId> {
+    pub(crate) fn changed(&self) -> &DirtyBitmap {
         &self.changed
     }
 
-    pub(crate) fn scrolled(&self) -> &FxHashSet<NodeId> {
+    pub(crate) fn scrolled(&self) -> &DirtyBitmap {
         &self.scrolled
     }
 

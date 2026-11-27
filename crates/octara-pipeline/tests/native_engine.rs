@@ -524,3 +524,40 @@ fn overlays_follow_editor_caret_and_selection_in_the_same_projection() {
     let expected = placement.place(selection, Size::new(48.0, 20.0), viewport().safe_bounds());
     assert_eq!(engine.interaction_bounds(selection_popup), Some(Rect::new(expected.x, expected.y, 48.0, 20.0)));
 }
+
+#[test]
+fn theme_token_changes_only_recompile_dependent_drawings() {
+    use octara_model::theme::{ColorToken, Theme, rgb};
+
+    let mut tree = tree();
+    let mut tx = tree.transaction();
+    let root = tree.node_ref(tree.root());
+    let mut accent = None;
+    for index in 0..16 {
+        let node = tx.create(NodeSpec::new(NodeContent::Box));
+        let fill = if index == 0 { ColorToken::Accent.into() } else { Color::BLACK.into() };
+        let base = [StyleProp::Height(8.into()), StyleProp::Background(Some(fill))].into_iter().collect();
+        tx.change(node, NodeChange::Style(Box::new(AuthoredStyle { base, ..Default::default() })));
+        tx.place(root, index, node);
+        if index == 0 {
+            accent = Some(node);
+        }
+    }
+    let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+    let accent = receipt.node(accent.unwrap()).unwrap();
+    let mut initial = tree.initial_delta();
+    initial.merge(mounted);
+    let mut engine = engine();
+    engine.project(&tree, &initial, viewport(), 0.0).unwrap();
+    engine.commit();
+    let before = engine.paint_metrics();
+
+    let new_color = rgb(0x225566);
+    let delta = tree.apply_runtime(RuntimeOp::ThemeChanged(Box::new(Theme::default().color(ColorToken::Accent, new_color))));
+    engine.project(&tree, &delta, viewport(), 1.0).unwrap();
+    let draw = engine.commit().draw.unwrap();
+    assert!(draw.quads().any(|quad| quad.source == accent && quad.fill == Some(new_color)));
+    let after = engine.paint_metrics();
+    // The window root also refreshes its theme-facing projection.
+    assert_eq!(after.draw_keys_evaluated - before.draw_keys_evaluated, 2);
+}

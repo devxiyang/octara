@@ -2809,6 +2809,7 @@ dependencies = [
  "accesskit",
  "color",
  "linebender_resource_handle",
+ "memmap2",
  "octara-model",
  "octara-runtime",
  "octara-tree",

@@ -5,7 +5,6 @@ use octara_examples::{apps, showcase, window_options};
 use octara_pipeline::{NativeEngine, NativeEngineConfig};
 use octara_render::CpuRenderer;
 use std::path::Path;
-use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (flags, args): (Vec<String>, Vec<String>) = std::env::args().skip(1).partition(|arg| arg.starts_with("--"));
@@ -42,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut engine = NativeEngine::new(NativeEngineConfig { system_fonts: !bundled, ..Default::default() });
             if bundled {
                 for data in [octara_fonts::cjk::REGULAR, octara_fonts::cjk::SEMIBOLD] {
-                    engine.register_font(Arc::from(data), &octara_fonts::cjk::SCRIPTS);
+                    engine.register_font_data(data.into(), &octara_fonts::cjk::SCRIPTS);
                 }
             }
             Box::new(engine)

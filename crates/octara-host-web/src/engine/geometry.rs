@@ -5,7 +5,7 @@ use crate::measure::Geometry;
 use crate::undo;
 use js_sys::Array;
 use octara::runtime::engine::{ProjectFeedback, ScrollRange};
-use octara::tree::{GeometryDemand, NodeFlags, NodeId, RuntimeOp, Tree, TreeDelta};
+use octara::tree::{DirtyBitmap, GeometryDemand, NodeFlags, NodeId, RuntimeOp, Tree, TreeDelta};
 use octara_model::geometry::{Rect, Side, Size, Vec2, WindowViewport};
 use octara_model::overlay::AnchorTarget;
 use octara_model::semantics::TextClip;
@@ -37,8 +37,8 @@ impl DomEngine {
         resized: &FxHashSet<NodeId>,
         measure_all: bool,
     ) -> GeometryWork {
-        let dirty = delta.layout_dirty.iter().chain(&delta.topology_dirty).chain(&delta.overlay_dirty).copied();
-        let mut candidates: FxHashSet<_> = dirty.clone().chain(delta.scroll_dirty.iter().chain(resized).copied()).collect();
+        let dirty = delta.layout_dirty.iter().chain(delta.topology_dirty.iter()).chain(delta.overlay_dirty.iter());
+        let mut candidates: FxHashSet<_> = dirty.clone().chain(delta.scroll_dirty.iter().chain(resized.iter().copied())).collect();
         let removed_parents = delta.retired.iter().filter_map(|retired| self.entries.get(&retired.node())?.parent);
         let mut scrollports = self.scroll_ancestors(tree, dirty.chain(removed_parents).chain(resized.iter().copied()));
         if measure_all {
@@ -46,7 +46,7 @@ impl DomEngine {
         }
         candidates.extend(&delta.created);
         scrollports.extend(candidates.iter().copied().filter(|&node| self.scrollports.contains(&node) || tree.scroll(node).is_some()));
-        scrollports.extend(&delta.scroll_dirty);
+        scrollports.extend(delta.scroll_dirty.iter());
         scrollports.extend(delta.geometry_demands.iter().filter_map(|demand| match *demand {
             GeometryDemand::Scrollport(node) => Some(node),
             _ => None,
@@ -149,7 +149,7 @@ impl DomEngine {
         }
     }
 
-    fn apply_scroll(&mut self, tree: &Tree, node: NodeId, dirty: &FxHashSet<NodeId>, created: &FxHashSet<NodeId>) {
+    fn apply_scroll(&mut self, tree: &Tree, node: NodeId, dirty: &DirtyBitmap, created: &FxHashSet<NodeId>) {
         let Some(element) = self.projected_element(node) else { return };
         let slot = tree.scroll(node).filter(|_| tree.is_live(node));
         let scrollable = slot.is_some();

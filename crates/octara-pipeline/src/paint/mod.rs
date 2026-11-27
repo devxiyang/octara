@@ -4,6 +4,8 @@ mod scene;
 mod scrollbars;
 pub use scene::PaintScene;
 
+use crate::flat_tree::FlatTree;
+use crate::frame_arena::FrameArena;
 use crate::layout::LayoutEngine;
 use crate::motion::{MotionOptions, NodeMotion, TargetMotion, next_frame};
 use crate::text::{PaintKey, TextEngine};
@@ -18,8 +20,8 @@ use octara_model::paint::{
 };
 use octara_model::style::{Display, Ring, Visual};
 use octara_model::text::{InlineAttachment, InlineContent};
-use octara_model::theme::{BoxShadow, Color, ColorToken, Fill, Gradient, Theme};
-use octara_tree::{ExitTicket, NodeFlags, NodeId, RetiredNode, Tree, TreeDelta};
+use octara_model::theme::{BoxShadow, Color, ColorToken, Fill, Gradient};
+use octara_tree::{DirtyBitmap, ExitTicket, NodeFlags, NodeId, RetiredNode, Tree, TreeDelta};
 use rustc_hash::{FxHashMap, FxHashSet};
 use scene::{ChildList, Element, ExitGhost, PaintNode};
 use scrollbars::Scrollbars;
@@ -136,7 +138,6 @@ struct DrawKey {
 type ImageVersions = SmallVec<[(u64, u64); 2]>;
 type ImageSamples = SmallVec<[Sample; 2]>;
 type Blink = (NodeId, u64, f64);
-type ThemeStamp = (Arc<Theme>, u64);
 
 struct Drawing {
     key: DrawKey,
@@ -186,7 +187,6 @@ struct Stage {
     destroyed: FxHashSet<NodeId>,
     blink: Option<Blink>,
     window_active: bool,
-    theme: Option<ThemeStamp>,
     image_generation: u64,
     reduced_motion: bool,
 }
@@ -201,11 +201,14 @@ pub(crate) struct PaintCompiler {
     stage: Option<Stage>,
     blink: Option<Blink>,
     window_active: bool,
-    theme: Option<ThemeStamp>,
-    cache_theme: Option<ThemeStamp>,
     image_generation: u64,
     reduced_motion: bool,
     metrics: PaintMetrics,
+    local_dirty: DirtyBitmap,
+    branch_dirty: DirtyBitmap,
+    finished_exits: FrameArena<ExitTicket>,
+    last_scene: Option<Arc<PaintScene>>,
+    resting_draw: Option<Arc<DisplayList>>,
 }
 
 pub(crate) struct PaintFrame {
@@ -230,6 +233,7 @@ impl PaintCompiler {
         tree: &Tree,
         delta: &TreeDelta,
         layout: &LayoutEngine,
+        flat: &FlatTree,
         text: &mut TextEngine,
         options: CompileOptions,
     ) -> PaintFrame {
@@ -237,15 +241,16 @@ impl PaintCompiler {
             self.stage = Some(Stage {
                 blink: self.blink,
                 window_active: self.window_active,
-                theme: self.theme.clone(),
                 image_generation: self.image_generation,
                 reduced_motion: self.reduced_motion,
                 ..Stage::default()
             });
         }
 
-        let mut local: FxHashSet<_> = delta.paint_dirty.union(layout.changed()).copied().collect();
-        local.extend(text.changed().iter().copied());
+        let mut local = std::mem::take(&mut self.local_dirty);
+        local.union_with(&delta.paint_dirty);
+        local.union_with(layout.changed());
+        local.union_with(text.changed());
         local.extend(delta.created.iter().copied());
         let scrollbar_deadline = self.scrollbars.step(tree, layout, &options, &mut local);
         if self.window_active != options.window_active {
@@ -267,17 +272,6 @@ impl PaintCompiler {
                 entry.motion.as_ref().and_then(|motion| motion.rest_at()).is_some_and(|rest| rest > options.now).then_some(node)
             }));
         }
-        let theme_changed = self.theme.as_ref().is_none_or(|(theme, _)| theme.as_ref() != tree.theme());
-        if theme_changed {
-            local.extend(self.nodes.iter().filter_map(|(&node, state)| state.scene.is_some().then_some(node)));
-            if self.cache_theme.as_ref().is_none_or(|(theme, _)| theme.as_ref() != tree.theme()) {
-                let generation = self.cache_theme.as_ref().map_or(0, |(_, generation)| generation + 1);
-                self.cache_theme = Some((Arc::new(tree.theme().clone()), generation));
-            }
-            self.theme = self.cache_theme.clone();
-        }
-        let theme_generation = self.theme.as_ref().expect("projected theme").1;
-
         let mut replies = Vec::new();
         let mut independent: FxHashSet<_> = self.ghosts.keys().copied().collect();
         independent.extend(delta.retired.iter().filter_map(|retired| match *retired {
@@ -305,21 +299,23 @@ impl PaintCompiler {
                 RetiredNode::Exiting { .. } => {}
             }
         }
-        let mut finished: Vec<_> = self
-            .ghosts
-            .values()
-            .filter_map(|ghost| {
-                (options.reduced_motion || !ghost.opacity.moving(options.now) || !tree.accepts_exit(ghost.ticket)).then_some(ghost.ticket)
-            })
-            .collect();
-        finished.sort_unstable_by_key(|ticket| ticket.node);
-        for ticket in finished {
+        let mut finished = std::mem::take(&mut self.finished_exits);
+        for ghost in self.ghosts.values() {
+            if options.reduced_motion || !ghost.opacity.moving(options.now) || !tree.accepts_exit(ghost.ticket) {
+                finished.push(ghost.ticket);
+            }
+        }
+        finished.used().sort_unstable_by_key(|ticket| ticket.node);
+        for &ticket in finished.used().iter() {
             self.set_ghost(ticket.node, None);
             local.insert(ticket.node);
             if tree.accepts_exit(ticket) {
                 replies.push(HostReply::ExitFinished(ticket));
             }
         }
+
+        finished.finish();
+        self.finished_exits = finished;
 
         let editor =
             tree.focus().filter(|_| options.window_active).and_then(|id| tree.editor(id).map(|editor| (id, editor.document_rev())));
@@ -339,9 +335,9 @@ impl PaintCompiler {
                 }
             }
         }
-        let mut branches = FxHashSet::default();
+        let mut branches = std::mem::take(&mut self.branch_dirty);
         let mut changed_children = FxHashMap::<NodeId, SmallVec<[NodeId; 4]>>::default();
-        for &node in local.iter().chain(&delta.topology_dirty) {
+        for node in local.iter().chain(delta.topology_dirty.iter()) {
             let mut ancestor = Some(node);
             while let Some(id) = ancestor.filter(|&id| branches.insert(id)) {
                 ancestor = tree.parent(id);
@@ -352,7 +348,7 @@ impl PaintCompiler {
         }
         // A hidden parent can stop descent before the compiler reaches its previous children.
         // Clear their scene slots so a subsequent retirement cannot capture a stale drawing.
-        for &node in &local {
+        for node in local.iter() {
             if !self.ghosts.contains_key(&node) && (!tree.is_live(node) || layout.bounds(node).is_none()) {
                 self.hide_node(node);
             }
@@ -362,29 +358,36 @@ impl PaintCompiler {
             owner: self,
             tree,
             layout,
+            flat,
             text,
             options: &options,
             local,
             branches,
             changed_children,
             topology_dirty: &delta.topology_dirty,
-            theme_generation,
             immediate_layout: !delta.scroll_dirty.is_empty() || !layout.scrolled().is_empty(),
             cancel_active_motion,
         };
         let root = compile.node(tree.root());
         let size = options.viewport.size;
         let background = if options.transparent_window { Color::TRANSPARENT } else { tree.theme().get(ColorToken::Background) };
-        let scene = Arc::new(PaintScene { size, background, root });
-        let (draw, sample) = scene.sample_counted(options.now);
+        let scene = if let Some(scene) = compile.owner.last_scene.as_ref().filter(|scene| scene.matches(size, background, root.as_ref())) {
+            scene.clone()
+        } else {
+            let scene = Arc::new(PaintScene { size, background, root });
+            compile.owner.last_scene = Some(scene.clone());
+            compile.owner.resting_draw = None;
+            scene
+        };
+        let (draw, sample) = if scene.timed_at(options.now) {
+            scene.sample_counted(options.now)
+        } else {
+            (compile.owner.resting_draw.get_or_insert_with(|| scene.sample(options.now)).clone(), Default::default())
+        };
         compile.owner.metrics.timed_nodes_sampled = compile.owner.metrics.timed_nodes_sampled.saturating_add(sample.nodes);
         compile.owner.metrics.timed_child_spans_sampled = compile.owner.metrics.timed_child_spans_sampled.saturating_add(sample.spans);
         if options.verify {
-            let mut parts = Vec::new();
-            compile.uncached_emit(tree.root(), &mut parts);
-            if image_generation == Image::pixel_generation() {
-                assert_eq!(draw.items(), DisplayList { size, background, parts }.items(), "incremental paint projection diverged");
-            }
+            compile.verify_draw(&draw, size, background, image_generation);
         }
         let moves = scene.continuously_animated(options.now);
         let blink = compile.owner.blink.map(|(_, _, start)| {
@@ -392,6 +395,10 @@ impl PaintCompiler {
             Duration::from_secs_f64(next)
         });
         let next_deadline = moves.then(|| next_frame(options.now)).into_iter().chain(blink).chain(scrollbar_deadline).min();
+        compile.local.clear();
+        compile.branches.clear();
+        compile.owner.local_dirty = compile.local;
+        compile.owner.branch_dirty = compile.branches;
         PaintFrame { draw, scene: (moves || blink.is_some()).then_some(scene), replies, next_deadline }
     }
 
@@ -489,7 +496,6 @@ impl PaintCompiler {
         }
         self.blink = stage.blink;
         self.window_active = stage.window_active;
-        self.theme = stage.theme;
         self.image_generation = stage.image_generation;
         self.reduced_motion = stage.reduced_motion;
         // The tree retains speculative writes. Completed local drawings remain usable by key on retry.
@@ -526,13 +532,13 @@ struct Compile<'a> {
     owner: &'a mut PaintCompiler,
     tree: &'a Tree,
     layout: &'a LayoutEngine,
+    flat: &'a FlatTree,
     text: &'a mut TextEngine,
     options: &'a CompileOptions,
-    local: FxHashSet<NodeId>,
-    branches: FxHashSet<NodeId>,
+    local: DirtyBitmap,
+    branches: DirtyBitmap,
     changed_children: FxHashMap<NodeId, SmallVec<[NodeId; 4]>>,
-    topology_dirty: &'a FxHashSet<NodeId>,
-    theme_generation: u64,
+    topology_dirty: &'a DirtyBitmap,
     immediate_layout: bool,
     cancel_active_motion: bool,
 }
@@ -590,6 +596,7 @@ impl Compile<'_> {
                     .filter(|_| !self.options.reduced_motion)
                     .map(|reveal| TextRevealTrack::update(previous_reveal, reveal, self.options.now));
                 let mut element = self.element(node, bounds, clip, visual, &drawing, motion);
+                element.visible = !bounds.intersect(&clip).is_empty();
                 element.reveal = reveal;
                 element.reveal_tint = reveal.and_then(TextRevealTrack::tint).map(|color| color.resolve(self.tree.theme_at(node)).0);
                 self.owner.stage.as_mut().expect("open stage").drawings.insert(node, drawing);
@@ -630,6 +637,16 @@ impl Compile<'_> {
         list
     }
 
+    #[cold]
+    #[inline(never)]
+    fn verify_draw(&mut self, draw: &DisplayList, size: Size, background: Color, image_generation: u64) {
+        let mut parts = Vec::new();
+        self.uncached_emit(self.tree.root(), &mut parts);
+        if image_generation == Image::pixel_generation() {
+            assert_eq!(draw.items(), DisplayList { size, background, parts }.items(), "incremental paint projection diverged");
+        }
+    }
+
     fn uncached_emit(&mut self, node: NodeId, output: &mut Vec<Part>) {
         let now = self.options.now;
         if self.tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::EXITING)) {
@@ -647,6 +664,7 @@ impl Compile<'_> {
         let drawing = self.drawing(node, self.draw_key(node, visual, local, &samples), samples);
         let motion = self.owner.nodes.get(&node).and_then(|entry| entry.motion.clone());
         let mut element = self.element(node, bounds, clip, visual, &drawing, motion);
+        element.visible = !bounds.intersect(&clip).is_empty();
         if let Some(sample) = self.owner.nodes.get(&node).and_then(|entry| entry.scene.as_ref()?.element.as_ref()) {
             element.reveal = sample.reveal;
             element.reveal_tint = sample.reveal_tint;
@@ -668,7 +686,7 @@ impl Compile<'_> {
     fn draw_key(&self, node: NodeId, visual: Visual, local: LayoutBox, images: &[Sample]) -> DrawKey {
         DrawKey {
             rev: self.tree.node(node).expect("shown paint node").paint_rev,
-            theme: self.theme_generation,
+            theme: self.tree.theme_revision_at(node),
             visual,
             layout: local,
             text: self.text.paint_key(node),
@@ -720,6 +738,7 @@ impl Compile<'_> {
             source: node,
             bounds,
             clip,
+            visible: self.flat.viewport_visible(node).unwrap_or_else(|| !bounds.intersect(&clip).is_empty()),
             child_clip: self
                 .layout
                 .rounded_child_clip(node)

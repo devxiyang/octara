@@ -30,6 +30,10 @@ impl Tree {
             if self.tables.presence(node) != core.present {
                 return Err("node presence mask does not match its cold tables");
             }
+            let bloom = self.children(node).iter().fold(self.local_style_bloom(node), |mask, child| mask | self.nodes[*child].style_bloom);
+            if bloom != core.style_bloom {
+                return Err("style sensitivity does not match the subtree");
+            }
             if incoming.contains(&node) != core.parent.is_some() {
                 return Err("parent has no corresponding child");
             }

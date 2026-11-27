@@ -1,21 +1,24 @@
 //! Native font selection, paragraph shaping, and text projection.
 
 mod cache;
+#[cfg(any(unix, windows))]
+mod font;
 pub(crate) mod geometry;
 mod inline;
 mod presentation;
 
 use self::cache::Cache;
 use crate::layout::LayoutEngine;
+use octara_model::CacheLine;
 use octara_model::geometry::{Align, Point, Rect, Size};
-use octara_model::paint::{CanvasText, FontFace, FontId, Glyph, GlyphRun, Item, Quad};
+use octara_model::paint::{CanvasText, FontData, FontFace, FontId, Glyph, GlyphRun, Item, Quad};
 use octara_model::semantics::TextClip;
 use octara_model::text::{InlineAttachment, RichSpan, TextAlign, TextGeometry, TextLine, TextStyle, Wrap};
 use octara_model::theme::{Color, ColorToken};
-use octara_tree::{NodeId, RetiredNode, Tree, TreeDelta};
+use octara_tree::{DirtyBitmap, NodeId, RetiredNode, Tree, TreeDelta};
 use parley::fontique::{Blob, Collection, CollectionOptions, FallbackKey, GenericFamily, Script, SourceCache};
 use parley::{Alignment, AlignmentOptions, FontContext, FontWeight, Layout, LayoutContext, StyleProperty};
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use rustc_hash::{FxHashMap, FxHasher};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
@@ -23,6 +26,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use unicode_segmentation::UnicodeSegmentation;
+
+#[cfg(any(unix, windows))]
+pub(crate) use font::map_font;
 
 const BUNDLED: [&[u8]; 4] = [
     include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
@@ -270,8 +276,9 @@ pub(crate) struct TextEngine {
     documents: Cache<TextCache>,
     projected: Cache<Projected>,
     links: Cache<Vec<Rect>>,
-    changed: FxHashSet<NodeId>,
-    changed_links: FxHashSet<NodeId>,
+    changed: DirtyBitmap,
+    changed_links: DirtyBitmap,
+    candidates: DirtyBitmap,
     needs_projection: bool,
     before_stage: Option<(bool, u64)>,
 }
@@ -312,8 +319,9 @@ impl TextEngine {
             documents: Cache::default(),
             projected: Cache::default(),
             links: Cache::default(),
-            changed: FxHashSet::default(),
-            changed_links: FxHashSet::default(),
+            changed: DirtyBitmap::default(),
+            changed_links: DirtyBitmap::default(),
+            candidates: DirtyBitmap::default(),
             needs_projection: false,
             before_stage: None,
         }
@@ -343,27 +351,27 @@ impl TextEngine {
         self.documents.rollback();
         self.projected.rollback();
         self.links.rollback();
-        self.changed = FxHashSet::default();
-        self.changed_links = FxHashSet::default();
+        self.changed.clear();
+        self.changed_links.clear();
     }
 
     pub(crate) fn work(&self) -> TextWork {
         self.work
     }
 
-    pub(crate) fn register_font(&mut self, data: Arc<[u8]>, scripts: &[[u8; 4]]) {
-        let families =
-            self.fonts.collection.register_fonts(Blob::new(Arc::new(data)), None).into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    pub(crate) fn register_font(&mut self, data: FontData, scripts: &[[u8; 4]]) -> bool {
+        let families = self.fonts.collection.register_fonts(Blob::new(data.into_shared()), None);
         if families.is_empty() {
-            return;
+            return false;
         }
         for script in scripts {
-            self.fonts.collection.append_fallbacks(FallbackKey::new(Script::from_bytes(*script), None), families.iter().copied());
+            self.fonts.collection.append_fallbacks(FallbackKey::new(Script::from_bytes(*script), None), families.iter().map(|(id, _)| *id));
         }
         self.work.font_generation = self.work.font_generation.checked_add(1).expect("font generations exhausted");
         self.shapes.clear();
         self.shape_bytes = 0;
         self.needs_projection = true;
+        true
     }
 
     pub(crate) fn font_generation(&self) -> u64 {
@@ -836,8 +844,8 @@ impl TextEngine {
     }
 
     pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, layout: &LayoutEngine) {
-        self.changed = FxHashSet::default();
-        self.changed_links = FxHashSet::default();
+        self.changed.clear();
+        self.changed_links.clear();
         for &retired in &delta.retired {
             if let RetiredNode::Destroyed(node) = retired {
                 self.documents.remove(&node);
@@ -846,12 +854,14 @@ impl TextEngine {
                 self.remove_link(node);
             }
         }
-        let mut changed = layout.changed().union(&delta.layout_dirty).copied().collect::<FxHashSet<_>>();
-        changed.extend(delta.editor_dirty.iter().copied());
+        let mut changed = std::mem::take(&mut self.candidates);
+        changed.union_with(layout.changed());
+        changed.union_with(&delta.layout_dirty);
+        changed.union_with(&delta.editor_dirty);
         if std::mem::take(&mut self.needs_projection) {
             changed.extend(self.projected.keys().copied());
         }
-        for node in changed {
+        for node in changed.iter() {
             if tree.text(node).is_none() && tree.editor(node).is_none() {
                 continue;
             }
@@ -907,6 +917,8 @@ impl TextEngine {
                 self.projected.insert(node, Projected { paint, origin });
             }
         }
+        changed.clear();
+        self.candidates = changed;
     }
 
     pub(crate) fn geometry(&self, node: NodeId) -> Option<TextGeometry> {
@@ -921,7 +933,7 @@ impl TextEngine {
         clipped
     }
 
-    pub(crate) fn changed(&self) -> &FxHashSet<NodeId> {
+    pub(crate) fn changed(&self) -> &DirtyBitmap {
         &self.changed
     }
 
@@ -939,7 +951,7 @@ impl TextEngine {
         }
     }
 
-    pub(crate) fn changed_links(&self) -> &FxHashSet<NodeId> {
+    pub(crate) fn changed_links(&self) -> &DirtyBitmap {
         &self.changed_links
     }
 
@@ -1069,12 +1081,12 @@ impl TextEngine {
     }
 
     fn face(&mut self, font: &linebender_resource_handle::FontData) -> FontFace {
-        static NEXT_FACE: AtomicU64 = AtomicU64::new(1);
+        static NEXT_FACE: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(1));
         self.faces
             .entry((font.data.id(), font.index))
             .or_insert_with(|| FontFace {
                 id: FontId(NEXT_FACE.fetch_add(1, Ordering::Relaxed)),
-                data: Arc::from(font.data.data()),
+                data: FontData::new(font.data.clone().into_raw_parts().0),
                 index: font.index,
             })
             .clone()
@@ -1118,6 +1130,32 @@ mod tests {
     use super::*;
     use octara_model::geometry::WindowViewport;
     use octara_tree::{NodeContent, NodeSpec, TreeId, TxBuilder};
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn mapped_font_reaches_rasterization_without_copying() {
+        use crate::{NativeEngine, NativeEngineConfig};
+
+        let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/Inter-Regular.ttf"));
+        let mut engine = NativeEngine::new(NativeEngineConfig::default());
+        engine.text.fonts.collection.clear();
+        // SAFETY: The repository font fixture is immutable during the test.
+        unsafe { engine.register_font_file(path, &[*b"Latn"]) }.unwrap();
+        let inter = engine.text.fonts.collection.family_by_name("Inter").unwrap();
+        let address = inter.fonts()[0].load(None).unwrap().data().as_ptr();
+        drop(inter);
+        let style = TextStyle { family: "Inter", ..TextStyle::default() };
+        let document =
+            Document { paragraphs: engine.text.paragraphs("Hi", style, &[], &[], true), style, offsets: Vec::new(), placeholder: false };
+        let mut presentation = engine.text.present(&document, None);
+        assert_eq!(presentation.glyphs.len(), 1);
+        let run = presentation.glyphs.remove(0);
+        assert!(run.glyphs.iter().all(|glyph| glyph.id != 0));
+        drop(engine);
+        drop(document);
+        assert_eq!(run.font.data.as_ptr(), address);
+        assert_eq!(run.font.data.as_ref(), std::fs::read(path).unwrap().as_slice());
+    }
 
     #[test]
     fn retains_shaping_and_projects_utf8_to_visual_lines() {

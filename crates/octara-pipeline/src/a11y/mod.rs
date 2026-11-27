@@ -133,8 +133,8 @@ impl AccessKitProjector {
         let reset = committed.tree_id != staging.tree_id;
 
         staging.scope_dirty.extend(delta.created.iter().copied());
-        staging.scope_dirty.extend(delta.semantics_dirty.iter().copied());
-        staging.scope_dirty.extend(delta.topology_dirty.iter().copied());
+        staging.scope_dirty.extend(delta.semantics_dirty.iter());
+        staging.scope_dirty.extend(delta.topology_dirty.iter());
         staging.scope_dirty.extend(delta.retired.iter().map(|retired| retired.node()));
         if !delta.semantics_dirty.is_disjoint(&delta.layout_dirty)
             || !delta.semantics_dirty.is_disjoint(&delta.overlay_dirty)
@@ -146,7 +146,7 @@ impl AccessKitProjector {
             );
         }
         staging.modal_order_dirty |=
-            delta.topology_dirty.iter().any(|&node| tree.node(node).is_some_and(|core| core.kind != NodeKind::Text));
+            delta.topology_dirty.iter().any(|node| tree.node(node).is_some_and(|core| core.kind != NodeKind::Text));
         if reset {
             staging.scope_dirty.extend(tree.nodes().map(|(node, _)| node));
         }
@@ -167,13 +167,13 @@ impl AccessKitProjector {
         let scope = Scope { tree, modal: staging.modal.as_deref() };
         staging.focus = Some(scope.focus());
 
-        staging.dirty.extend(delta.semantics_dirty.iter().copied());
-        staging.dirty.extend(delta.topology_dirty.iter().copied());
+        staging.dirty.extend(delta.semantics_dirty.iter());
+        staging.dirty.extend(delta.topology_dirty.iter());
         staging.dirty.extend(delta.created.iter().copied());
-        staging.dirty.extend(delta.layout_dirty.iter().copied());
-        staging.dirty.extend(delta.editor_dirty.iter().copied());
-        staging.dirty.extend(text.changed().iter().copied());
-        staging.moved.extend(layout.changed().iter().copied());
+        staging.dirty.extend(delta.layout_dirty.iter());
+        staging.dirty.extend(delta.editor_dirty.iter());
+        staging.dirty.extend(text.changed().iter());
+        staging.moved.extend(layout.changed().iter());
         let mut dirty = staging.dirty.clone();
         if committed.scale != scale {
             dirty.insert(tree.root());
@@ -333,6 +333,8 @@ fn text_selection<'a>([anchor, focus]: DocSelection, entry: impl Fn(NodeId) -> O
     Some(ak::TextSelection { anchor: position(entry(anchor.0)?, anchor.1)?, focus: position(entry(focus.0)?, focus.1)? })
 }
 
+#[cold]
+#[inline(never)]
 fn verify_projection(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, scale: f32, committed: &Published, staged: &Staging) {
     let full = tree.semantic_scope();
     let scope = Scope { tree, modal: Some(&full) };

@@ -6,10 +6,11 @@ use crate::{css, dom, media, rich};
 use octara::runtime::engine::HostEngine;
 #[cfg(feature = "webgpu")]
 use octara::tree::TreeDelta;
-use octara::tree::{NodeId, Tree};
+use octara::tree::{DirtyBitmap, NodeId, Tree};
 use octara_model::geometry::{Size, WindowViewport};
 use octara_model::image::{MediaAsset, ObjectFit, VideoSource};
 use octara_model::paint::{CanvasOp, Sample};
+#[cfg(feature = "webgpu")]
 use rustc_hash::FxHashSet;
 use std::sync::Arc;
 use wasm_bindgen::{JsCast, JsValue};
@@ -156,10 +157,10 @@ impl DomEngine {
         tree: &Tree,
         viewport: WindowViewport,
         measured: &[NodeId],
-        dirty: &FxHashSet<NodeId>,
+        dirty: &DirtyBitmap,
     ) -> Result<(), JsValue> {
         let mut affected = self.canvas_images.clone();
-        affected.extend(measured.iter().chain(dirty).copied().filter(|&node| tree.canvas(node).is_some()));
+        affected.extend(measured.iter().copied().chain(dirty.iter()).filter(|&node| tree.canvas(node).is_some()));
         for node in affected {
             let Some(core) = tree.node(node).filter(|_| tree.is_live(node)) else { continue };
             let Some(operations) = tree.canvas(node) else { continue };
@@ -218,9 +219,9 @@ impl DomEngine {
         use crate::gpu::Plan;
         let now = std::time::Duration::try_from_secs_f64(now).unwrap_or_default();
         let mut affected = delta.paint_dirty.clone();
-        affected.extend(created);
+        affected.extend(created.iter().copied());
         affected.extend(measured.iter().copied().filter(|&node| tree.paint(node).is_some_and(|paint| paint.custom.is_some())));
-        for node in affected {
+        for node in affected.iter() {
             if !tree.is_live(node) {
                 continue;
             }

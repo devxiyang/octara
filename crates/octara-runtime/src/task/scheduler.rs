@@ -21,7 +21,7 @@ use super::{TaskCx, TaskState, VirtualClock};
 use super::background::Failure;
 
 const TASK_POLLS_PER_BATCH: usize = 256;
-static NEXT_SCHEDULER: AtomicU32 = AtomicU32::new(1);
+static NEXT_SCHEDULER: octara_model::CacheLine<AtomicU32> = octara_model::CacheLine(AtomicU32::new(1));
 
 type LocalFuture = Pin<Box<dyn Future<Output = ()>>>;
 type HostWake = Arc<dyn Fn() + Send + Sync>;

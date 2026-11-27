@@ -1,5 +1,6 @@
 //! Window layer policy shared by authoring, the tree, and hosts.
 
+use crate::CacheLine;
 use crate::geometry::{Point, Rect};
 use crate::identity::NodeId;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -68,7 +69,7 @@ impl LayerGroupId {
 
 impl Default for LayerGroupId {
     fn default() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
+        static NEXT: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(0));
         Self(NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).expect("layer group identifier exhausted"))
     }
 }

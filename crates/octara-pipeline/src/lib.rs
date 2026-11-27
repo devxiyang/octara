@@ -3,23 +3,26 @@
 pub mod a11y;
 pub mod paint;
 
+mod flat_tree;
+mod frame_arena;
 mod layout;
 mod motion;
 mod text;
 
 use a11y::{AccessKitProjector, AccessPublication};
+use flat_tree::FlatTree;
 use layout::LayoutEngine;
 use octara_model::geometry::{LayoutBox, Point, Rect, WindowViewport};
 use octara_model::identity::{MeasureTicket, NativeId, ViewportRev, WindowRev};
 use octara_model::input::{ContactTarget, HostReply};
 use octara_model::native::{NativeChange, NativeMeasureRequest, NativeMeasureTicket, NativePlacement, NativeSlot};
-use octara_model::paint::{DisplayList, Item};
+use octara_model::paint::{DisplayList, FontData, Item};
 use octara_model::semantics::TextClip;
 use octara_model::text::TextGeometry;
 use octara_runtime::engine::ScrollRange;
 use octara_runtime::{CommitOutput, HostEngine, ProjectError, ProjectFeedback};
 use octara_tree::arbiter::{ScrollbarHit, ScrollbarKey};
-use octara_tree::{NodeFlags, NodeId, NodeKind, Tree, TreeDelta};
+use octara_tree::{NodeId, NodeKind, Tree, TreeDelta};
 use paint::{CompileOptions, PaintCompiler, PaintScene};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
@@ -27,6 +30,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use text::TextEngine;
 
+pub use flat_tree::FlatNode;
 pub use layout::LayoutWork;
 pub use text::TextWork;
 
@@ -100,6 +104,7 @@ pub struct NativeEngine {
     config: NativeEngineConfig,
     window_active: bool,
     layout: LayoutEngine,
+    flat: FlatTree,
     text: TextEngine,
     paint: PaintCompiler,
     scrolling: motion::ScrollMotion,
@@ -120,6 +125,7 @@ impl NativeEngine {
             config,
             window_active: true,
             layout: LayoutEngine::default(),
+            flat: FlatTree::default(),
             text: TextEngine::new(config.system_fonts),
             paint: PaintCompiler::default(),
             scrolling: motion::ScrollMotion::default(),
@@ -158,7 +164,29 @@ impl NativeEngine {
 
     /// Register a font and its supported script tags before mounting application windows.
     pub fn register_font(&mut self, data: Arc<[u8]>, scripts: &[[u8; 4]]) {
+        self.register_font_data(data.into(), scripts);
+    }
+
+    /// Register embedded or externally owned bytes without copying the font into the heap.
+    pub fn register_font_data(&mut self, data: FontData, scripts: &[[u8; 4]]) {
         self.text.register_font(data, scripts);
+    }
+
+    /// Map an immutable font asset from disk and register its script fallbacks.
+    ///
+    /// # Safety
+    ///
+    /// The file must stay unchanged and untruncated while the engine or any of
+    /// its published frames can still reference it. Replacing the path
+    /// atomically leaves the original file backing the mapping intact.
+    #[cfg(any(unix, windows))]
+    pub unsafe fn register_font_file(&mut self, path: &std::path::Path, scripts: &[[u8; 4]]) -> std::io::Result<()> {
+        // SAFETY: The caller guarantees the lifetime and immutability of the file.
+        let data = unsafe { text::map_font(path)? };
+        if !self.text.register_font(data, scripts) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "No usable font faces in asset"));
+        }
+        Ok(())
     }
 
     pub fn text_hit(&self, node: NodeId, pos: Point) -> Option<usize> {
@@ -181,7 +209,7 @@ impl HostEngine for NativeEngine {
 
     fn project(&mut self, tree: &Tree, delta: &TreeDelta, viewport: WindowViewport, now: f64) -> Result<ProjectFeedback, ProjectError> {
         if !now.is_finite() || now < 0.0 {
-            return Err(ProjectError("native projection requires a nonnegative monotonic timestamp".into()));
+            return Err(timestamp_error());
         }
         if !viewport.scale.is_finite()
             || viewport.scale <= 0.0
@@ -190,17 +218,19 @@ impl HostEngine for NativeEngine {
             || viewport.size.width < 0.0
             || viewport.size.height < 0.0
         {
-            return Err(ProjectError("native viewport requires nonnegative finite size and positive finite scale".into()));
+            return Err(viewport_error());
         }
         self.text.begin_stage();
         self.layout.set_animated_scrolls(self.scrolling.active_nodes(tree));
         let mut updates = self.layout.project(tree, delta, viewport, &mut self.text);
+        self.flat.project(tree, delta, &self.layout);
         let scroll_deadline = self.scrolling.step(tree, &self.layout, &mut updates, now, self.config.reduced_motion);
         self.accessibility.project(tree, delta, &self.layout, &self.text, viewport.scale, self.config.check_a11y_cache);
         let frame = self.paint.compile(
             tree,
             delta,
             &self.layout,
+            &self.flat,
             &mut self.text,
             CompileOptions {
                 viewport,
@@ -227,6 +257,7 @@ impl HostEngine for NativeEngine {
         let staged = self.staged.take().expect("native publication requires a projected frame");
         self.frame = self.frame.checked_add(1).expect("native frame identity exhausted");
         self.layout.commit_stage();
+        self.flat.commit();
         self.text.commit_stage();
         self.paint.commit();
         self.scrolling.commit_stage();
@@ -252,6 +283,7 @@ impl HostEngine for NativeEngine {
 
     fn rollback(&mut self) {
         self.layout.rollback_stage();
+        self.flat.rollback();
         self.text.rollback_stage();
         self.paint.rollback();
         self.scrolling.rollback_stage();
@@ -261,7 +293,7 @@ impl HostEngine for NativeEngine {
     }
 
     fn hit_test(&self, tree: &Tree, pos: Point) -> Option<ContactTarget> {
-        let hit = hit_node(tree, tree.root(), &self.layout, &self.text, pos)?;
+        let hit = self.flat.hit(tree, &self.layout, &self.text, pos)?;
         let action = std::iter::successors(Some(hit), |&node| tree.interaction_parent(node)).find(|&node| {
             let kind = tree.node(node).map(|core| core.kind);
             matches!(kind, Some(NodeKind::TextInput | NodeKind::Link)) || tree.has_activation_handler(node) || tree.is_focusable(node)
@@ -314,7 +346,7 @@ impl HostEngine for NativeEngine {
     }
 
     fn scrollbar_hit(&self, tree: &Tree, position: Point) -> Option<ScrollbarHit> {
-        let hit = hit_node(tree, tree.root(), &self.layout, &self.text, position)?;
+        let hit = self.flat.hit(tree, &self.layout, &self.text, position)?;
         // A parent's scrollbar paints over its descendants.
         std::iter::successors(Some(hit), |&node| tree.parent(node))
             .filter_map(|node| self.paint.scrollbar_hit(tree, &self.layout, node, position))
@@ -334,25 +366,16 @@ impl HostEngine for NativeEngine {
     }
 }
 
-fn hit_node(tree: &Tree, node: NodeId, layout: &LayoutEngine, text: &TextEngine, pos: Point) -> Option<NodeId> {
-    if !tree.is_shown(node) || layout.clip(node).is_some_and(|clip| !clip.contains(pos)) {
-        return None;
-    }
-    let core = tree.node(node)?;
-    let radii = tree.style(node).map_or([0.0; 4], |style| style.visual.radius);
-    if layout.child_clip(node).is_none_or(|clip| clip.contains(pos))
-        && layout.rounded_child_clip(node).is_none_or(|clip| clip.contains_rounded(pos, radii))
-        && let Some(hit) = paint_order(tree, node).iter().rev().find_map(|&child| hit_node(tree, child, layout, text, pos))
-    {
-        return Some(hit);
-    }
-    if core.flags.contains(NodeFlags::POINTER_EVENTS_NONE) || node == tree.overlay_root() {
-        return None;
-    }
-    if core.kind == NodeKind::Link {
-        return text.link_rects(node).iter().any(|rect| rect.contains(pos)).then_some(node);
-    }
-    layout.bounds(node).filter(|rect| rect.contains_rounded(pos, radii)).map(|_| node)
+#[cold]
+#[inline(never)]
+fn timestamp_error() -> ProjectError {
+    ProjectError("native projection requires a nonnegative monotonic timestamp".into())
+}
+
+#[cold]
+#[inline(never)]
+fn viewport_error() -> ProjectError {
+    ProjectError("native viewport requires nonnegative finite size and positive finite scale".into())
 }
 
 fn paint_order(tree: &Tree, node: NodeId) -> std::borrow::Cow<'_, [NodeId]> {

@@ -254,8 +254,8 @@ impl Tree {
         let groups: FxHashSet<_> = delta
             .semantics_dirty
             .iter()
-            .chain(&delta.topology_dirty)
-            .flat_map(|&node| {
+            .chain(delta.topology_dirty.iter())
+            .flat_map(|node| {
                 let own = self.semantics(node).and_then(|slot| slot.focus_group).map(|_| node);
                 own.into_iter().chain(self.focus_group_of(node))
             })

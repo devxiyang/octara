@@ -39,7 +39,20 @@ struct IosHost;
 
 impl OsHost for IosHost {
     fn initialize(&mut self, proxy: EventLoopProxy<ShellEvent>) {
+        super::scheduling::interactive();
         scene::register(proxy);
+    }
+
+    fn frame_thread_setup(&self) -> Option<fn()> {
+        Some(super::scheduling::interactive)
+    }
+
+    fn utility_thread_setup(&self) -> Option<fn()> {
+        Some(super::scheduling::utility)
+    }
+
+    fn background_thread_setup(&self) -> Option<fn()> {
+        Some(super::scheduling::background)
     }
 
     fn is_ready(&self) -> bool {

@@ -110,7 +110,8 @@ impl Shell {
                 publication,
             ))
         });
-        app.runtime_mut().set_media_loader(crate::media::NativeMediaLoader);
+        let thread_setup = os.utility_thread_setup().unwrap_or(|| {});
+        app.runtime_mut().set_media_loader(crate::media::NativeMediaLoader { thread_setup });
         let wake = proxy.clone();
         app.runtime_mut().set_wake(Some(Arc::new(move || {
             let _ = wake.send_event(ShellEvent::Wake);
@@ -156,7 +157,14 @@ impl Shell {
                 let _ = proxy.send_event(ShellEvent::Device { generation, notice });
             })),
         ));
-        self.device = Some(Device::create(&self.instance, surface, generation, self.config.trace_gpu, self.surface_renderer.as_ref())?);
+        self.device = Some(Device::create(
+            &self.instance,
+            surface,
+            generation,
+            self.config.trace_gpu,
+            self.surface_renderer.as_ref(),
+            self.os.frame_thread_setup().unwrap_or(|| {}),
+        )?);
         Ok(())
     }
 

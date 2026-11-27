@@ -1,5 +1,15 @@
 //! Style resolution for authored declarations, inherited values, and viewport state.
 
+mod intern;
+pub(crate) mod sensitivity;
+mod tree;
+#[doc(hidden)]
+pub use intern::ResolvedStyle as ComputedStyle;
+pub(crate) use intern::StyleInterner;
+
+#[cfg(test)]
+mod kernel_tests;
+
 use octara_model::{
     geometry::Size,
     input::CursorStyle,

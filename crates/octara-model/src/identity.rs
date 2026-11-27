@@ -1,6 +1,6 @@
 //! Identities and revision stamps shared by the tree, runtime, and hosts.
 
-use crate::capture::PaintSample;
+use crate::{CacheLine, capture::PaintSample};
 use serde::{Deserialize, Serialize};
 use slotmap::Key as _;
 use std::fmt;
@@ -30,7 +30,7 @@ impl TreeId {
     /// Allocate a namespace to share among all windows of a new application.
     pub fn fresh_namespace() -> [u64; 2] {
         static SEED: LazyLock<[u64; 2]> = LazyLock::new(namespace_seed);
-        static NEXT: AtomicU64 = AtomicU64::new(0);
+        static NEXT: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(0));
         let index = NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |index| index.checked_add(1)).expect("app namespace exhausted");
         [SEED[0], SEED[1] ^ index]
     }
@@ -84,6 +84,7 @@ pub struct ExitTicket {
 
 /// The identity of a frame from admission through presentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(align(128))]
 pub struct FrameStamp {
     pub tree: TreeId,
     pub frame: u64,
@@ -92,6 +93,8 @@ pub struct FrameStamp {
     pub native_rev: u64,
     pub sample: PaintSample,
 }
+
+const _: () = assert!(std::mem::size_of::<FrameStamp>() == 128);
 
 /// A visit to a focused editor and the incarnation of its document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

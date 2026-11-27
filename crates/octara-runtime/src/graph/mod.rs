@@ -32,7 +32,7 @@ pub enum FlushTier {
 }
 
 impl NodeKind {
-    fn tier(self) -> Option<FlushTier> {
+    pub(crate) fn tier(self) -> Option<FlushTier> {
         match self {
             Self::Memo | Self::ListOp | Self::RowSource => Some(FlushTier::Derivation),
             Self::Structure => Some(FlushTier::Structure),
@@ -48,25 +48,15 @@ impl ReactiveWorld {
     pub fn create_observer(&mut self, kind: NodeKind, scope: ScopeId, window: Option<WindowId>) -> ReactiveId {
         assert!(matches!(kind, NodeKind::Structure | NodeKind::Binding), "external observers must be structures or bindings");
         let id = self.alloc_node(kind, scope, window);
-        self.node_mut(id).state = NodeState::Dirty;
+        self.hot_mut(id).state = NodeState::Dirty;
         self.schedule(id);
         id
-    }
-
-    /// Removes the next observer in depth order. Its owner should evaluate or retire it.
-    pub fn next_observer(&mut self, tier: FlushTier) -> Option<ReactiveId> {
-        let entry = self.pending.range((tier, 0, ReactiveId::MIN)..).next().copied()?;
-        if entry.0 != tier {
-            return None;
-        }
-        self.pending.remove(&entry);
-        Some(entry.2)
     }
 
     /// Requests a fresh sample when model work changes an external observer's input set.
     pub fn invalidate_observer(&mut self, id: ReactiveId) {
         if self.is_alive(id) {
-            assert!(matches!(self.node(id).kind, NodeKind::Structure | NodeKind::Binding), "expected a structure or binding");
+            assert!(matches!(self.hot(id).kind, NodeKind::Structure | NodeKind::Binding), "expected a structure or binding");
             self.invalidate(id, NodeState::Dirty);
         }
     }
@@ -76,7 +66,7 @@ impl ReactiveWorld {
         if !self.is_alive(id) {
             return None;
         }
-        assert!(matches!(self.node(id).kind, NodeKind::Structure | NodeKind::Binding), "expected a structure or binding");
+        assert!(matches!(self.hot(id).kind, NodeKind::Structure | NodeKind::Binding), "expected a structure or binding");
         if !self.needs_evaluation(id) {
             return None;
         }
@@ -93,8 +83,8 @@ impl ReactiveWorld {
     /// Evaluates watch sources during React. Effects are deferred until after Commit.
     pub fn flush_watches(&mut self) {
         while let Some(id) = self.next_observer(FlushTier::Watch) {
-            if self.ensure_clean(id) && !self.node(id).watch_pending {
-                self.node_mut(id).watch_pending = true;
+            if self.ensure_clean(id) && !self.hot(id).watch_pending() {
+                self.hot_mut(id).set_watch_pending(true);
                 self.watch_effects.push_back(id);
             }
         }
@@ -131,15 +121,14 @@ impl ReactiveWorld {
             if !self.is_scope_alive(scope) {
                 continue;
             }
-            let node = self.node_mut(id);
-            node.watch_pending = false;
-            let mut effect = node.watch_effect.take().expect("watch effect");
+            self.hot_mut(id).set_watch_pending(false);
+            let mut effect = self.cold_mut(id).watch_effect.take().expect("watch effect");
             let mut cx = WriteCx::new(self, scope, window);
             cx.commands = commands.as_deref_mut();
             cx.tasks = tasks.cloned();
             cx.tree = window.and_then(&tree);
             let result = catch_unwind(AssertUnwindSafe(|| effect(&mut cx, id)));
-            self.node_mut(id).watch_effect = Some(effect);
+            self.cold_mut(id).watch_effect = Some(effect);
             if let Err(panic) = result {
                 resume_unwind(panic);
             }
@@ -147,49 +136,48 @@ impl ReactiveWorld {
     }
 
     pub fn has_pending_work(&self) -> bool {
-        !self.pending.is_empty() || self.watch_effects.iter().any(|&id| self.is_alive(id))
+        self.has_pending_observers() || self.watch_effects.iter().any(|&id| self.is_alive(id))
     }
 
     #[track_caller]
     pub(crate) fn revision(&self, id: ReactiveId) -> u64 {
-        self.node(id).revision
+        self.hot(id).revision
     }
 
     pub(crate) fn init_compute(&mut self, id: ReactiveId, f: impl FnMut(&mut ReadCx<'_>) -> bool + 'static) {
-        let node = self.node_mut(id);
+        let node = self.cold_mut(id);
         assert!(node.compute.is_none(), "reactive compute is already registered");
         node.compute = Some(Box::new(f));
-        node.state = NodeState::Dirty;
+        self.hot_mut(id).state = NodeState::Dirty;
         self.schedule(id);
     }
 
     /// Declares a dependency that is retained across dynamic reads of a computation.
     pub(crate) fn add_dependency(&mut self, observer: ReactiveId, source: ReactiveId) {
-        if observer == source || !self.node(observer).observers.is_empty() && self.depends_on(source, observer) {
+        if observer == source || !self.cold(observer).observers.is_empty() && self.depends_on(source, observer) {
             self.cycle(observer);
         }
         let revision = self.revision(source);
-        let sources = &mut self.node_mut(observer).sources;
+        let sources = &mut self.cold_mut(observer).sources;
         if let Some(existing) = sources.iter_mut().find(|edge| edge.id == source) {
             existing.fixed = true;
             return;
         }
         sources.push(Source { id: source, revision, fixed: true });
-        self.node_mut(source).observers.push(observer);
+        self.cold_mut(source).observers.push(observer);
         self.update_depths(observer);
     }
 
     fn depends_on(&self, start: ReactiveId, dependency: ReactiveId) -> bool {
         let mut pending = vec![start];
         let mut visited = FxHashSet::default();
-        let depth = self.node(dependency).depth;
+        let depth = self.hot(dependency).depth;
         while let Some(id) = pending.pop() {
             if id == dependency {
                 return true;
             }
-            let node = self.node(id);
-            if node.depth > depth && visited.insert(id) {
-                pending.extend(node.sources.iter().map(|source| source.id));
+            if self.hot(id).depth > depth && visited.insert(id) {
+                pending.extend(self.cold(id).sources.iter().map(|source| source.id));
             }
         }
         false
@@ -197,15 +185,15 @@ impl ReactiveWorld {
 
     #[track_caller]
     pub(crate) fn mark_changed(&mut self, id: ReactiveId) {
-        let node = self.node_mut(id);
+        let node = self.hot_mut(id);
         node.revision = node.revision.checked_add(1).expect("reactive revision exhausted");
         self.invalidate_observers(id);
     }
 
     fn invalidate_observers(&mut self, id: ReactiveId) {
         let mut pending = SmallVec::<[ReactiveId; 8]>::new();
-        for index in 0..self.node(id).observers.len() {
-            let observer = self.node(id).observers[index];
+        for index in 0..self.cold(id).observers.len() {
+            let observer = self.cold(id).observers[index];
             if self.invalidate(observer, NodeState::Dirty) {
                 pending.push(observer);
             }
@@ -213,8 +201,8 @@ impl ReactiveWorld {
         let mut cursor = 0;
         while let Some(&id) = pending.get(cursor) {
             cursor += 1;
-            for index in 0..self.node(id).observers.len() {
-                let observer = self.node(id).observers[index];
+            for index in 0..self.cold(id).observers.len() {
+                let observer = self.cold(id).observers[index];
                 if self.invalidate(observer, NodeState::Check) {
                     pending.push(observer);
                 }
@@ -223,7 +211,7 @@ impl ReactiveWorld {
     }
 
     fn invalidate(&mut self, id: ReactiveId, target: NodeState) -> bool {
-        let node = self.node_mut(id);
+        let node = self.hot_mut(id);
         let old = node.state;
         if old == NodeState::Clean || (old == NodeState::Check && target == NodeState::Dirty) {
             node.state = target;
@@ -238,9 +226,9 @@ impl ReactiveWorld {
         if !self.needs_evaluation(id) {
             return false;
         }
-        let mut compute = self.node_mut(id).compute.take().expect("dirty reactive derivation has no computation");
+        let mut compute = self.cold_mut(id).compute.take().expect("dirty reactive derivation has no computation");
         let result = catch_unwind(AssertUnwindSafe(|| self.evaluate(id, |r| compute(r))));
-        self.node_mut(id).compute = Some(compute);
+        self.cold_mut(id).compute = Some(compute);
         let changed = self.complete_evaluation(id, result);
         if changed {
             self.mark_changed(id);
@@ -250,38 +238,42 @@ impl ReactiveWorld {
 
     #[track_caller]
     fn needs_evaluation(&mut self, id: ReactiveId) -> bool {
-        let node = self.node(id);
-        if node.computing {
+        let node = self.hot(id);
+        if node.computing() {
             self.cycle(id);
         }
-        if node.state == NodeState::Clean {
+        let state = node.state;
+        if state == NodeState::Clean {
             return false;
         }
         self.unschedule(id);
-        if self.node(id).state == NodeState::Check {
-            self.node_mut(id).computing = true;
-            let sources = self.node(id).sources.clone();
+        if state == NodeState::Check {
+            self.hot_mut(id).set_computing(true);
             let result = catch_unwind(AssertUnwindSafe(|| {
-                for source in sources {
+                // Pulls may update this node's state and depth. Its source list is
+                // only replaced when this node evaluates.
+                for index in 0..self.cold(id).sources.len() {
+                    let source = self.cold(id).sources[index];
                     self.ensure_clean(source.id);
                     if self.revision(source.id) != source.revision {
                         return true;
                     }
                 }
-                self.node(id).state == NodeState::Dirty
+                self.hot(id).state == NodeState::Dirty
             }));
             if !self.complete_evaluation(id, result) {
-                self.node_mut(id).state = NodeState::Clean;
+                self.hot_mut(id).state = NodeState::Clean;
                 return false;
             }
-            self.node_mut(id).state = NodeState::Dirty;
+            self.hot_mut(id).state = NodeState::Dirty;
         }
         true
     }
 
     #[cold]
+    #[inline(never)]
     fn cycle(&mut self, id: ReactiveId) -> ! {
-        let defined_at = self.node(id).defined_at;
+        let defined_at = self.cold(id).defined_at;
         self.report(Diagnostic {
             code: &codes::CYCLE,
             message: "A reactive computation depends on its own output".into(),
@@ -291,8 +283,8 @@ impl ReactiveWorld {
     }
 
     fn evaluate<R>(&mut self, id: ReactiveId, f: impl FnOnce(&mut ReadCx<'_>) -> R) -> R {
-        self.node_mut(id).computing = true;
-        let fixed = self.node(id).sources.iter().filter(|edge| edge.fixed).copied().collect::<SmallVec<[_; 4]>>();
+        self.hot_mut(id).set_computing(true);
+        let fixed = self.cold(id).sources.iter().filter(|edge| edge.fixed).copied().collect::<SmallVec<[_; 4]>>();
         for source in &fixed {
             self.ensure_clean(source.id);
         }
@@ -303,13 +295,13 @@ impl ReactiveWorld {
         let result = f(&mut read);
         let sources = read.into_sources();
         self.update_sources(id, sources);
-        self.node_mut(id).state = NodeState::Clean;
+        self.hot_mut(id).state = NodeState::Clean;
         result
     }
 
     fn complete_evaluation<R>(&mut self, id: ReactiveId, result: std::thread::Result<R>) -> R {
-        let node = self.node_mut(id);
-        node.computing = false;
+        let node = self.hot_mut(id);
+        node.set_computing(false);
         match result {
             Ok(value) => value,
             Err(panic) => {
@@ -321,23 +313,23 @@ impl ReactiveWorld {
     }
 
     fn update_sources(&mut self, id: ReactiveId, sources: SmallVec<[Source; 4]>) {
-        let old = std::mem::take(&mut self.node_mut(id).sources);
+        let old = std::mem::take(&mut self.cold_mut(id).sources);
         let old_index = source_index(&old);
         let new_index = source_index(&sources);
         let mut changed = false;
         for source in &old {
             if !has_source(&sources, new_index.as_ref(), source.id) {
-                self.node_mut(source.id).observers.retain(|&mut observer| observer != id);
+                self.cold_mut(source.id).observers.retain(|&mut observer| observer != id);
                 changed = true;
             }
         }
         for source in &sources {
             if !has_source(&old, old_index.as_ref(), source.id) {
-                self.node_mut(source.id).observers.push(id);
+                self.cold_mut(source.id).observers.push(id);
                 changed = true;
             }
         }
-        self.node_mut(id).sources = sources;
+        self.cold_mut(id).sources = sources;
         if changed {
             self.update_depths(id);
         }
@@ -347,33 +339,17 @@ impl ReactiveWorld {
         let mut pending = SmallVec::<[ReactiveId; 8]>::new();
         pending.push(id);
         while let Some(id) = pending.pop() {
-            let node = self.node(id);
-            let depth = node.sources.iter().map(|source| self.node(source.id).depth + 1).max().unwrap_or(0);
-            if depth == node.depth {
+            let depth = self.cold(id).sources.iter().map(|source| self.hot(source.id).depth + 1).max().unwrap_or(0);
+            if depth == self.hot(id).depth {
                 continue;
             }
             self.unschedule(id);
-            self.node_mut(id).depth = depth;
-            if self.node(id).state != NodeState::Clean {
+            let node = self.hot_mut(id);
+            node.depth = depth;
+            if node.state != NodeState::Clean {
                 self.schedule(id);
             }
-            pending.extend(self.node(id).observers.iter().copied());
-        }
-    }
-
-    fn schedule(&mut self, id: ReactiveId) {
-        let node = self.node(id);
-        if !node.computing
-            && let Some(tier) = node.kind.tier()
-        {
-            self.pending.insert((tier, node.depth, id));
-        }
-    }
-
-    fn unschedule(&mut self, id: ReactiveId) {
-        let node = self.node(id);
-        if let Some(tier) = node.kind.tier() {
-            self.pending.remove(&(tier, node.depth, id));
+            pending.extend(self.cold(id).observers.iter().copied());
         }
     }
 
@@ -381,14 +357,14 @@ impl ReactiveWorld {
         self.unschedule(id);
         self.invalidate_observers(id);
         let (sources, observers) = {
-            let node = self.node_mut(id);
+            let node = self.cold_mut(id);
             (std::mem::take(&mut node.sources), std::mem::take(&mut node.observers))
         };
         for source in sources {
-            self.node_mut(source.id).observers.retain(|&mut observer| observer != id);
+            self.cold_mut(source.id).observers.retain(|&mut observer| observer != id);
         }
         for observer in observers {
-            self.node_mut(observer).sources.retain(|edge| edge.id != id);
+            self.cold_mut(observer).sources.retain(|edge| edge.id != id);
             self.update_depths(observer);
         }
     }

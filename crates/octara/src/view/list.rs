@@ -7,7 +7,10 @@ use octara_runtime::{
     BuildCx, MountCx, ReadCx, ScopeId, Signal,
     graph::{
         delta::{Changes, Cursor},
-        list::{IntoReadList, ListDelta, ReadList, RowSignal, seq::Seq},
+        list::{
+            IntoReadList, ListDelta, ReadList, RowSignal,
+            seq::{RowSize, SumTree},
+        },
     },
     window::CopyRow,
 };
@@ -128,7 +131,7 @@ struct Spacer {
 }
 
 struct VirtualRows<K> {
-    order: Seq<K>,
+    order: SumTree<K>,
     cursor: Option<Cursor>,
     rows: FxHashMap<K, Resident>,
     gaps: FxHashMap<K, Spacer>,
@@ -155,6 +158,7 @@ where
     K: Clone + Eq + Hash + 'static,
 {
     fn topology<T: 'static>(&mut self, read: &mut ReadCx<'_>, list: ReadList<K, T>, estimate: f64) {
+        let estimated = RowSize { height: estimate, width: 0.0 };
         if let Some(cursor) = self.cursor.as_mut()
             && let Changes::Delta(changes) = read.list_topology_changes(list, cursor)
         {
@@ -167,23 +171,23 @@ where
                 .collect();
             let mut upserts = Vec::new();
             for key in changed {
-                let height = self.order.weight_of(&key).unwrap_or(estimate);
+                let size = self.order.size_of(&key).unwrap_or(estimated);
                 self.order.remove(&key);
                 if let Some(rank) = read.untrack(|read| read.rank(list, &key)) {
-                    upserts.push((rank, key, height));
+                    upserts.push((rank, key, size));
                 }
             }
             upserts.sort_unstable_by_key(|&(rank, ..)| rank);
-            for (rank, key, weight) in upserts {
-                self.order.insert_weighted(rank, key, weight);
+            for (rank, key, size) in upserts {
+                self.order.insert(rank, key, size);
             }
             return;
         }
         self.cursor = Some(read.list_topology_cursor(list));
-        let mut order = Seq::new();
+        let mut order = SumTree::default();
         for (rank, key) in read.keys(list).into_iter().enumerate() {
-            let height = self.order.weight_of(&key).unwrap_or(estimate);
-            order.insert_weighted(rank, key, height);
+            let size = self.order.size_of(&key).unwrap_or(estimated);
+            order.insert(rank, key, size);
         }
         self.order = order;
     }
@@ -198,14 +202,14 @@ where
     ) -> Option<Result<Vec<CopyRow>, ()>> {
         let rank = |node| {
             self.rows.iter().find_map(|(key, resident)| {
-                matches!(resident.row.node.get(), NodeRef::Existing { id, .. } if id == node).then(|| self.order.index_of(key)).flatten()
+                matches!(resident.row.node.get(), NodeRef::Existing { id, .. } if id == node).then(|| self.order.rank(key)).flatten()
             })
         };
         let (start, end) = (rank(first)?, rank(last)?);
         Some(
             (start + 1..end)
                 .map(|rank| {
-                    let key = self.order.nth(rank).expect("selected row rank");
+                    let key = self.order.key_at(rank).expect("selected row rank");
                     if let Some(resident) = self.rows.get(key)
                         && let NodeRef::Existing { id, .. } = resident.row.node.get()
                     {
@@ -233,15 +237,18 @@ where
         let mut anchored = None;
         let mut pinned = Vec::new();
         for (key, resident) in &self.rows {
-            let Some(rank) = self.order.index_of(key) else { continue };
-            if read.get(resident.pinned) {
+            let is_pinned = read.get(resident.pinned);
+            let is_anchor = matches!(resident.row.node.get(), NodeRef::Existing { id, .. } if Some(id) == anchor);
+            let rank = (is_pinned || is_anchor).then(|| self.order.rank(key)).flatten();
+            if let Some(rank) = rank.filter(|_| is_pinned) {
                 pinned.push(rank);
             }
             if let Some(geometry) = read.get(resident.geometry)
                 && geometry.rect.h.is_finite()
             {
-                self.order.set_weight(key, f64::from(geometry.rect.h.max(1.0)));
-                if matches!(resident.row.node.get(), NodeRef::Existing { id, .. } if Some(id) == anchor) {
+                let width = if geometry.rect.w.is_finite() { geometry.rect.w.max(0.0) } else { 0.0 };
+                self.order.set_size(key, RowSize { height: f64::from(geometry.rect.h.max(1.0)), width });
+                if let Some(rank) = rank.filter(|_| is_anchor) {
                     anchored = Some((rank, f64::from(geometry.rect.y)));
                 }
             }
@@ -250,26 +257,27 @@ where
         // includes any compensation applied to the measured layout during this turn.
         let compensation = anchored.map_or(0.0, |(rank, measured_y)| {
             pinned.push(rank);
-            self.origin + self.order.prefix_weight(rank) - measured_y
+            self.origin + self.order.offset(rank) - measured_y
         });
         let from = (offset + compensation - self.origin).max(0.0);
         let end = from + f64::from(visible_height);
-        let first = self.order.index_at_weight(from).min(self.order.len().saturating_sub(1));
-        let last = self.order.index_at_weight(end).saturating_add(1);
-        let visible = first.saturating_sub(options.overscan)..last.saturating_add(options.overscan).min(self.order.len());
+        let summary = self.order.summary();
+        let first = self.order.rank_at(from).min(summary.count.saturating_sub(1));
+        let last = self.order.rank_at(end).saturating_add(1);
+        let visible = first.saturating_sub(options.overscan)..last.saturating_add(options.overscan).min(summary.count);
         pinned.extend(visible);
         pinned.sort_unstable();
         pinned.dedup();
-        let leading = self.order.prefix_weight(pinned.first().copied().unwrap_or(0));
+        let leading = self.order.offset(pinned.first().copied().unwrap_or(0));
         let mut previous_end = leading;
         let mut rows = Vec::with_capacity(pinned.len());
         for rank in pinned {
-            let key = self.order.nth(rank).expect("resident rank");
-            let top = self.order.prefix_weight(rank);
+            let key = self.order.key_at(rank).expect("resident rank");
+            let top = self.order.offset(rank);
             rows.push((key.clone(), (top - previous_end).max(0.0)));
-            previous_end = self.order.prefix_weight(rank + 1);
+            previous_end = self.order.offset(rank + 1);
         }
-        Plan { leading, trailing: (self.order.total_weight() - previous_end).max(0.0), rows }
+        Plan { leading, trailing: (summary.total_height - previous_end).max(0.0), rows }
     }
 }
 
@@ -355,7 +363,7 @@ where
             cx.observe_scroll(parent.get(), scroll);
             cx.observe_scroll_anchor(parent.get(), anchor);
             let rows = Rc::new(RefCell::new(VirtualRows::<K> {
-                order: Seq::new(),
+                order: SumTree::default(),
                 cursor: None,
                 rows: FxHashMap::default(),
                 gaps: FxHashMap::default(),
@@ -376,11 +384,12 @@ where
             let reveal = rows.clone();
             cx.on_reveal(parent.get(), move |w, label| {
                 let rows = reveal.borrow();
-                let index = (0..rows.order.len()).find(|&index| rows.order.nth(index).is_some_and(|key| key.to_string() == label));
+                let index =
+                    (0..rows.order.summary().count).find(|&index| rows.order.key_at(index).is_some_and(|key| key.to_string() == label));
                 if let Some(index) = index
                     && let NodeRef::Existing { id, .. } = parent.get()
                 {
-                    let y = rows.origin + rows.order.prefix_weight(index);
+                    let y = rows.origin + rows.order.offset(index);
                     let x = w.get(scroll).x;
                     w.scroll_to(id, Vec2::new(x, y as f32));
                 }

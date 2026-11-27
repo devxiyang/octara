@@ -244,7 +244,7 @@ impl<K: Eq + Hash + 'static, T: 'static> ReadList<K, T> {
                 }
                 false
             });
-        } else if world.node(self.id).kind == NodeKind::ListOp {
+        } else if world.hot(self.id).kind == NodeKind::ListOp {
             world.add_dependency(node, self.id);
             world.init_compute(node, |_| false);
         }

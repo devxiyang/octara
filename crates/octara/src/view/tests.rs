@@ -1,8 +1,8 @@
-use crate::{App, prelude::*};
-use octara_model::input::ContactTarget;
+use crate::{App, Input, prelude::*};
+use octara_model::input::{ContactTarget, EditorEvent};
 use octara_model::style::Overflow;
 use octara_runtime::{CommitOutput, HostEngine, ProjectError, ProjectFeedback};
-use octara_tree::{NodeId, RuntimeOp, Tree, TreeDelta};
+use octara_tree::{NodeId, RuntimeOp, Tree, TreeDelta, editor::EditorSession};
 use std::{cell::Cell, rc::Rc};
 
 struct Headless;
@@ -54,7 +54,7 @@ impl HostEngine for Headless {
         let updates = delta
             .scroll_dirty
             .iter()
-            .filter_map(|&node| {
+            .filter_map(|node| {
                 let (_, offset) = tree.scroll(node)?.requested?;
                 Some(RuntimeOp::SetScroll { node, offset, clamped: false })
             })
@@ -126,6 +126,62 @@ fn structure_regions_keep_sibling_order_and_keyed_identity() {
     assert_eq!(&*tree.text(original).unwrap().text, "one!");
     assert_eq!(&*tree.text(tree.test_ids("heading")[0]).unwrap().text, "heading!");
     assert_eq!(built.get(), 2);
+}
+
+#[test]
+fn each_rotates_with_one_attachment_and_keeps_the_moved_editors_ime() {
+    let mut app = App::new(|_, _| Box::new(Headless));
+    let list = app.build(|cx| cx.list::<usize, ()>()).unwrap();
+    app.update(|w| {
+        for key in 0..4 {
+            w.push_row(list, key, ());
+        }
+    })
+    .unwrap();
+    let id = app
+        .open_window(WindowOptions::default(), move |_| {
+            col()
+                .test_id("parent")
+                .child(each(list, |_, key, _| col().test_id(format!("row-{key}")).child(input().test_id(format!("editor-{key}")))))
+        })
+        .unwrap();
+    app.update_window(id, |w| w.focus("editor-0")).unwrap();
+    let tree = app.window(id).unwrap().runtime().tree();
+    let editor = tree.test_ids("editor-0")[0];
+    let active = EditorSession::active(tree).unwrap();
+    let session = active.id();
+    app.dispatch(
+        id,
+        Input::Editor(EditorEvent::Composition {
+            session,
+            expected_rev: active.editor().document_rev(),
+            text: "界".into(),
+            selection: Some((3, 0)),
+            replacement: None,
+        }),
+    )
+    .unwrap();
+
+    let tree = app.window(id).unwrap().runtime().tree();
+    let parent = tree.test_ids("parent")[0];
+    let rows: [_; 4] = tree.children(parent).try_into().unwrap();
+    let attachment_revisions = rows.map(|row| tree.node(row).unwrap().semantics_rev);
+    app.update(|w| w.move_row(list, &0, 3)).unwrap();
+
+    let tree = app.window(id).unwrap().runtime().tree();
+    assert_eq!(tree.children(parent), &[rows[1], rows[2], rows[3], rows[0]]);
+    let moved = rows
+        .into_iter()
+        .zip(attachment_revisions)
+        .filter_map(|(row, revision)| (tree.node(row).unwrap().semantics_rev != revision).then_some(row))
+        .collect::<Vec<_>>();
+    assert_eq!(moved, [rows[0]]);
+    assert_eq!(tree.focus(), Some(editor));
+    let active = EditorSession::active(tree).unwrap();
+    assert_eq!(active.id(), session);
+    let composition = active.editor().composition().unwrap();
+    assert_eq!(composition.text(), "界");
+    assert_eq!(composition.selection(), Some((3, 0)));
 }
 
 #[test]

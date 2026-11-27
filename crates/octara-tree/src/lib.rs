@@ -6,11 +6,14 @@
 pub mod arbiter;
 mod cursor;
 pub mod delta;
+mod dirty_bitmap;
 pub mod editor;
 mod exit;
 pub mod focus;
 mod integrity;
 pub mod overlay;
+#[doc(hidden)]
+pub mod reconcile;
 pub mod runtime_op;
 pub mod selection;
 pub mod semantics;
@@ -20,6 +23,7 @@ pub mod transaction;
 
 pub use cursor::resolve_cursor;
 pub use delta::{GeometryDemand, RetiredNode, TreeDelta};
+pub use dirty_bitmap::DirtyBitmap;
 pub use octara_model::identity::{ExitTicket, GuardTarget, NodeId, RowKey, TargetGuard, TreeId, TreeRev};
 pub use runtime_op::RuntimeOp;
 pub use tables::TableMask;
@@ -36,7 +40,7 @@ use slotmap::SlotMap;
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use style::StyleResolver;
+use style::{ComputedStyle, StyleInterner, StyleResolver, sensitivity};
 use tables::*;
 use transaction::RichText;
 
@@ -108,6 +112,7 @@ impl NodeFlags {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct NodeCore {
+    style_bloom: u64,
     pub parent: Option<NodeId>,
     pub kind: NodeKind,
     // The transaction's flag value before applying authored style.
@@ -126,6 +131,7 @@ const _: () = assert!(std::mem::size_of::<NodeCore>() <= 48);
 impl NodeCore {
     fn new(kind: NodeKind) -> Self {
         Self {
+            style_bloom: sensitivity::DEFAULT,
             parent: None,
             kind,
             authored_pointer_events_none: false,
@@ -167,7 +173,22 @@ pub struct Tree {
     responsive_breakpoint: Option<ResponsiveBreakpoint>,
     touch: bool,
     initial_inherited: Inherited,
-    initial_visual: Visual,
+    initial_style: Arc<ComputedStyle>,
+    style_interner: StyleInterner,
+    #[cfg(test)]
+    style_visits: usize,
+    #[cfg(test)]
+    style_prunes: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct StyleInvalidation {
+    conditions: u64,
+    local_state: u64,
+    theme: u64,
+    inherited_theme: bool,
+    inherited_dirty: bool,
+    force: bool,
 }
 
 impl Tree {
@@ -178,6 +199,8 @@ impl Tree {
         let mut tables = Tables::default();
         tables.children.insert(root, vec![overlay_root]);
         let (initial_inherited, initial_visual) = StyleResolver::initial(&theme);
+        let mut style_interner = StyleInterner::default();
+        let initial_style = style_interner.intern(ComputedStyle { layout: LayoutStyle::default(), visual: initial_visual });
         Self {
             id,
             rev: TreeRev::default(),
@@ -203,7 +226,12 @@ impl Tree {
             responsive_breakpoint: None,
             touch: false,
             initial_inherited,
-            initial_visual,
+            initial_style,
+            style_interner,
+            #[cfg(test)]
+            style_visits: 0,
+            #[cfg(test)]
+            style_prunes: 0,
         }
     }
 
@@ -256,6 +284,12 @@ impl Tree {
     fn theme_patch(&self, node: NodeId) -> Option<&octara_model::theme::ThemePatch> {
         self.has_table(node, TableMask::THEME_PATCHES).then_some(())?;
         self.tables.theme_patches.get(node)
+    }
+
+    /// Whether this node establishes a theme scope for its descendants.
+    #[doc(hidden)]
+    pub fn has_theme_patch(&self, node: NodeId) -> bool {
+        self.has_table(node, TableMask::THEME_PATCHES)
     }
 
     fn next_theme_revision(&mut self) -> u64 {
@@ -559,6 +593,7 @@ impl Tree {
             }
         }
         delta.created.push(node);
+        self.refresh_style_bloom(node);
         self.sync_scroll_slot(node, delta);
         self.content_changed(node, delta);
         node
@@ -631,6 +666,9 @@ impl Tree {
             self.tables.children.remove(parent);
         }
         self.remove_row_index(parent, child);
+        if self.nodes[child].style_bloom & !sensitivity::DEFAULT != 0 {
+            self.refresh_style_bloom(parent);
+        }
         self.set_attachment(child, false, delta);
         delta.topology_dirty.insert(parent);
         self.layout_changed(parent, delta);
@@ -651,6 +689,7 @@ impl Tree {
             self.row_children.insert((parent, key), child);
         }
         self.set_attachment(child, self.is_live(parent), delta);
+        self.add_style_bloom(parent, self.nodes[child].style_bloom);
         delta.topology_dirty.insert(parent);
         self.layout_changed(parent, delta);
     }
@@ -671,6 +710,11 @@ impl Tree {
         self.overlay_index.remove(&node);
         self.native_index.remove(&node);
         self.doc_selections.remove(&node);
+        if self.nodes[node].present.contains(TableMask::STYLES) {
+            self.nodes[node].present.remove(TableMask::STYLES);
+            let style = self.tables.styles.remove(node).expect("style slot");
+            self.style_interner.release(style.resolved);
+        }
         if let Some(asset) = self.tables.remove(node, self.nodes[node].present) {
             delta.retired_assets.push(asset);
         }
@@ -745,41 +789,51 @@ impl Tree {
         change: NodeChange,
         resolve: &impl Fn(NodeRef) -> NodeId,
         style_roots: &mut FxHashSet<NodeId>,
+        theme_roots: &mut FxHashSet<NodeId>,
         delta: &mut TreeDelta,
     ) {
+        let sensitivity_changed = matches!(
+            change,
+            NodeChange::Style(_)
+                | NodeChange::ThemePatch(_)
+                | NodeChange::Text(_)
+                | NodeChange::RichText(_)
+                | NodeChange::SpliceText { .. }
+                | NodeChange::TextReveal(_)
+                | NodeChange::Paint(_)
+                | NodeChange::Overlay(_)
+        );
         match change {
             NodeChange::Style(authored) => {
                 let from = self.inherited_at(self.parent(node));
                 self.nodes[node].present.insert(TableMask::STYLES);
-                self.tables
-                    .styles
-                    .entry(node)
-                    .expect("style target key")
-                    .or_insert(StyleSlot {
-                        theme_revision: self.root_theme_revision,
-                        authored: AuthoredStyle::default(),
-                        layout: LayoutStyle::default(),
-                        visual: self.initial_visual,
-                        inherited: from,
-                        inherited_from: from,
-                        opacity_motion_authored: false,
-                    })
-                    .authored = *authored;
+                let style = self.tables.styles.entry(node).expect("style target key").or_insert_with(|| StyleSlot {
+                    theme_revision: self.root_theme_revision,
+                    sensitivity: 0,
+                    authored: AuthoredStyle::default(),
+                    resolved: Arc::clone(&self.initial_style),
+                    inherited: from,
+                    inherited_from: from,
+                    opacity_motion_authored: false,
+                });
+                style.sensitivity = sensitivity::authored(&authored);
+                style.authored = *authored;
                 style_roots.insert(node);
             }
             NodeChange::ThemePatch(patch) => {
                 if self.theme_patch(node) == patch.as_deref() {
                     return;
                 }
-                self.nodes[node].present.remove(TableMask::THEME_SCOPES);
+                if let Some(scope) = self.tables.theme_scopes.get_mut(node) {
+                    scope.base_revision = None;
+                }
                 self.nodes[node].present.set(TableMask::THEME_PATCHES, patch.is_some());
-                self.tables.theme_scopes.remove(node);
                 if let Some(patch) = patch {
                     self.tables.theme_patches.insert(node, *patch);
                 } else {
                     self.tables.theme_patches.remove(node);
                 }
-                style_roots.insert(node);
+                theme_roots.insert(node);
             }
             NodeChange::Flags(flags) => {
                 let core = &mut self.nodes[node];
@@ -980,139 +1034,8 @@ impl Tree {
                 delta.geometry_demands.insert(GeometryDemand::Bounds(node));
             }
         }
-    }
-
-    fn inherited_at(&self, mut node: Option<NodeId>) -> Inherited {
-        while let Some(current) = node {
-            if let Some(style) = self.style(current) {
-                return style.inherited;
-            }
-            node = self.parent(current);
-        }
-        self.initial_inherited
-    }
-
-    fn group_hovered(&self, mut node: Option<NodeId>, name: &str) -> bool {
-        while let Some(current) = node {
-            if self.style(current).and_then(|style| style.authored.group) == Some(name) {
-                return self.nodes[current].state.contains(State::HOVER);
-            }
-            node = self.parent(current);
-        }
-        false
-    }
-
-    fn resolve_dirty_styles(&mut self, dirty: FxHashSet<NodeId>, delta: &mut TreeDelta) {
-        for &node in &dirty {
-            if self.node(node).is_none() {
-                continue;
-            }
-            if std::iter::successors(self.parent(node), |&parent| self.parent(parent)).any(|parent| dirty.contains(&parent)) {
-                continue;
-            }
-            self.resolve_subtree(node, delta);
-        }
-    }
-
-    fn resolve_subtree(&mut self, node: NodeId, delta: &mut TreeDelta) {
-        let nodes: SmallVec<[NodeId; 16]> = self.subtree(node).collect();
-        for current in nodes {
-            if self.nodes[current].flags.contains(NodeFlags::EXITING) {
-                continue;
-            }
-            let parent = self.parent(current);
-            self.update_theme_scope(current, parent, delta);
-            let from = self.inherited_at(parent);
-            let Some(style) = self.style(current) else {
-                // Unstyled nodes still consume inherited paint and motion properties.
-                self.resolve_pointer_events(current, None, delta);
-                self.paint_changed(current, delta);
-                if matches!(self.nodes[current].kind, NodeKind::Text | NodeKind::TextInput | NodeKind::Link) {
-                    self.layout_changed(current, delta);
-                }
-                continue;
-            };
-            let theme_revision = self.theme_revision_at(current);
-            let theme_changed = style.theme_revision != theme_revision;
-            let resolved = StyleResolver::new(self.theme_at(current), self.breakpoint, self.responsive_breakpoint, self.touch).resolve(
-                LayoutStyle::default(),
-                &from,
-                &style.authored.base,
-                &style.authored.overrides,
-                self.nodes[current].state,
-                |name| self.group_hovered(parent, name),
-            );
-            let layout = style.layout != resolved.layout
-                || style.visual.text_style() != resolved.visual.text_style()
-                || (theme_changed && self.text(current).is_some_and(|text| text.runs.iter().any(|(_, span)| span.mono)));
-            let paint = style.visual != resolved.visual || theme_changed;
-            let display = style.layout.display != resolved.layout.display;
-            let selection = style.visual.user_select != resolved.visual.user_select;
-            let pointer_events = resolved.visual.pointer_events;
-            let slot = &mut self.tables.styles[current];
-            slot.theme_revision = theme_revision;
-            slot.inherited_from = from;
-            slot.inherited = resolved.inherited;
-            slot.visual = resolved.visual;
-            slot.layout = resolved.layout;
-            slot.opacity_motion_authored = resolved.opacity_motion_authored;
-            let paint = self.resolve_pointer_events(current, pointer_events, delta) || paint;
-            self.report_missing_theme_tokens(current, resolved.missing_tokens, delta);
-            if layout || paint {
-                let rev = &mut self.nodes[current].style_rev;
-                *rev = rev.wrapping_add(1);
-            }
-            if layout {
-                self.layout_changed(current, delta);
-            }
-            if paint {
-                self.paint_changed(current, delta);
-            }
-            if display || selection {
-                self.semantics_changed(current, delta);
-            }
-            self.sync_scroll_slot(current, delta);
-        }
-    }
-
-    fn resolve_pointer_events(&mut self, node: NodeId, styled: Option<bool>, delta: &mut TreeDelta) -> bool {
-        let core = &mut self.nodes[node];
-        let excluded = styled.map_or(core.authored_pointer_events_none, |enabled| !enabled);
-        if core.flags.contains(NodeFlags::POINTER_EVENTS_NONE) == excluded {
-            return false;
-        }
-        core.flags.set(NodeFlags::POINTER_EVENTS_NONE, excluded);
-        // Web descendants reset CSS's inherited pointer-events at this boundary.
-        delta.paint_dirty.extend(self.children(node).iter().copied());
-        true
-    }
-
-    fn update_theme_scope(&mut self, node: NodeId, parent: Option<NodeId>, delta: &mut TreeDelta) {
-        let Some(patch) = self.theme_patch(node) else { return };
-        let inherited = self.theme_scope_at(parent);
-        let base_revision = if patch.base_theme.is_some() { 0 } else { inherited.map_or(self.root_theme_revision, |scope| scope.revision) };
-        if self.theme_scope(node).is_some_and(|scope| scope.base_revision == base_revision) {
-            return;
-        }
-        let (theme, missing) = patch.resolve(inherited.map_or(&self.theme, |scope| &scope.theme));
-        self.report_missing_theme_tokens(node, missing, delta);
-        if let Some(scope) = self.tables.theme_scopes.get_mut(node)
-            && scope.theme == theme
-        {
-            scope.base_revision = base_revision;
-            return;
-        }
-        let revision = self.next_theme_revision();
-        self.nodes[node].present.insert(TableMask::THEME_SCOPES);
-        self.tables.theme_scopes.insert(node, ThemeScope { base_revision, revision, theme });
-    }
-
-    fn report_missing_theme_tokens(&self, node: NodeId, missing: impl IntoIterator<Item = &'static str>, delta: &mut TreeDelta) {
-        use octara_model::diagnostics::{Diagnostic, codes};
-        for name in missing {
-            let mut diagnostic = Diagnostic::new(&codes::MISSING_THEME_TOKEN, format!("Missing theme token {name}"));
-            diagnostic.location = self.provenance(node).map(|source| source.origin.to_string());
-            delta.diagnostics.push(diagnostic);
+        if sensitivity_changed {
+            self.refresh_style_bloom(node);
         }
     }
 

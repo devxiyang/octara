@@ -30,6 +30,7 @@ impl Device {
         generation: Arc<DeviceGeneration>,
         profile: bool,
         surface_renderer: Option<&SurfaceRendererFactory>,
+        thread_setup: fn(),
     ) -> Result<Self, String> {
         pollster::block_on(async {
             let adapter = instance
@@ -52,7 +53,8 @@ impl Device {
                 .await
                 .map_err(|error| error.to_string())?;
             let executor =
-                DeviceExecutor::spawn_for_device(device, queue.clone(), generation, surface_renderer).map_err(|error| error.to_string())?;
+                DeviceExecutor::spawn_for_device_with_thread_setup(device, queue.clone(), generation, surface_renderer, thread_setup)
+                    .map_err(|error| error.to_string())?;
             Ok(Self { adapter, queue, executor })
         })
     }

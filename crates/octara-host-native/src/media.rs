@@ -1,7 +1,5 @@
 //! Native transfer, decoding and pixel variants.
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-mod apple;
 mod disk;
 pub use disk::DiskMediaCache;
 
@@ -19,15 +17,18 @@ use tokio::task::JoinHandle;
 
 const MAX_TRANSFER: usize = 64 * 1024 * 1024;
 
-pub(crate) struct NativeMediaLoader;
+pub(crate) struct NativeMediaLoader {
+    pub thread_setup: fn(),
+}
 
 impl MediaLoader for NativeMediaLoader {
     fn load(&self, request: MediaRequest, progress: MediaProgress) -> MediaFuture {
+        let setup = self.thread_setup;
         Box::pin(async move {
             if let ImageSource::Pixels(image) = request.source {
                 return Ok(LoadedMedia::pixels(image));
             }
-            run(async move {
+            run(setup, async move {
                 let (bytes, cacheable, cache_for) = match &request.source {
                     ImageSource::Encoded { bytes, .. } => (bytes.clone(), true, None),
                     ImageSource::Uri(uri) => transfer(uri, &[], &request, &progress).await?,
@@ -51,10 +52,11 @@ impl MediaLoader for NativeMediaLoader {
     }
 
     fn variant(&self, mut original: LoadedMedia, target: MediaVariant, cancel: CancellationToken) -> MediaFuture {
+        let setup = self.thread_setup;
         Box::pin(async move {
             let MediaAsset::Pixels(image) = &original.asset else { return Ok(original) };
             let image = image.clone();
-            original.asset = run(async move {
+            original.asset = run(setup, async move {
                 let mut resize = AbortOnDrop(tokio::task::spawn_blocking(move || {
                     check_cancel(&cancel)?;
                     let frame = image.frame();
@@ -88,7 +90,10 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
-async fn run<T: Send + 'static>(work: impl std::future::Future<Output = Result<T, Arc<str>>> + Send + 'static) -> Result<T, Arc<str>> {
+async fn run<T: Send + 'static>(
+    setup: fn(),
+    work: impl std::future::Future<Output = Result<T, Arc<str>>> + Send + 'static,
+) -> Result<T, Arc<str>> {
     static RUNTIME: OnceLock<Result<Runtime, Arc<str>>> = OnceLock::new();
     let runtime = RUNTIME
         .get_or_init(|| {
@@ -96,6 +101,7 @@ async fn run<T: Send + 'static>(work: impl std::future::Future<Output = Result<T
                 .worker_threads(2)
                 .enable_all()
                 .thread_name("octara-media")
+                .on_thread_start(setup)
                 .build()
                 .map_err(|_| Arc::from("Image worker could not start"))
         })
@@ -115,14 +121,9 @@ fn decode(bytes: &[u8], cancel: &CancellationToken) -> Result<Image, Arc<str>> {
         return Err(Arc::from("Encoded image exceeds the byte limit"));
     }
     if image::guess_format(bytes).ok() == Some(image::ImageFormat::Avif) {
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        {
-            let decoded = apple::decode_avif(bytes).ok_or_else(|| Arc::from("Unsupported, oversized, or damaged AVIF image"))?;
-            check_cancel(cancel)?;
-            return Ok(decoded);
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-        return Err(Arc::from("The built-in decoder on this platform does not support AVIF"));
+        let decoded = crate::os::decode_avif(bytes)?;
+        check_cancel(cancel)?;
+        return Ok(decoded);
     }
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);

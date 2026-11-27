@@ -50,7 +50,7 @@ pub(super) fn decode_avif(bytes: &[u8]) -> Option<Image> {
 mod tests {
     #[test]
     fn decodes_the_probed_avif_dimensions() {
-        let bytes = include_bytes!("sample.avif");
+        let bytes = include_bytes!("../media/sample.avif");
         let size = octara::runtime::media::probe_image_size(bytes).expect("AVIF header dimensions");
         let image = super::decode_avif(bytes).expect("ImageIO AVIF decoder");
         assert_eq!(size, (32, 16));

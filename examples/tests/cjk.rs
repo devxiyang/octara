@@ -4,7 +4,8 @@
 use octara::model::paint::{DisplayList, GlyphRun};
 use octara::prelude::*;
 use octara_pipeline::{NativeEngine, NativeEngineConfig};
-use std::sync::Arc;
+
+static BUNDLED_FACES: [&[u8]; 2] = [octara_fonts::cjk::REGULAR, octara_fonts::cjk::SEMIBOLD];
 
 fn runs(app: &App, id: &str) -> Vec<GlyphRun> {
     let window = app.runtime().windows().next().unwrap().1;
@@ -32,8 +33,8 @@ fn configured_window(bundled: bool) -> App {
     let mut app = App::new(move |_, _| {
         let mut engine = NativeEngine::new(NativeEngineConfig::default());
         if bundled {
-            for data in [octara_fonts::cjk::REGULAR, octara_fonts::cjk::SEMIBOLD] {
-                engine.register_font(Arc::from(data), &octara_fonts::cjk::SCRIPTS);
+            for data in BUNDLED_FACES {
+                engine.register_font_data(data.into(), &octara_fonts::cjk::SCRIPTS);
             }
         }
         Box::new(engine)
@@ -54,6 +55,7 @@ fn cjk_falls_back_to_the_subset_on_the_first_frame() {
     }
     let mixed = runs(&app, "mixed");
     assert!(mixed.iter().any(|r| is(r, octara_fonts::cjk::REGULAR)), "hanzi come from Noto Sans SC");
+    assert!(mixed.iter().any(|r| r.font.data.as_ptr() == BUNDLED_FACES[0].as_ptr()), "embedded bytes are shared");
     assert!(mixed.iter().any(|r| !is(r, octara_fonts::cjk::REGULAR)), "Latin stays in Inter");
     assert!(runs(&app, "bold").iter().all(|r| is(r, octara_fonts::cjk::SEMIBOLD)), "600 uses the SemiBold face");
     assert!(runs(&app, "field").iter().all(|r| is(r, octara_fonts::cjk::REGULAR)));

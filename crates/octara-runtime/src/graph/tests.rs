@@ -72,16 +72,16 @@ fn dynamic_dependencies_are_deduplicated_replaced_and_depth_propagates() {
     });
     let downstream = cx.memo(move |r| 2 * r.get(choose));
     assert_eq!(world.read().get(downstream), 2);
-    assert_eq!(world.node(downstream.id()).depth, 2);
+    assert_eq!(world.hot(downstream.id()).depth, 2);
     world.write(scope, None).set(select, true);
     assert_eq!(world.read().get(downstream), 34);
-    assert_eq!(world.node(downstream.id()).depth, 4);
-    assert_eq!(world.node(choose.id()).sources.len(), 3);
+    assert_eq!(world.hot(downstream.id()).depth, 4);
+    assert_eq!(world.cold(choose.id()).sources.len(), 3);
     world.write(scope, None).set(shallow, -99);
     assert!(!world.has_pending_work());
     world.write(scope, None).set(select, false);
     assert_eq!(world.read().get(downstream), -198);
-    assert_eq!(world.node(downstream.id()).depth, 2);
+    assert_eq!(world.hot(downstream.id()).depth, 2);
 }
 
 #[test]
@@ -129,6 +129,80 @@ fn observer_tiers_and_post_commit_watches_follow_revisions() {
     world.run_watch_effects();
     assert_eq!(effects.borrow().as_slice(), &[(0, None), (1, Some(0))]);
     assert_eq!(world.read().get(result), 11);
+}
+
+#[test]
+fn equal_depth_observers_stay_ordered_across_pulls_and_slot_reuse() {
+    let mut world = ReactiveWorld::new();
+    let scope = world.root_scope();
+    let source = world.build(scope, None).signal(0);
+    let [first, second, third, fourth, fifth, sixth] = std::array::from_fn(|_| world.create_observer(NodeKind::Binding, scope, None));
+
+    for id in [fourth, second, fifth, first, sixth, third] {
+        assert_eq!(world.evaluate_observer(id, |r| r.get(source)), Some(0));
+    }
+    assert!(!world.has_pending_work());
+    world.write(scope, None).set(source, 1);
+    world.invalidate_observer(first);
+    assert_eq!(world.next_observer(FlushTier::Binding), Some(first));
+    assert_eq!(world.evaluate_observer(first, |r| r.get(source)), Some(1));
+    assert_eq!(world.evaluate_observer(fifth, |r| r.get(source)), Some(1));
+    world.retire_node(third);
+
+    let replacement = world.create_observer(NodeKind::Binding, scope, None);
+    assert_eq!(replacement.node, third.node);
+    assert_ne!(replacement, third);
+    assert_eq!(world.next_observer(FlushTier::Binding), Some(replacement));
+    assert_eq!(world.evaluate_observer(replacement, |r| r.get(source)), Some(1));
+    for id in [second, fourth, sixth] {
+        assert_eq!(world.next_observer(FlushTier::Binding), Some(id));
+        assert_eq!(world.evaluate_observer(id, |r| r.get(source)), Some(1));
+    }
+    assert_eq!(world.next_observer(FlushTier::Binding), None);
+    assert!(!world.has_pending_work());
+    assert!(world.validate_integrity());
+}
+
+#[test]
+fn dirty_observer_moves_between_mask_and_overflow_depths() {
+    let mut world = ReactiveWorld::new();
+    let scope = world.root_scope();
+    let mut cx = world.build(scope, None);
+    let source = cx.signal(0);
+    let deep = cx.signal(false);
+    let mut chain = vec![source.read_only()];
+    for _ in 0..64 {
+        let upstream = *chain.last().unwrap();
+        chain.push(cx.memo(move |r| r.get(upstream) + 1));
+    }
+    let at_63 = chain[63];
+    let switch = cx.memo(move |r| if r.get(deep) { r.get(at_63) } else { r.get(source) });
+    let sources = [switch, chain[64], chain[63], chain[62]];
+    let bindings = sources.map(|source| {
+        let id = cx.create_observer(NodeKind::Binding);
+        (id, source)
+    });
+    for (id, source) in bindings {
+        world.evaluate_observer(id, |r| r.get(source));
+    }
+    let (moving, _) = bindings[0];
+    assert_eq!(world.hot(moving).depth, 2);
+
+    for (enabled, position, order) in [(true, 65, [3, 2, 0, 1]), (false, 2, [0, 3, 2, 1])] {
+        let mut write = world.write(scope, None);
+        write.set(deep, enabled);
+        write.set(source, if enabled { 1 } else { 2 });
+        world.flush_derivations();
+        assert_eq!(world.hot(moving).depth, position);
+        for index in order {
+            let (id, source) = bindings[index];
+            assert_eq!(world.next_observer(FlushTier::Binding), Some(id));
+            assert!(world.evaluate_observer(id, |r| r.get(source)).is_some());
+        }
+        assert_eq!(world.next_observer(FlushTier::Binding), None);
+        assert!(!world.has_pending_work());
+        assert!(world.validate_integrity());
+    }
 }
 
 #[test]

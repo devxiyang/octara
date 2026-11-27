@@ -1,5 +1,5 @@
 //! Deterministic font assets for testing and reference capture. Register the CJK subset with
-//! `NativeEngine::register_font` before mounting when a test needs CJK glyphs. The
+//! `NativeEngine::register_font_data` before mounting when a test needs CJK glyphs. The
 //! [CJK integration test](https://github.com/octoii-works/octara/blob/main/examples/tests/cjk.rs)
 //! demonstrates fallback registration, weight selection and deterministic rendering.
 //!

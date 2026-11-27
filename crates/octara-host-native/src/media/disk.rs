@@ -2,6 +2,7 @@
 
 use octara::MediaCacheBackend;
 use octara::runtime::media::HttpMediaEntry;
+use octara_model::CacheLine;
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::fs;
@@ -102,7 +103,7 @@ impl MediaCacheBackend for DiskMediaCache {
     }
 
     fn put(&self, uri: &str, entry: HttpMediaEntry) {
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        static SEQUENCE: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(0));
         if entry.bytes.len() as u64 > self.limit || entry.bytes.len() > super::MAX_TRANSFER {
             return;
         }

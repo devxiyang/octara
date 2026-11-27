@@ -1,20 +1,23 @@
 //! A bounded single-producer queue drained at the start of an application turn.
 
+use octara_model::CacheLine;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-#[repr(align(128))]
-struct Cursor(AtomicUsize);
-
 struct Queue {
-    read: Cursor,
-    written: Cursor,
+    read: CacheLine<AtomicUsize>,
+    written: CacheLine<AtomicUsize>,
     notified: AtomicBool,
     producer: AtomicBool,
     consumer: AtomicBool,
     slots: Box<[UnsafeCell<Option<String>>]>,
 }
+
+const _: () = {
+    assert!(std::mem::offset_of!(Queue, read).is_multiple_of(128));
+    assert!(std::mem::offset_of!(Queue, written).is_multiple_of(128));
+};
 
 // SAFETY: Only the exclusive producer writes an unpublished slot. Only the
 // exclusive consumer takes a published slot. Release/acquire cursor updates
@@ -41,8 +44,8 @@ impl TextStreamSink {
     pub(crate) fn pair(capacity: usize, wake: Option<Arc<dyn Fn() + Send + Sync>>) -> (Self, TextStreamDrain) {
         let capacity = capacity.max(1).checked_next_power_of_two().expect("text stream capacity is too large");
         let queue = Arc::new(Queue {
-            read: Cursor(AtomicUsize::new(0)),
-            written: Cursor(AtomicUsize::new(0)),
+            read: CacheLine(AtomicUsize::new(0)),
+            written: CacheLine(AtomicUsize::new(0)),
             notified: AtomicBool::new(false),
             producer: AtomicBool::new(true),
             consumer: AtomicBool::new(true),
@@ -59,15 +62,15 @@ impl TextStreamSink {
         if text.is_empty() {
             return Ok(());
         }
-        let written = queue.written.0.load(Ordering::Relaxed);
-        let read = queue.read.0.load(Ordering::Acquire);
+        let written = queue.written.load(Ordering::Relaxed);
+        let read = queue.read.load(Ordering::Acquire);
         if written.wrapping_sub(read) == queue.slots.len() {
             return Err(TextStreamError::Full(text));
         }
         let slot = &queue.slots[written & (queue.slots.len() - 1)];
         // SAFETY: This slot is outside the consumer's published interval.
         unsafe { *slot.get() = Some(text) };
-        queue.written.0.store(written.wrapping_add(1), Ordering::Release);
+        queue.written.store(written.wrapping_add(1), Ordering::Release);
         self.notify();
         Ok(())
     }
@@ -99,8 +102,8 @@ impl TextStreamDrain {
         let queue = &self.0;
         queue.notified.swap(false, Ordering::AcqRel);
         let producer = queue.producer.load(Ordering::Acquire);
-        let mut read = queue.read.0.load(Ordering::Relaxed);
-        let written = queue.written.0.load(Ordering::Acquire);
+        let mut read = queue.read.load(Ordering::Relaxed);
+        let written = queue.written.load(Ordering::Acquire);
         let mut combined: Option<String> = None;
         while read != written {
             let slot = &queue.slots[read & (queue.slots.len() - 1)];
@@ -114,7 +117,7 @@ impl TextStreamDrain {
             }
             read = read.wrapping_add(1);
         }
-        queue.read.0.store(read, Ordering::Release);
+        queue.read.store(read, Ordering::Release);
         (combined, producer)
     }
 }

@@ -1061,10 +1061,64 @@ mod browser {
         assert_eq!((changed.rect.w, changed.border.left), (111.0, 7.0));
         engine.rollback();
 
+        verify_dom_each_reorder(&document)?;
         if force_fallback {
             Reflect::set(&root_proto, &"moveBefore".into(), &move_before)?;
         }
         drop(engine);
+        surface.remove();
+        Ok(())
+    }
+
+    fn verify_dom_each_reorder(document: &web_sys::Document) -> Result<(), JsValue> {
+        use octara::prelude::*;
+        use std::{cell::Cell, rc::Rc};
+
+        let surface = document.create_element("div")?.dyn_into::<HtmlElement>()?;
+        document.body().unwrap().append_child(&surface)?;
+        let rows = Rc::new(Cell::new(None));
+        let list_handle = rows.clone();
+        let app = octara_host_web::WebApp::mount(surface.clone(), move |b| {
+            let list = b.list::<usize, ()>();
+            list_handle.set(Some(list));
+            col().test_id("keyed-list").child(each(list, |_, key, _| {
+                col().test_id(format!("keyed-{key}")).child(input().value("a界😀z".to_owned()).test_id(format!("keyed-editor-{key}")))
+            }))
+        })?;
+        let list = rows.get().unwrap();
+        app.update(|w| {
+            for key in 0..4 {
+                w.push_row(list, key, ());
+            }
+        })
+        .unwrap();
+        app.update(|w| w.focus("keyed-editor-0")).unwrap();
+        let editor = element(&surface, "keyed-editor-0").dyn_into::<HtmlInputElement>()?;
+        editor.set_selection_range_with_direction(1, 4, "backward")?;
+        assert_eq!(document.active_element().as_ref(), Some(editor.as_ref()));
+
+        let parent = element(&surface, "keyed-list");
+        let moves = Function::new_with_args(
+            "parent",
+            "const observer = new MutationObserver(() => {});
+             observer.observe(parent, { childList: true });
+             return () => {
+                 const added = observer.takeRecords().flatMap(record => [...record.addedNodes]);
+                 observer.disconnect();
+                 return added.map(node => node.getAttribute('data-octara-id')).join(',');
+             };",
+        )
+        .call1(&JsValue::UNDEFINED, &parent)?
+        .dyn_into::<Function>()?;
+        app.update(|w| w.move_row(list, &0, 3)).unwrap();
+        assert_eq!(moves.call0(&JsValue::UNDEFINED)?.as_string().as_deref(), Some("keyed-0"));
+        let last = parent.last_element_child().unwrap();
+        assert!(last.is_same_node(Some(&element(&surface, "keyed-0"))));
+        assert_eq!(document.active_element().as_ref(), Some(editor.as_ref()));
+        assert_eq!(editor.selection_start()?, Some(1));
+        assert_eq!(editor.selection_end()?, Some(4));
+        assert_eq!(editor.selection_direction()?.as_deref(), Some("backward"));
+        drop(app);
         surface.remove();
         Ok(())
     }

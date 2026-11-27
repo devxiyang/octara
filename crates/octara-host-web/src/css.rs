@@ -19,9 +19,13 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
     let l = tree.layout_style(node);
     let v = tree.visual(node);
     let theme = tree.theme_at(node);
-    let scheme = match theme.scheme {
-        ColorScheme::Light => "light",
-        ColorScheme::Dark => "dark",
+    let scheme = if kind == NodeKind::Root || tree.has_theme_patch(node) {
+        match theme.scheme {
+            ColorScheme::Light => "light",
+            ColorScheme::Dark => "dark",
+        }
+    } else {
+        "inherit"
     };
     let positioned_content = matches!(kind, NodeKind::Canvas | NodeKind::Icon | NodeKind::Media)
         || tree.paint(node).is_some_and(|paint| paint.custom.is_some())

@@ -198,11 +198,58 @@ pub struct Glyph {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FontId(pub u64);
 
+/// Immutable font bytes which may be embedded, owned or backed by a read-only file mapping.
+#[derive(Clone)]
+pub struct FontData(Arc<dyn AsRef<[u8]> + Send + Sync>);
+
+impl FontData {
+    /// The backing must expose the same font bytes throughout its lifetime.
+    pub fn new(data: Arc<dyn AsRef<[u8]> + Send + Sync>) -> Self {
+        Self(data)
+    }
+
+    pub fn into_shared(self) -> Arc<dyn AsRef<[u8]> + Send + Sync> {
+        self.0
+    }
+}
+
+impl From<Arc<[u8]>> for FontData {
+    fn from(data: Arc<[u8]>) -> Self {
+        Self::new(Arc::new(data))
+    }
+}
+
+impl From<&'static [u8]> for FontData {
+    fn from(data: &'static [u8]) -> Self {
+        Self::new(Arc::new(data))
+    }
+}
+
+impl AsRef<[u8]> for FontData {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref().as_ref()
+    }
+}
+
+impl std::ops::Deref for FontData {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_ref()
+    }
+}
+
+impl PartialEq for FontData {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || self.as_ref() == other.as_ref()
+    }
+}
+
 /// Immutable bytes and face index shared between shaping and rasterization.
 #[derive(Clone, PartialEq)]
 pub struct FontFace {
     pub id: FontId,
-    pub data: Arc<[u8]>,
+    pub data: FontData,
     pub index: u32,
 }
 

@@ -1,5 +1,6 @@
 //! RGBA8 image sources and their immutable samples.
 
+use crate::CacheLine;
 use crate::geometry::{Rect, Size};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -188,7 +189,7 @@ struct Inner {
 #[derive(Clone)]
 pub struct Image(Arc<Inner>);
 
-static PIXEL_GENERATION: AtomicU64 = AtomicU64::new(0);
+static PIXEL_GENERATION: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(0));
 
 /// The pixels and source identity recorded together for a prepared frame.
 #[derive(Clone)]
@@ -223,7 +224,7 @@ impl std::fmt::Debug for Sample {
 }
 
 fn next_id() -> u64 {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    static NEXT_ID: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(1));
     NEXT_ID.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).expect("image identities exhausted")
 }
 

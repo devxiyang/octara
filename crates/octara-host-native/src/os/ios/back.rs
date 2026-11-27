@@ -14,6 +14,7 @@ use objc2_ui_kit::{
     UIViewControllerTransitionCoordinatorContext, UIWindow,
 };
 use octara::runtime::Input;
+use octara_model::CacheLine;
 use octara_model::identity::TargetGuard;
 use octara_model::input::{BackPhase, InteractionEvent};
 use std::cell::{Cell, RefCell};
@@ -109,7 +110,7 @@ define_class!(
             }
             let coordinator = navigation.transitionCoordinator().or_else(|| page.transitionCoordinator());
             let interactive = coordinator.as_ref().is_some_and(|coordinator| coordinator.initiallyInteractive());
-            static NEXT: AtomicU64 = AtomicU64::new(1);
+            static NEXT: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(1));
             let id = NEXT.fetch_add(1, Ordering::Relaxed);
             let owner = state.events.drawn_owner.get().filter(|_| state.window_accepts_gestures());
             let pop = Pop { id, owner, coordinated: coordinator.is_some(), cancelled: None };

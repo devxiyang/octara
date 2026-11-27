@@ -7,10 +7,10 @@ use octara_model::{
     theme::{Color, ColorToken},
 };
 use octara_tree::{
-    NodeFlags, NodeId, Tree,
+    DirtyBitmap, NodeFlags, NodeId, Tree,
     arbiter::{ScrollbarAxis, ScrollbarHit, ScrollbarKey, ScrollbarPart},
 };
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 use std::time::Duration;
 
@@ -50,7 +50,7 @@ impl Scrollbars {
         tree: &Tree,
         layout: &LayoutEngine,
         options: &CompileOptions,
-        local: &mut FxHashSet<NodeId>,
+        local: &mut DirtyBitmap,
     ) -> Option<Duration> {
         self.previous.get_or_insert_with(|| self.state.clone());
         let State { interaction, last_activity, opacity } = &mut self.state;
@@ -62,7 +62,7 @@ impl Scrollbars {
             }
             *interaction = self.interaction;
         }
-        for &node in layout.scrolled() {
+        for node in layout.scrolled().iter() {
             if tree.visual(node).scrollbar == ScrollbarVisibility::Auto {
                 last_activity.insert(node, options.now);
             }

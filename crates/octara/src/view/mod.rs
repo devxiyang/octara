@@ -30,8 +30,8 @@ pub use style::{FontSize, Length, LineHeight, Radius, Ring, Shadows, State, Styl
 pub use text::{IntoText, Rich, Span, rich};
 
 use octara_runtime::{MountCx, ReadCx, ScopeId};
-use octara_tree::{NodeRef, Retirement};
-use rustc_hash::{FxHashMap, FxHashSet};
+use octara_tree::{NodeRef, Retirement, reconcile::stationary_indices};
+use rustc_hash::FxHashMap;
 use smallvec::{SmallVec, smallvec};
 use std::{
     cell::{Cell, RefCell},
@@ -258,41 +258,17 @@ impl Siblings {
             let mut next = Vec::new();
             flatten(&siblings.root.borrow(), &mut next);
             let mut order = siblings.order.borrow_mut();
-            let stationary = stationary_nodes(&order, &next);
-            for (index, node) in next.iter().enumerate() {
-                let node = node.get();
-                if !stationary.contains(&node) {
-                    cx.place(siblings.parent.get(), siblings.index + index, node);
+            let ranks: FxHashMap<_, _> = order.iter().enumerate().map(|(rank, node)| (node.get(), rank)).collect();
+            let stationary = stationary_indices(next.iter().map(|node| ranks.get(&node.get()).copied()));
+            // The tree detaches all placed children before inserting them in final rank order.
+            for (index, (node, stationary)) in next.iter().zip(stationary).enumerate() {
+                if !stationary {
+                    cx.place(siblings.parent.get(), siblings.index + index, node.get());
                 }
             }
             *order = next;
         });
     }
-}
-
-/// Longest unchanged subsequence. Moving the remaining children in final rank order preserves
-/// the smallest possible set of retained-node attachments, including rows that merely shift.
-fn stationary_nodes(previous: &[NodeHandle], next: &[NodeHandle]) -> FxHashSet<NodeRef> {
-    let ranks: FxHashMap<_, _> = previous.iter().enumerate().map(|(rank, node)| (node.get(), rank)).collect();
-    let mut tails = Vec::<(usize, usize)>::new();
-    let mut predecessors = vec![None; next.len()];
-    for (index, node) in next.iter().enumerate() {
-        let Some(&rank) = ranks.get(&node.get()) else { continue };
-        let length = tails.partition_point(|(tail, _)| *tail < rank);
-        predecessors[index] = tails.get(..length).and_then(|prefix| prefix.last().map(|&(_, previous)| previous));
-        if length == tails.len() {
-            tails.push((rank, index));
-        } else {
-            tails[length] = (rank, index);
-        }
-    }
-    let mut stationary = FxHashSet::default();
-    let mut current = tails.last().map(|&(_, index)| index);
-    while let Some(index) = current {
-        stationary.insert(next[index].get());
-        current = predecessors[index];
-    }
-    stationary
 }
 
 #[derive(Clone)]

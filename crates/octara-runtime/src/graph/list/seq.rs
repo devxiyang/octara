@@ -3,10 +3,9 @@
 //! An implicit treap (ordered by position, balanced by random priorities) with subtree sizes and
 //! parent pointers, plus a key -> node index. Supports insert at a position, remove by key,
 //! `index_of(key)`, `nth(i)` and `count_while` (rank of the first element failing a monotone
-//! predicate), all expected O(log n). Each element also carries a weight (a row height for
-//! virtualization) with subtree sums, so `prefix_weight(i)` and `index_at_weight(y)` are O(log n):
-//! the "sum tree" GPUI and Rune use for long lists. The reference implementation is a `Vec`; the
-//! tests compare the two on random operations.
+//! predicate), all expected O(log n). Each element also carries a weight with subtree sums,
+//! so `prefix_weight(i)` and `index_at_weight(y)` are expected O(log n). The virtual list's
+//! [SumTree] uses these sums for heights and tracks maximum widths by subtree.
 //!
 //! Ordered subsets compare fixed-size order tags in constant time. After an edit, repair visits
 //! the changed treap paths and subtrees whose path labels moved. Under the random-priority model,
@@ -50,6 +49,11 @@ struct Node<K> {
     sum: f64,
 }
 
+struct Width {
+    row: f32,
+    max: f32,
+}
+
 pub struct Seq<K> {
     nodes: Vec<Option<Node<K>>>,
     free: Vec<u32>,
@@ -57,6 +61,7 @@ pub struct Seq<K> {
     index: FxHashMap<K, u32>,
     seed: u64,
     order: OnceLock<Vec<OrderSlot>>,
+    widths: Option<Vec<Width>>,
 }
 
 impl<K: Eq + Hash> Default for Seq<K> {
@@ -74,6 +79,7 @@ impl<K: Eq + Hash> Seq<K> {
             index: FxHashMap::default(),
             seed: 0x9E37_79B9_7F4A_7C15,
             order: OnceLock::new(),
+            widths: None,
         }
     }
 
@@ -104,22 +110,29 @@ impl<K: Eq + Hash> Seq<K> {
         let (l, r) = (self.n(t).l, self.n(t).r);
         let size = 1 + self.size(l) + self.size(r);
         let sum = self.n(t).weight + self.sum(l) + self.sum(r);
-        self.nm(t).size = size;
-        self.nm(t).sum = sum;
+        let node = self.nm(t);
+        node.size = size;
+        node.sum = sum;
+        if let Some(widths) = &mut self.widths {
+            let max = |child| if child == NIL { 0.0 } else { widths[child as usize].max };
+            let width = &widths[t as usize];
+            widths[t as usize].max = width.row.max(max(l)).max(max(r));
+        }
+    }
+    fn pull_topology(&mut self, t: u32) {
+        self.pull(t);
+        let (l, r) = (self.n(t).l, self.n(t).r);
         if l != NIL {
             self.nm(l).p = t;
         }
         if r != NIL {
             self.nm(r).p = t;
         }
-    }
-    fn pull_topology(&mut self, node: u32) {
-        self.pull(node);
         if let Some(order) = self.order.get_mut() {
             if order.len() < self.nodes.len() {
                 order.resize(self.nodes.len(), OrderSlot::default());
             }
-            order[node as usize].dirty = true;
+            order[t as usize].dirty = true;
         }
     }
 
@@ -268,6 +281,13 @@ impl<K: Eq + Hash> Seq<K> {
     where
         K: Clone,
     {
+        self.insert_sized(i, k, weight, 0.0);
+    }
+
+    fn insert_sized(&mut self, i: usize, k: K, weight: f64, width: f32)
+    where
+        K: Clone,
+    {
         assert!(!self.index.contains_key(&k), "Seq: duplicate key");
         let i = i.min(self.len()) as u32;
         let prio = self.rand();
@@ -283,6 +303,14 @@ impl<K: Eq + Hash> Seq<K> {
                 slot
             }
         };
+        if let Some(widths) = &mut self.widths {
+            let width = Width { row: width, max: width };
+            if t as usize == widths.len() {
+                widths.push(width);
+            } else {
+                widths[t as usize] = width;
+            }
+        }
         self.index.insert(k, t);
         let (a, b) = self.split(self.root, i);
         let ab = self.merge(a, t);
@@ -347,7 +375,19 @@ impl<K: Eq + Hash> Seq<K> {
 
     /// Changes `k`'s weight, O(log n).
     pub fn set_weight(&mut self, k: &K, weight: f64) {
+        self.set_size(k, weight, 0.0);
+    }
+
+    fn set_size(&mut self, k: &K, weight: f64, width: f32) {
         let Some(&t) = self.index.get(k) else { return };
+        let mut changed = self.n(t).weight.to_bits() != weight.to_bits();
+        if let Some(widths) = &mut self.widths {
+            changed |= widths[t as usize].row.to_bits() != width.to_bits();
+            widths[t as usize].row = width;
+        }
+        if !changed {
+            return;
+        }
         self.nm(t).weight = weight;
         let mut x = t;
         while x != NIL {
@@ -459,9 +499,164 @@ impl<K: Eq + Hash> Seq<K> {
     }
 }
 
+/// A row's finite, nonnegative dimensions.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RowSize {
+    pub height: f64,
+    pub width: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RowSummary {
+    pub count: usize,
+    pub total_height: f64,
+    pub max_width: f32,
+}
+
+/// Retains virtual row measurements in list order. Insert, remove, resize, rank,
+/// prefix height, and offset lookup take expected O(log n).
+pub struct SumTree<K>(Seq<K>);
+
+impl<K: Eq + Hash> Default for SumTree<K> {
+    fn default() -> Self {
+        Self(Seq { widths: Some(Vec::new()), ..Seq::new() })
+    }
+}
+
+impl<K: Eq + Hash> SumTree<K> {
+    pub fn insert(&mut self, rank: usize, key: K, size: RowSize)
+    where
+        K: Clone,
+    {
+        self.0.insert_sized(rank, key, size.height, size.width);
+    }
+
+    pub fn remove(&mut self, key: &K) {
+        self.0.remove(key);
+    }
+
+    pub fn set_size(&mut self, key: &K, size: RowSize) {
+        self.0.set_size(key, size.height, size.width);
+    }
+
+    pub fn size_of(&self, key: &K) -> Option<RowSize> {
+        let slot = *self.0.index.get(key)?;
+        Some(RowSize { height: self.0.n(slot).weight, width: self.0.widths.as_ref().expect("row widths")[slot as usize].row })
+    }
+
+    pub fn summary(&self) -> RowSummary {
+        let root = self.0.root as usize;
+        RowSummary {
+            count: self.0.len(),
+            total_height: self.0.total_weight(),
+            max_width: self.0.widths.as_ref().expect("row widths").get(root).map_or(0.0, |width| width.max),
+        }
+    }
+
+    pub fn rank(&self, key: &K) -> Option<usize> {
+        self.0.index_of(key)
+    }
+
+    pub fn key_at(&self, rank: usize) -> Option<&K> {
+        self.0.nth(rank)
+    }
+
+    pub fn offset(&self, rank: usize) -> f64 {
+        self.0.prefix_weight(rank)
+    }
+
+    pub fn rank_at(&self, offset: f64) -> usize {
+        self.0.index_at_weight(offset)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sum_tree_keeps_dimensions_after_resizes_and_topology_edits() {
+        let mut tree = SumTree::default();
+        for (key, (height, width)) in [(10.0, 60.0), (30.0, 20.0), (20.0, 40.0)].into_iter().enumerate() {
+            tree.insert(key, key, RowSize { height, width });
+        }
+        assert_eq!(tree.summary(), RowSummary { count: 3, total_height: 60.0, max_width: 60.0 });
+        assert_eq!(tree.rank_at(9.0), 0);
+        assert_eq!(tree.rank_at(10.0), 1);
+        assert_eq!(tree.rank_at(40.0), 2);
+        assert_eq!(tree.rank_at(60.0), 3);
+
+        tree.set_size(&0, RowSize { height: 5.0, width: 10.0 });
+        assert_eq!(tree.summary(), RowSummary { count: 3, total_height: 55.0, max_width: 40.0 });
+        assert_eq!(tree.offset(2), 35.0);
+        assert_eq!(tree.rank_at(35.0), 2);
+        tree.set_size(&1, RowSize { height: 30.0, width: 95.0 });
+        assert_eq!(tree.summary().max_width, 95.0);
+
+        let last = tree.size_of(&2).unwrap();
+        tree.remove(&2);
+        tree.insert(0, 2, last);
+        tree.remove(&1);
+        assert_eq!(tree.summary(), RowSummary { count: 2, total_height: 25.0, max_width: 40.0 });
+        assert_eq!(tree.rank(&0), Some(1));
+        assert_eq!(tree.key_at(0), Some(&2));
+        assert_eq!(tree.offset(1), 20.0);
+        assert_eq!(tree.rank_at(20.0), 1);
+        tree.remove(&0);
+        tree.remove(&2);
+        assert_eq!(tree.summary(), RowSummary::default());
+        assert_eq!(tree.rank_at(0.0), 0);
+    }
+
+    #[test]
+    #[ignore = "microbenchmark, run in release mode with --ignored --nocapture"]
+    fn sum_tree_100k_row_update_and_offset() {
+        use std::hint::black_box;
+        use std::time::{Duration, Instant};
+
+        const ROWS: usize = 100_000;
+        const SAMPLES: usize = 10_000;
+        let initial = |rank: usize| RowSize { height: 12.0 + (rank % 80) as f64, width: 20.0 + (rank % 420) as f32 };
+        let mut tree = SumTree::default();
+        let mut seq = Seq::new();
+        let mut linear = Vec::with_capacity(ROWS);
+        for rank in 0..ROWS {
+            let size = initial(rank);
+            tree.insert(rank, rank, size);
+            seq.insert_weighted(rank, rank, size.height);
+            linear.push(size);
+        }
+        let operations: Vec<_> = (0..SAMPLES)
+            .map(|sample| {
+                let rank = sample * 79_919 % ROWS;
+                let size = initial(rank + 1);
+                (rank, size, sample * 37_777 % (ROWS + 1))
+            })
+            .collect();
+        fn time(operations: &[(usize, RowSize, usize)], mut operation: impl FnMut(usize, RowSize, usize) -> f64) -> Duration {
+            let start = Instant::now();
+            for &(key, size, rank) in black_box(operations) {
+                black_box(operation(key, size, rank));
+            }
+            start.elapsed() / operations.len() as u32
+        }
+        let sum_tree = time(&operations, |key, size, rank| {
+            tree.set_size(&key, size);
+            tree.offset(rank)
+        });
+        let height_only = time(&operations, |key, size, rank| {
+            seq.set_weight(&key, size.height);
+            seq.prefix_weight(rank)
+        });
+        let scan = time(&operations, |key, size, rank| {
+            linear[key] = size;
+            linear[..rank].iter().map(|row| row.height).sum()
+        });
+        eprintln!("100k rows, per update and offset: SumTree {sum_tree:?}, height-only Seq {height_only:?}, linear scan {scan:?}");
+        assert_eq!(tree.offset(ROWS), seq.total_weight());
+        assert_eq!(tree.offset(ROWS), linear.iter().map(|row| row.height).sum::<f64>());
+        assert!(sum_tree < Duration::from_micros(5), "run with --release and verify the 5 µs target: {sum_tree:?}");
+    }
 
     #[test]
     fn deep_order_keys_use_fixed_size_gap_ordinals() {

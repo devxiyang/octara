@@ -200,10 +200,10 @@ fn affected_join_rows_rewire_when_their_projected_value_stays_equal() {
     assert_eq!(write.get(first), Some(1));
 
     let other_row = joined.data(&world).row_nodes[&2];
-    assert_eq!(world.node(other_row).state, crate::arena::NodeState::Clean);
+    assert_eq!(world.hot(other_row).state, crate::arena::NodeState::Clean);
     world.write(scope, None).update_row(right, &10, |row| *row = 5);
-    assert_eq!(world.node(first.id()).state, crate::arena::NodeState::Clean);
-    assert_eq!(world.node(second.id()).state, crate::arena::NodeState::Clean);
+    assert_eq!(world.hot(first.id()).state, crate::arena::NodeState::Clean);
+    assert_eq!(world.hot(second.id()).state, crate::arena::NodeState::Clean);
 }
 
 #[test]

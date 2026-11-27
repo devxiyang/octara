@@ -178,15 +178,34 @@ impl DeviceExecutor {
         generation: Arc<DeviceGeneration>,
         factory: Option<&SurfaceRendererFactory>,
     ) -> std::io::Result<Self> {
+        Self::spawn_for_device_with_thread_setup(device, queue, generation, factory, || {})
+    }
+
+    /// Run host scheduling setup on the device worker before servicing GPU work.
+    pub fn spawn_for_device_with_thread_setup(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        generation: Arc<DeviceGeneration>,
+        factory: Option<&SurfaceRendererFactory>,
+        setup: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<Self> {
         let backend = factory.map(|factory| factory(&device));
         let mut renderer = GpuRenderer::with_device(device, queue);
         if let Some(backend) = backend {
             renderer = renderer.with_surface_renderer(backend);
         }
-        Self::spawn(renderer, generation)
+        Self::spawn_with_thread_setup(renderer, generation, setup)
     }
 
-    pub fn spawn(mut renderer: GpuRenderer, generation: Arc<DeviceGeneration>) -> std::io::Result<Self> {
+    pub fn spawn(renderer: GpuRenderer, generation: Arc<DeviceGeneration>) -> std::io::Result<Self> {
+        Self::spawn_with_thread_setup(renderer, generation, || {})
+    }
+
+    fn spawn_with_thread_setup(
+        mut renderer: GpuRenderer,
+        generation: Arc<DeviceGeneration>,
+        setup: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<Self> {
         let inbox = Arc::new(Inbox::default());
         generation.attach(&inbox)?;
         generation.watch_loss(renderer.device());
@@ -199,6 +218,7 @@ impl DeviceExecutor {
         let worker_generation = generation.clone();
         let worker_inbox = inbox.clone();
         let worker = thread::Builder::new().name("octara-device".into()).spawn(move || {
+            let _ = catch_unwind(AssertUnwindSafe(setup));
             let result = catch_unwind(AssertUnwindSafe(|| Worker::new(renderer, &worker_generation, &worker_inbox).run()));
             let failure = match result {
                 Ok(result) => result.err(),
@@ -974,8 +994,16 @@ mod tests {
             })),
         ));
         let factory: SurfaceRendererFactory = Arc::new(|_| Box::new(Surface));
-        let executor =
-            DeviceExecutor::spawn_for_device(renderer.device().clone(), renderer.queue().clone(), generation, Some(&factory)).unwrap();
+        let (setup, initialized) = mpsc::channel();
+        let executor = DeviceExecutor::spawn_for_device_with_thread_setup(
+            renderer.device().clone(),
+            renderer.queue().clone(),
+            generation,
+            Some(&factory),
+            move || setup.send(thread::current().name().unwrap_or_default().to_owned()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(initialized.recv_timeout(Duration::from_secs(5)).unwrap(), "octara-device");
         let list = Arc::new(DisplayList { size: Size::new(3.0, 2.0), background: rgb(0xff0000), parts: vec![] });
         let sample = PaintSample { revision: 2, sampled_at: Duration::from_millis(16) };
         let capture = wait(executor.capture(list.clone(), 2.0, Some(sample)).unwrap(), &wakes).finish().unwrap();

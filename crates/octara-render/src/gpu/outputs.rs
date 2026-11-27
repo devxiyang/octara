@@ -1,4 +1,5 @@
 use super::custom::{CanvasPaint, TransitionImage};
+use octara_model::CacheLine;
 use octara_model::capture::PaintSample;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::any::Any;
@@ -181,7 +182,7 @@ impl CanvasCache {
 pub struct PendingPresentation(Option<PendingOutputs>);
 
 struct PendingOutputs {
-    renderer: Arc<AtomicU64>,
+    renderer: Arc<CacheLine<AtomicU64>>,
     submission: u64,
     backdrops: Vec<BackdropChange>,
     transitions: Option<Box<TransitionChanges>>,
@@ -202,7 +203,7 @@ struct BackdropEntry {
 /// History for exiting backdrops and local transitions comes from frames the host accepted.
 #[derive(Default)]
 pub(super) struct PresentationHistory {
-    renderer: Arc<AtomicU64>,
+    renderer: Arc<CacheLine<AtomicU64>>,
     backdrops: FxHashMap<usize, BackdropEntry>,
     transitions: TransitionHistory,
 }

@@ -73,6 +73,7 @@ pub(super) fn create() -> Box<dyn OsHost> {
 
 impl OsHost for MacHost {
     fn initialize(&mut self, proxy: EventLoopProxy<ShellEvent>) {
+        super::scheduling::interactive();
         self.preferences = Some(preferences::Observer::new(proxy));
     }
 
@@ -167,8 +168,16 @@ impl OsHost for MacHost {
         out.append(&mut self.routing.borrow_mut().pending);
     }
 
+    fn frame_thread_setup(&self) -> Option<fn()> {
+        Some(super::scheduling::interactive)
+    }
+
+    fn utility_thread_setup(&self) -> Option<fn()> {
+        Some(super::scheduling::utility)
+    }
+
     fn background_thread_setup(&self) -> Option<fn()> {
-        Some(background_priority)
+        Some(super::scheduling::background)
     }
 }
 
@@ -378,12 +387,4 @@ fn wake(proxy: EventLoopProxy<ShellEvent>) -> impl Fn() {
     move || {
         let _ = proxy.send_event(ShellEvent::Wake);
     }
-}
-
-fn background_priority() {
-    unsafe extern "C" {
-        fn pthread_set_qos_class_self_np(qos: u32, relative_priority: i32) -> i32;
-    }
-    // SAFETY: Passing QOS_CLASS_BACKGROUND with its default relative priority.
-    unsafe { pthread_set_qos_class_self_np(0x09, 0) };
 }

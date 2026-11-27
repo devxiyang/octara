@@ -12,7 +12,7 @@ use octara_model::native::NativeSlot as NativeLayer;
 use octara_model::overlay::AnchorTarget;
 use octara_model::paint::{CanvasOp, Image, NodeIcon, ObjectFit, PaintInput, PaintMount, PaintProgram};
 use octara_model::semantics::{Checked, Live, NumericRange, Relations, Role};
-use octara_model::style::{Inherited, LayoutStyle, StyleProp, Visual, When};
+use octara_model::style::{Inherited, StyleProp, When};
 use octara_model::text::{InlineAttachment, RichSpan};
 use octara_model::theme::{Theme, ThemePatch};
 use slotmap::SparseSecondaryMap;
@@ -84,7 +84,7 @@ cold_tables! {
 }
 
 pub(crate) struct ThemeScope {
-    pub base_revision: u64,
+    pub base_revision: Option<u64>,
     pub revision: u64,
     pub theme: Theme,
 }
@@ -99,12 +99,20 @@ pub struct AuthoredStyle {
 #[derive(Debug)]
 pub struct StyleSlot {
     pub(crate) theme_revision: u64,
+    pub(crate) sensitivity: u64,
     pub authored: AuthoredStyle,
-    pub layout: LayoutStyle,
-    pub visual: Visual,
+    pub(crate) resolved: Arc<crate::style::ComputedStyle>,
     pub inherited: Inherited,
     pub inherited_from: Inherited,
     pub(crate) opacity_motion_authored: bool,
+}
+
+impl std::ops::Deref for StyleSlot {
+    type Target = crate::style::ComputedStyle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resolved
+    }
 }
 
 #[derive(Debug, Default)]

@@ -3,10 +3,10 @@
 use crate::editor::EditorRuntimeUpdate;
 use crate::selection::DocSelection;
 use crate::tables::ScrollSlot;
-use crate::{ExitTicket, GeometryDemand, NodeFlags, NodeId, Tree, TreeDelta};
+use crate::{ComputedStyle, ExitTicket, GeometryDemand, NodeFlags, NodeId, StyleInvalidation, Tree, TreeDelta, sensitivity};
 use octara_model::geometry::{Placed, Vec2};
 use octara_model::image::{ImageState, MediaAsset};
-use octara_model::style::{State, When};
+use octara_model::style::{LayoutStyle, State, When};
 use octara_model::theme::{Breakpoint, ResponsiveBreakpoint, Theme};
 use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
@@ -45,8 +45,18 @@ impl Tree {
                     let previous = *flags;
                     flags.set(state - State::TREE_DERIVED, on);
                     if previous != *flags {
+                        let changed = previous ^ *flags;
+                        let conditions = if changed.contains(State::HOVER) {
+                            self.style(node).and_then(|style| style.authored.group).map_or(0, sensitivity::group)
+                        } else {
+                            0
+                        };
                         self.semantics_changed(node, &mut delta);
-                        self.resolve_subtree(node, &mut delta);
+                        self.resolve_subtree(
+                            node,
+                            StyleInvalidation { conditions, local_state: sensitivity::state(changed), ..StyleInvalidation::default() },
+                            &mut delta,
+                        );
                         self.reconcile_focus(&mut delta);
                     }
                 }
@@ -174,20 +184,25 @@ impl Tree {
             }
             RuntimeOp::SetViewportContext { breakpoint, width, touch } => {
                 let responsive = ResponsiveBreakpoint::at_width(width);
-                if self.breakpoint != breakpoint || self.responsive_breakpoint != responsive || self.touch != touch {
-                    self.breakpoint = breakpoint;
-                    self.responsive_breakpoint = responsive;
-                    self.touch = touch;
-                    self.resolve_subtree(self.root, &mut delta);
+                let old = (self.breakpoint, self.responsive_breakpoint, self.touch);
+                let new = (breakpoint, responsive, touch);
+                if old != new {
+                    (self.breakpoint, self.responsive_breakpoint, self.touch) = new;
+                    let conditions = sensitivity::viewport(old, new);
+                    self.resolve_subtree(self.root, StyleInvalidation { conditions, ..StyleInvalidation::default() }, &mut delta);
                     self.reconcile_focus(&mut delta);
                 }
             }
             RuntimeOp::ThemeChanged(theme) => {
-                if self.theme != *theme {
+                let changed = sensitivity::theme(&self.theme, &theme);
+                if changed != 0 {
                     self.theme = *theme;
                     self.root_theme_revision = self.next_theme_revision();
-                    (self.initial_inherited, self.initial_visual) = crate::style::StyleResolver::initial(&self.theme);
-                    self.resolve_subtree(self.root, &mut delta);
+                    let (inherited, visual) = crate::style::StyleResolver::initial(&self.theme);
+                    self.initial_inherited = inherited;
+                    let initial = self.style_interner.intern(ComputedStyle { layout: LayoutStyle::default(), visual });
+                    self.style_interner.release(std::mem::replace(&mut self.initial_style, initial));
+                    self.resolve_subtree(self.root, StyleInvalidation { theme: changed, ..StyleInvalidation::default() }, &mut delta);
                     self.paint_changed(self.root, &mut delta);
                     self.reconcile_focus(&mut delta);
                 }
@@ -217,7 +232,7 @@ impl Tree {
         }
         let mut styles = FxHashSet::default();
         self.reconcile_focus_states(ancestors, visible, &mut styles, delta);
-        self.resolve_dirty_styles(styles, delta);
+        self.resolve_focus_styles(styles, delta);
     }
 
     pub(crate) fn focus_visible(&self) -> bool {

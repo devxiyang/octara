@@ -2,7 +2,7 @@
 
 use super::style::{Styled, rel};
 use super::{Component, El, IntoView, Kind, NodeHandle, Prop, View, el, el::build_el, node_handle};
-use octara_model::{geometry::Placement, overlay::AnchorTarget, style::Position};
+use octara_model::{CacheLine, geometry::Placement, overlay::AnchorTarget, style::Position};
 use octara_runtime::{BuildCx, MountCx, ReadCx, ScopeId};
 use octara_tree::{NodeChange, NodeRef, Retirement, transaction::OverlaySpec};
 use std::{
@@ -11,7 +11,7 @@ use std::{
 };
 
 pub(crate) fn next_region() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
+    static NEXT: CacheLine<AtomicU64> = CacheLine(AtomicU64::new(1));
     NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).expect("region identifier exhausted")
 }
 

@@ -250,16 +250,16 @@ impl ReactiveWorld {
             None
         });
         let id = self.alloc_value(NodeKind::ValueSource, scope, window, value.unwrap_or_else(init));
-        self.node_mut(id).persisted_key = Some(path.clone());
+        self.cold_mut(id).persisted_key = Some(path.clone());
         self.live_persisted.insert(path, PersistedEntry { id, snapshot: snapshot::<T> });
         id
     }
 
     pub(super) fn retire_persisted(&mut self, id: ReactiveId) {
-        let Some(path) = &self.node(id).persisted_key else { return };
+        let Some(path) = &self.cold(id).persisted_key else { return };
         let entry = self.live_persisted[path];
         let value = (entry.snapshot)(self, id);
-        let path = self.node_mut(id).persisted_key.take().expect("persisted value key");
+        let path = self.cold_mut(id).persisted_key.take().expect("persisted value key");
         self.live_persisted.remove(&path);
         self.persisted.insert(path, value);
     }

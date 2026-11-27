@@ -456,6 +456,23 @@ impl Theme {
             t => t.index().map(|i| self.colors[i]),
         }
     }
+    #[doc(hidden)]
+    pub fn custom_color_names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.custom.iter().map(|&(name, _)| name)
+    }
+    #[doc(hidden)]
+    pub fn same_metrics(&self, other: &Self) -> bool {
+        self.spacing == other.spacing
+            && self.radius == other.radius
+            && self.shadows == other.shadows
+            && self.text == other.text
+            && self.line_height == other.line_height
+            && self.containers == other.containers
+            && self.breakpoints == other.breakpoints
+            && self.font_sans == other.font_sans
+            && self.font_mono == other.font_mono
+            && self.rem == other.rem
+    }
     pub fn radius_of(&self, r: RadiusToken) -> f32 {
         self.radius[r as usize]
     }

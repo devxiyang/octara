@@ -35,6 +35,16 @@ impl DomUndoLog {
         Ok(true)
     }
 
+    /// Moves a connected subtree atomically so a focused descendant keeps its IME state.
+    pub fn try_move_connected(&mut self, node: &Node, parent: &Node, next: Option<&Node>) -> bool {
+        let undo = Undo::Position { node: node.clone(), parent: node.parent_node(), next: node.next_sibling() };
+        if !move_connected(node, parent, next) {
+            return false;
+        }
+        self.0.push(undo);
+        true
+    }
+
     pub fn attr(&mut self, element: &Element, name: &str, value: Option<&str>) -> Result<(), JsValue> {
         let previous = element.get_attribute(name);
         if previous.as_deref() != value {
@@ -123,19 +133,22 @@ impl DomUndoLog {
 
 pub(crate) fn place(node: &Node, parent: Option<&Node>, next: Option<&Node>) -> Result<(), JsValue> {
     if let Some(parent) = parent {
-        if node.is_connected()
-            && parent.is_connected()
-            && let Ok(method) = Reflect::get(parent, &JsValue::from_str("moveBefore"))
-            && let Ok(method) = method.dyn_into::<Function>()
-            && method.call2(parent, node, next.map_or(&JsValue::NULL, AsRef::as_ref)).is_ok()
-        {
-            return Ok(());
+        if !move_connected(node, parent, next) {
+            parent.insert_before(node, next)?;
         }
-        parent.insert_before(node, next)?;
     } else if let Some(parent) = node.parent_node() {
         parent.remove_child(node)?;
     }
     Ok(())
+}
+
+fn move_connected(node: &Node, parent: &Node, next: Option<&Node>) -> bool {
+    node.is_connected()
+        && parent.is_connected()
+        && Reflect::get(parent, &JsValue::from_str("moveBefore"))
+            .ok()
+            .and_then(|method| method.dyn_into::<Function>().ok())
+            .is_some_and(|method| method.call2(parent, node, next.map_or(&JsValue::NULL, AsRef::as_ref)).is_ok())
 }
 
 pub(crate) fn scroll_offset(element: &HtmlElement) -> Vec2 {

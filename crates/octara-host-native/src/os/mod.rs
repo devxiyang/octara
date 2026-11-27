@@ -21,6 +21,8 @@ use winit::event_loop::EventLoopProxy;
 use winit::window::{Fullscreen, Window, WindowAttributes};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple_media;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod corners;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod desktop;
@@ -30,6 +32,8 @@ mod files;
 mod ios;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod scheduling;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod video;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -44,6 +48,16 @@ use macos as platform;
 
 pub fn create_os_host() -> Box<dyn OsHost> {
     platform::create()
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub(crate) fn decode_avif(bytes: &[u8]) -> Result<Image, &'static str> {
+    apple_media::decode_avif(bytes).ok_or("Unsupported, oversized, or damaged AVIF image")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub(crate) fn decode_avif(_: &[u8]) -> Result<Image, &'static str> {
+    Err("The built-in decoder on this platform does not support AVIF")
 }
 
 pub struct OsWindowContext<'a> {
@@ -114,6 +128,14 @@ pub trait OsHost {
     }
     fn write_clipboard_image(&mut self, _image: &Image) {}
     fn drain_platform_events(&mut self, _out: &mut Vec<HostEvent>) {}
+    /// Configure the thread that encodes and submits interactive frames.
+    fn frame_thread_setup(&self) -> Option<fn()> {
+        None
+    }
+    /// Configure workers for asynchronous media transfers, decoding and resizing.
+    fn utility_thread_setup(&self) -> Option<fn()> {
+        None
+    }
     fn background_thread_setup(&self) -> Option<fn()> {
         None
     }
