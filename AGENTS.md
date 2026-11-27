@@ -1,14 +1,6 @@
 # AGENTS.md
 
-## Safety
-
-- Do not publicly share the user's private Gmail address without explicit confirmation.
-- Reuse this workspace's Cargo build cache; after builds/tests, stop spawned processes and remove temporary files, sockets, and captures. Leave global Cargo registries and toolchains alone.
-- Treat Git branches matching `archive/*` as permanent; deleting, rewriting, or repointing one requires explicit confirmation naming the exact branch (local or remote).
-
-## Working on this repository
-
-- Write all repository content in English: documentation, READMEs, skills, code comments, commit messages, diagnostics, and default example/UI strings. Non-English scripts are permitted only in explicit i18n locale tables (e.g., `octara-kit/src/locale.rs`) and dedicated CJK/IME/BiDi typography or input test fixtures.
-- Architecture and crate boundaries follow `docs/design/architecture-v2.md` (and `docs/design/v2/*`), enforced by `tools/check_layers.py`.
-- Register diagnostics in `octara-model` (`diagnostics.rs`) and keep unit/integration tests cleanly organized and passing with `cargo clippy --workspace --all-targets`.
-- Regenerate `skills/octara/` (`octara-cli skill export skills`) only when finalizing docs/skill changes (Phase 5).
+- Write all repository content in English (docs, READMEs, skills, comments, commit messages, diagnostics, and default examples). Non-English text is allowed only in i18n locale tables and CJK/IME/BiDi test fixtures.
+- Follow `docs/design/architecture-v2.md` (and `docs/design/v2/*`), enforced by `tools/check_layers.py`.
+- Register diagnostics in `octara-model` (`diagnostics.rs`) and keep `cargo clippy --workspace --all-targets -- -D warnings` and tests passing.
+- Regenerate `skills/octara/` (`octara-cli skill export skills`) only when finalizing docs/skill changes for release.
