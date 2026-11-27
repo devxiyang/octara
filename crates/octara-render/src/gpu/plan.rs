@@ -1,21 +1,18 @@
 //! Device-free target geometry and painter-order draw planning.
 
-use super::batch::{
-    Draw, Inst, InstParams, KIND_CANVAS, KIND_LAYER, KIND_PATH, NO_CLIP, Pass, PlannedBatch, clip_envelope, custom_quad, image, quad,
-    shadow, straight,
-};
+use super::batch::{Draw, NO_CLIP, Paint, Pass, PlannedBatch, Shape, clip_envelope, custom_quad, image, quad, shadow, xywh};
 use super::custom::{self, CanvasMode, CanvasPaint};
 use super::outputs::CanvasCache;
 use crate::glyphs::{GlyphCache, GlyphImage, GlyphKey, SUBPIXEL_STEPS};
 use crate::paths;
 use crate::shape::{ClipStack, ClipState};
-use bytemuck::Zeroable;
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample};
 use octara_model::geometry::Rect;
 use octara_model::paint::Item;
 use octara_model::paint::{DisplayList, ImagePaint, PathPaint, Quad, TransitionPaint};
 use octara_model::theme::Color;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Weak;
 
@@ -63,14 +60,14 @@ pub struct TargetInfo {
 pub(super) struct CanvasRequest {
     pub(super) pass: usize,
     pub(super) paint: CanvasPaint,
-    pub(super) fallback: Inst,
+    pub(super) fallback: Paint,
     pub(super) receipt: usize,
     pub(super) retained_mount: Option<Weak<()>>,
 }
 
 pub(super) struct BackdropRequest {
     pub(super) paint: CanvasPaint,
-    pub(super) fallback: Inst,
+    pub(super) fallback: Paint,
     pub(super) receipt: usize,
     pub(super) mount: Weak<()>,
     pub(super) exiting: bool,
@@ -139,7 +136,7 @@ pub(super) struct ResourcePlan {
 
 pub(super) struct MaterialRequest {
     pub(super) material: custom::Material,
-    pub(super) fallback: Inst,
+    pub(super) fallback: Paint,
     pub(super) receipt: usize,
 }
 
@@ -154,7 +151,6 @@ pub(super) struct GlyphRequest {
     pub(super) image: GlyphImage,
     pub(super) pos: [f32; 2],
     pub(super) color: u32,
-    pub(super) clip: u32,
 }
 
 /// Builds a render graph without a GPU device or access to presentation history.
@@ -169,19 +165,18 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
     let mut resources = ResourcePlan::default();
     let mut open: Vec<usize> = vec![0];
     let mut clips = ClipStack::default();
-    let mut glyph_rect_clips = FxHashMap::default();
     let [width, height] = target.extent;
     let window = Rect::new(0.0, 0.0, width as f32, height as f32);
-    let items = list.items();
     let mut native_transitions = None;
-    for (index, item) in items.iter().enumerate() {
+    for (index, placed) in list.placed_items().enumerate() {
+        let item = if matches!(placed.item, Item::Glyphs(_)) { Cow::Borrowed(placed.item) } else { placed.resolve() };
         let clip_state = clips.current();
         let clip = clip_state.bounds.map_or(NO_CLIP, |c| [c.x, c.y, c.w, c.h]);
         let clip_head = clip_state.head;
         let current = *open.last().expect("a pass");
-        match item {
-            Item::Shadow(s) => passes[current].push(shadow(s, scale, clip, clip_head), Draw::PLAIN),
-            Item::Quad(q) => passes[current].push(quad(q, scale, clip, clip_head), Draw::PLAIN),
+        match item.as_ref() {
+            Item::Shadow(s) => passes[current].push(shadow(s, scale, clip, clip_head), Draw::Shadow),
+            Item::Quad(q) => passes[current].push(quad(q, scale, clip, clip_head), Draw::Quad),
             Item::Custom(paint) => {
                 let fallback = quad(&paint.fallback, scale, clip, clip_head);
                 if fallback.visible_bounds(&window).is_empty() {
@@ -204,10 +199,10 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                     let max_dimension = target.max_texture_dimension;
                     let Some(entry) = CanvasPaint::from_custom(paint, fallback, canvas.mode, scale, sample, max_dimension) else {
                         requests.receipts[receipt].outcome = PaintOutcome::Fallback { reason: PaintFallback::InvalidSize };
-                        passes[current].push(fallback, Draw::PLAIN);
+                        passes[current].push(fallback, Draw::Quad);
                         continue;
                     };
-                    instance.params.kind = KIND_CANVAS;
+                    instance.shape = Shape::Canvas { opacity: paint.opacity };
                     let draw = if canvas.mode == CanvasMode::Backdrop {
                         let index = requests.backdrops.len();
                         requests.backdrops.push(BackdropRequest {
@@ -229,7 +224,7 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                     passes[current].push(instance, draw);
                     continue;
                 }
-                passes[current].push(fallback, Draw::PLAIN);
+                passes[current].push(fallback, Draw::Quad);
             }
             Item::Image(i) => {
                 let frame = i.image.frame();
@@ -237,7 +232,7 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                     continue;
                 }
                 let instance = image(i, scale, clip, clip_head);
-                let [x, y, w, h] = instance.border;
+                let Shape::Image { bounds: [x, y, w, h], .. } = instance.shape else { unreachable!("image paint") };
                 let bounds = passes[current].visible_window(&window).intersect(&clip_envelope(Rect::new(x, y, w, h)));
                 if instance.visible_bounds(&bounds).is_empty() {
                     continue;
@@ -253,14 +248,7 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                 if visible.is_empty() {
                     continue;
                 }
-                let clip_head = match clip_state {
-                    ClipState { bounds: Some(rect), head: 0 } => {
-                        let key = [rect.x, rect.y, rect.w, rect.h].map(f32::to_bits);
-                        *glyph_rect_clips.entry(key).or_insert_with(|| clips.add_node(rect, [0.0; 4], 0))
-                    }
-                    _ => clip_head,
-                };
-                for (g, color) in run.placed_colored() {
+                for (g, color) in run.placed_colored_at(placed.offset, placed.fade) {
                     let color = color.to_rgba8();
                     if color.a == 0 {
                         continue;
@@ -277,37 +265,31 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                         continue;
                     }
                     let index = resources.samples.len();
-                    resources.samples.push(DrawSample::Glyph(GlyphRequest {
-                        key,
-                        image: glyph.clone(),
-                        pos: [rect.x, rect.y],
-                        color,
-                        clip: clip_head,
-                    }));
-                    passes[current].push_glyph_sample(index, bounds);
+                    resources.samples.push(DrawSample::Glyph(GlyphRequest { key, image: glyph.clone(), pos: [rect.x, rect.y], color }));
+                    passes[current].push(
+                        Paint { rect: xywh(rect), clip, clip_head, shape: Shape::Glyph(None), ..Paint::default() },
+                        Draw::Sample(index),
+                    );
                 }
             }
             Item::Path(p) => {
                 let window = paths::window((width, height), clip_state.bounds.map(|c| (c.x, c.y, c.w, c.h)));
                 let Some(at) = paths::place(p, scale, window) else { continue };
 
-                let b = p.bounds;
-                let (fill, grad_color, grad) = match p.gradient {
-                    Some(g) => (straight(g.from.0), straight(g.to.0), [g.angle, g.from.1, g.to.1, 1.0]),
-                    None => (straight(p.color), [0.0; 4], [0.0; 4]),
-                };
                 let index = resources.samples.len();
                 resources.samples.push(DrawSample::Path(p.clone(), at));
                 passes[current].push(
-                    Inst {
+                    Paint {
                         rect: [at.x as f32, at.y as f32, at.width as f32, at.height as f32],
-                        fill,
-                        border: [b.x * scale, b.y * scale, b.w * scale, b.h * scale],
                         clip,
-                        params: InstParams { kind: KIND_PATH, clip_head, ..InstParams::default() },
-                        grad_color,
-                        grad,
-                        ..Inst::zeroed()
+                        clip_head,
+                        shape: Shape::Path {
+                            bounds: xywh(p.bounds).map(|px| px * scale),
+                            color: p.color,
+                            gradient: p.gradient,
+                            region: None,
+                        },
+                        ..Paint::default()
                     },
                     Draw::Sample(index),
                 );
@@ -339,7 +321,7 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                 requests.receipts.push(PaintReceipt { source: *source, outcome });
             }
             Item::PushTransition(paint) => {
-                let native = native_transitions.get_or_insert_with(|| transitions_with_native(&items)).contains(&index);
+                let native = native_transitions.get_or_insert_with(|| transitions_with_native(list)).contains(&index);
                 let supported = !native;
                 let receipt = (paint.progress < 1.0).then(|| {
                     let receipt = requests.receipts.len();
@@ -382,15 +364,11 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                     request.clip.bounds.map(|bounds| ([bounds.x, bounds.y, bounds.w, bounds.h], request.clip.head))
                 });
                 passes[parent].push(
-                    Inst {
-                        fill: [0.0, 0.0, 0.0, opacity],
+                    Paint {
                         clip: outer.map_or(NO_CLIP, |(clip, _)| clip),
-                        params: InstParams {
-                            kind: KIND_LAYER,
-                            clip_head: outer.map_or(0, |(_, head)| head),
-                            filled: u32::from(outer.is_some()),
-                        },
-                        ..Inst::zeroed()
+                        clip_head: outer.map_or(0, |(_, head)| head),
+                        shape: Shape::Layer { opacity },
+                        ..Paint::default()
                     },
                     Draw::Layer(layer),
                 );
@@ -483,7 +461,12 @@ pub(super) enum Attachment {
 
 pub(super) struct TargetPlan {
     pub(super) attachment: Attachment,
-    pub(super) batches: Range<usize>,
+    pub(super) segments: Vec<DrawSegment>,
+}
+
+pub(super) struct DrawSegment {
+    pub(super) cores: Range<usize>,
+    pub(super) blended: Range<usize>,
 }
 
 pub(super) struct EncodedPlan {
@@ -491,35 +474,6 @@ pub(super) struct EncodedPlan {
     pub(super) batches: Vec<PlannedBatch>,
     pub(super) backdrops: Vec<PlannedBackdrop>,
     pub(super) resolve_output: bool,
-}
-
-impl EncodedPlan {
-    pub(super) fn new(
-        passes: &[Pass],
-        instance_offsets: &[[u32; 2]],
-        backdrops: Vec<BackdropRequest>,
-        fallback_offset: u32,
-        backdrop_inputs: Vec<BackdropInput>,
-        resolve_output: bool,
-    ) -> Self {
-        let mut batches = Vec::new();
-        let targets = passes
-            .iter()
-            .enumerate()
-            .rev()
-            .map(|(index, pass)| {
-                let attachment = if index == 0 { Attachment::Output } else { Attachment::Layer(index) };
-                TargetPlan { attachment, batches: pass.append_batches(instance_offsets[index], &mut batches) }
-            })
-            .collect();
-        let backdrops = backdrops
-            .into_iter()
-            .zip(backdrop_inputs)
-            .enumerate()
-            .map(|(index, (request, input))| PlannedBackdrop { request, input, fallback: fallback_offset + index as u32 })
-            .collect();
-        Self { targets, batches, backdrops, resolve_output }
-    }
 }
 
 /// Size the inner layers first, then use their composite bounds in the parent.
@@ -535,14 +489,14 @@ pub(super) fn bound_passes(
     for (index, pass) in passes.iter_mut().enumerate().rev() {
         for batch in &pass.batches {
             if let Draw::Layer(layer) = batch.draw {
-                pass.insts[batch.instances.start].rect = composites.get(&layer).copied().unwrap_or(bounds[layer]).rect();
+                pass.paints[batch.instances.start].rect = composites.get(&layer).copied().unwrap_or(bounds[layer]).rect();
             }
         }
         if index == 0 {
             break;
         }
         let visible = pass.visible_window(&window);
-        let covered = pass.insts.iter().map(|inst| inst.visible_bounds(&visible)).fold(pass.glyph_bounds, union);
+        let covered = pass.paints.iter().map(|inst| inst.visible_bounds(&visible)).fold(Rect::default(), union);
         bounds[index] = PassBounds::from_rect(covered);
         if let Some(request) = pass.transition.as_ref() {
             let composite = transition_bounds(index, request, bounds[index], visible);
@@ -580,12 +534,12 @@ pub(super) fn union(a: Rect, b: Rect) -> Rect {
 }
 
 /// An independent native surface cannot be drawn into an Octara layer.
-pub(super) fn transitions_with_native(items: &[Item]) -> FxHashSet<usize> {
+fn transitions_with_native(list: &DisplayList) -> FxHashSet<usize> {
     let mut blocked = FxHashSet::default();
     let mut layers = Vec::new();
     let mut native_count = 0;
-    for (index, item) in items.iter().enumerate() {
-        match item {
+    for (index, placed) in list.placed_items().enumerate() {
+        match placed.item {
             Item::PushLayer { .. } => layers.push(None),
             Item::PushTransition(_) => layers.push(Some((index, native_count))),
             Item::PopLayer => {
@@ -604,7 +558,6 @@ pub(super) fn transitions_with_native(items: &[Item]) -> FxHashSet<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::batch::KIND_SHADOW;
     use super::*;
     use octara_model::identity::NodeId;
     use octara_model::paint::{PaintInput, PaintProgram};
@@ -661,16 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_plan_orders_targets_and_resolves_backdrop_inputs() {
-        let mut output = Pass::default();
-        output.push(Inst::zeroed(), Draw::PLAIN);
-        output.push(Inst::zeroed(), Draw::Layer(1));
-        output.push(Inst::zeroed(), Draw::Backdrop(0));
-        output.push(Inst::zeroed(), Draw::PLAIN);
-        output.push(Inst::zeroed(), Draw::Backdrop(2));
-        let mut layer = Pass::default();
-        layer.push(Inst::zeroed(), Draw::PLAIN);
-        layer.push(Inst::zeroed(), Draw::Backdrop(1));
+    fn frame_plan_resolves_backdrop_inputs() {
         let bounds = [PassBounds { origin: [0, 0], size: [32, 24] }, PassBounds { origin: [5, 6], size: [5, 4] }];
         let requests = || {
             Vec::from([(0, false), (1, false), (0, true)].map(|(target, exiting)| BackdropRequest {
@@ -683,88 +627,50 @@ mod tests {
                     radius: [0.0; 4],
                     sampled_at: None,
                 },
-                fallback: Inst { rect: [2.25, 3.25, 14.0, 10.0], clip: [4.5, 5.25, 20.0, 15.0], ..Inst::zeroed() },
+                fallback: Paint { rect: [2.25, 3.25, 14.0, 10.0], clip: [4.5, 5.25, 20.0, 15.0], ..Paint::default() },
                 receipt: 0,
                 mount: Weak::new(),
                 exiting,
                 target,
             }))
         };
-        let passes = [output, layer];
-        let plan = |passes, bounds, offsets, requests: Vec<BackdropRequest>, fallback, output| {
-            let (inputs, resolve) = backdrop_inputs(&requests, bounds, output);
-            EncodedPlan::new(passes, offsets, requests, fallback, inputs, resolve)
-        };
         let attachment = TargetInfo { extent: [12, 10], scale: 1.0, max_texture_dimension: 1024, copyable: true, encode_output: false };
-        let main = plan(&passes, &bounds, &[[0, 0], [5, 0]], requests(), 7, attachment);
-        assert_eq!(main.targets.iter().map(|target| target.attachment).collect::<Vec<_>>(), [Attachment::Layer(1), Attachment::Output]);
-        assert_eq!(main.targets[0].batches, 0..2);
-        assert_eq!(main.targets[1].batches, 2..7);
-        assert_eq!(
-            main.batches,
-            [
-                PlannedBatch { draw: Draw::PLAIN, instances: 5..6 },
-                PlannedBatch { draw: Draw::Backdrop(1), instances: 6..7 },
-                PlannedBatch { draw: Draw::PLAIN, instances: 0..1 },
-                PlannedBatch { draw: Draw::Layer(1), instances: 1..2 },
-                PlannedBatch { draw: Draw::Backdrop(0), instances: 2..3 },
-                PlannedBatch { draw: Draw::PLAIN, instances: 3..4 },
-                PlannedBatch { draw: Draw::Backdrop(2), instances: 4..5 },
-            ],
-        );
-        assert_eq!(main.backdrops[0].input, BackdropInput::Prefix(BackdropRegion { origin: [4, 5], size: [8, 5], offset: [2, 2] }));
-        assert_eq!(main.backdrops[1].input, BackdropInput::Prefix(BackdropRegion { origin: [0, 0], size: [5, 4], offset: [3, 3] }));
-        assert_eq!(main.backdrops[2].input, BackdropInput::Accepted);
-        assert_eq!(main.backdrops[2].fallback, 9);
-        assert!(!main.resolve_output);
+        let (main, resolve) = backdrop_inputs(&requests(), &bounds, attachment);
+        assert_eq!(main[0], BackdropInput::Prefix(BackdropRegion { origin: [4, 5], size: [8, 5], offset: [2, 2] }));
+        assert_eq!(main[1], BackdropInput::Prefix(BackdropRegion { origin: [0, 0], size: [5, 4], offset: [3, 3] }));
+        assert_eq!(main[2], BackdropInput::Accepted);
+        assert!(!resolve);
         let render_only = TargetInfo { copyable: false, ..attachment };
-        let no_copy = plan(&passes, &bounds, &[[0, 0], [5, 0]], requests(), 7, render_only);
-        assert!(no_copy.resolve_output);
-        assert_eq!(no_copy.backdrops[0].input, main.backdrops[0].input);
-        assert_eq!(no_copy.backdrops[1].input, main.backdrops[1].input);
-        assert_eq!(no_copy.backdrops[2].input, BackdropInput::Accepted);
-
+        assert_eq!(backdrop_inputs(&requests(), &bounds, render_only), (main, true));
         let mut clipped = requests();
         clipped[0].fallback.clip = [20.0, 20.0, 5.0, 4.0];
-        let local = plan(&passes, &bounds, &[[0, 0], [5, 0]], clipped, 7, render_only);
-        assert!(!local.resolve_output, "a clipped root read, a layer read, and an accepted image require no output resolve");
-        assert_eq!(local.backdrops[0].input, BackdropInput::Unavailable);
-        assert_eq!(local.backdrops[1].input, main.backdrops[1].input);
-
-        let mut plain = Pass::default();
-        for _ in 0..4 {
-            plain.push(Inst::zeroed(), Draw::PLAIN);
-        }
-        let direct = plan(&[plain], &bounds[..1], &[[0, 0]], Vec::new(), 4, render_only);
-        assert!(!direct.resolve_output);
-        assert_eq!(direct.targets.len(), 1);
-        assert_eq!(direct.targets[0].attachment, Attachment::Output);
-        assert_eq!(direct.batches, [PlannedBatch { draw: Draw::PLAIN, instances: 0..4 }]);
+        let (local, resolve) = backdrop_inputs(&clipped, &bounds, render_only);
+        assert!(!resolve, "a clipped root read, a layer read, and an accepted image require no output resolve");
+        assert_eq!(local[0], BackdropInput::Unavailable);
     }
 
     #[test]
     fn nested_layers_bound_their_painted_pixels_instead_of_the_window() {
         let window = [1600, 1200];
-        let composite = Inst { params: InstParams { kind: KIND_LAYER, ..InstParams::default() }, clip: NO_CLIP, ..Inst::zeroed() };
-        let quad = Inst { rect: [370.5, 460.25, 28.0, 18.0], clip: NO_CLIP, ..Inst::zeroed() };
-        let shadow = Inst {
+        let composite = Paint { shape: Shape::Layer { opacity: 1.0 }, ..Paint::default() };
+        let quad = Paint { rect: [370.5, 460.25, 28.0, 18.0], clip: NO_CLIP, ..Paint::default() };
+        let shadow = Paint {
             rect: [400.25, 480.5, 21.0, 12.0],
             clip: [404.0, 480.0, 10.0, 10.0],
-            border: [2.0, 0.0, 0.0, 0.0],
-            params: InstParams { kind: KIND_SHADOW, ..InstParams::default() },
-            ..Inst::zeroed()
+            shape: Shape::Shadow { color: Color::BLACK, sigma: 2.0 },
+            ..Paint::default()
         };
         let mut passes = [Pass::default(), Pass::default(), Pass::default()];
         passes[0].push(composite, Draw::Layer(1));
-        passes[1].push(quad, Draw::PLAIN);
+        passes[1].push(quad, Draw::Quad);
         passes[1].push(composite, Draw::Layer(2));
-        passes[2].push(shadow, Draw::PLAIN);
+        passes[2].push(shadow, Draw::Shadow);
         let bounds = bound_passes(&mut passes, window, |_, _, _, _| unreachable!("no transition regions"));
         assert_eq!(bounds[0].size, window);
         assert_eq!(bounds[1].rect(), [369.0, 459.0, 46.0, 32.0]);
         assert_eq!(bounds[2].rect(), [403.0, 479.0, 12.0, 12.0]);
-        assert_eq!(passes[0].insts[0].rect, bounds[1].rect());
-        assert_eq!(passes[1].insts[1].rect, bounds[2].rect());
+        assert_eq!(passes[0].paints[0].rect, bounds[1].rect());
+        assert_eq!(passes[1].paints[1].rect, bounds[2].rect());
         assert_eq!(bounds[1].allocation(window), [64, 64]);
         assert_eq!(bounds[2].allocation(window), [64, 64]);
     }

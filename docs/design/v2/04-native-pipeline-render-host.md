@@ -65,17 +65,19 @@ Rollback restores committed projected frames, text presentations and paint subtr
 crates/octara-render/src/
   lib.rs
   plan.rs             # Pure functional RenderGraph planner (DisplayList -> FramePlan: passes, backdrops, transitions)
-  batch.rs            # Instanced vertex/instance buffer packing, clip-stack tree indexing
-  atlas.rs            # Multi-page shelf-packed glyph/image/path atlas + dedicated oversized textures
+  batch.rs            # Device-independent paint requests
+  schedule.rs         # Opaque cores, clip fast paths, and stable radix batching
+  instances.rs        # Storage-buffer payloads for vertex pulling
+  atlas.rs            # Texture arrays with guillotine packing, per-region LRU, and premultiplied image mips
   paths.rs            # Vector path rasterization (zeno + kurbo -> alpha mask tiles)
   glyphs.rs           # Subpixel glyph rasterization (swash -> alpha/color mask tiles)
-  pipeline.rs         # wgpu RenderPipeline & BindGroupLayout management, WGSL shaders (geometry.wgsl)
+  pipeline.rs         # Four wgpu micro-pipelines and depth/blend variants
   encode.rs           # FramePlan + Batches -> wgpu::CommandEncoder pass recording
   custom.rs           # Author paint programs: material, backdrop, transition, retained_canvas, error scopes
   outputs.rs          # PresentationHistory & RetainedCanvas texture cache
   profile.rs          # Optional GPU timestamp query pool & pass timings
   device_loss.rs      # Shared DeviceLoss state machine (used by both Native & WebGPU)
-  cpu.rs              # Deterministic CPU Reference Oracle (shares glyphs.rs & paths.rs with GPU!)
+  cpu.rs              # Deterministic CPU Reference Oracle (shares glyph, path, and image mip preparation with GPU)
 ```
 
 ### Key Architectural Wins

@@ -25,12 +25,12 @@ pub fn glyphs(text: &str, origin: Point, size: f32, color: Color) -> Item {
     let font = swash::FontRef::from_index(&FONT.data, 0).unwrap();
     let map = font.charmap();
     let glyphs = text
-        .chars()
+        .char_indices()
         .enumerate()
-        .map(|(index, character)| {
+        .map(|(index, (byte, character))| {
             let id = map.map(character);
             assert_ne!(id, 0, "the fixture font must contain {character}");
-            Glyph { id: u32::from(id), x: index as f32 * size, y: 0.0, source_end: 0 }
+            Glyph { id: u32::from(id), x: index as f32 * size, y: 0.0, source_end: byte + character.len_utf8() }
         })
         .collect();
     Item::Glyphs(GlyphRun {

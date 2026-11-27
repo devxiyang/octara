@@ -79,11 +79,11 @@ pub struct FrameProfile {
     pub draw_batches: u32,
     /// Draw calls that use an author material pipeline.
     pub material_batches: u32,
-    /// Render passes for the UI, opacity layers and output resolve, including backdrop restarts.
+    /// Render passes for the UI, opacity layers and output resolve, including opaque cores and backdrop restarts.
     pub render_passes: u32,
     /// Area of the opacity layer attachments in device pixels, including allocation rounding.
     pub layer_pixels: u64,
-    /// Bytes of texture pages and stand-alone images referenced by this frame.
+    /// Bytes of texture arrays referenced by this frame.
     pub atlas_bytes: u64,
     /// Texel bytes prepared for submission with this frame.
     pub atlas_upload_bytes: u64,

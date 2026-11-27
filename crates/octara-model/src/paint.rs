@@ -19,6 +19,8 @@ use crate::native::NativeSlot;
 use crate::theme::{Color, Gradient};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
+use std::borrow::Cow;
+use std::slice;
 use std::sync::{Arc, Weak};
 
 /// A rounded rectangle with an optional fill and border (borders are drawn inside the rect).
@@ -282,13 +284,28 @@ pub struct GlyphRun {
 impl GlyphRun {
     /// Each glyph with its position (`origin` added).
     pub fn placed(&self) -> impl Iterator<Item = Glyph> + '_ {
-        self.glyphs.iter().map(|g| Glyph { x: g.x + self.origin.x, y: g.y + self.origin.y, ..*g })
+        self.placed_at(self.origin)
     }
 
     pub fn placed_colored(&self) -> impl Iterator<Item = (Glyph, Color)> + '_ {
-        self.placed()
+        self.placed_colored_at(Vec2::default(), 1.0)
+    }
+
+    /// Positions the glyphs and applies the drawing's fade to the run's default color.
+    pub fn placed_colored_at(&self, offset: Vec2, fade: f32) -> impl Iterator<Item = (Glyph, Color)> + '_ {
+        let mut origin = self.origin;
+        if offset != Vec2::default() {
+            origin.x += offset.x;
+            origin.y += offset.y;
+        }
+        let color = if fade < 1.0 { self.color.multiply_alpha(fade) } else { self.color };
+        self.placed_at(origin)
             .enumerate()
-            .map(|(i, glyph)| (glyph, self.colors.as_ref().and_then(|colors| colors.get(i)).copied().unwrap_or(self.color)))
+            .map(move |(i, glyph)| (glyph, self.colors.as_ref().and_then(|colors| colors.get(i)).copied().unwrap_or(color)))
+    }
+
+    fn placed_at(&self, origin: Point) -> impl Iterator<Item = Glyph> + '_ {
+        self.glyphs.iter().map(move |g| Glyph { x: g.x + origin.x, y: g.y + origin.y, ..*g })
     }
 }
 
@@ -457,6 +474,25 @@ pub enum Part {
     Group(Arc<[Part]>),
 }
 
+/// An item borrowed from a display list, with its drawing's placement in the window.
+#[derive(Clone, Copy, Debug)]
+pub struct PlacedItem<'a> {
+    pub item: &'a Item,
+    pub offset: Vec2,
+    pub fade: f32,
+}
+
+impl<'a> PlacedItem<'a> {
+    /// Gets the item in window coordinates, borrowing it when no offset or fade is needed.
+    pub fn resolve(self) -> Cow<'a, Item> {
+        if self.offset != Vec2::default() || self.fade < 1.0 {
+            Cow::Owned(self.item.placed(self.offset, self.fade))
+        } else {
+            Cow::Borrowed(self.item)
+        }
+    }
+}
+
 /// A frame: the window size, its background and the parts in drawing order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayList {
@@ -481,20 +517,29 @@ impl DisplayList {
             }
         })
     }
-    /// Every item in drawing order, in window coordinates.
-    pub fn items(&self) -> Vec<Item> {
-        let mut out = Vec::new();
-        self.each_item(|i| out.push(i));
-        out
+
+    /// Iterates the shared items in drawing order without flattening or copying their payloads.
+    pub fn placed_items(&self) -> impl Iterator<Item = PlacedItem<'_>> {
+        self.parts().flat_map(|part| {
+            let (items, offset, fade) = match part {
+                Part::Drawing { offset, fade, items } => (items.as_ref(), *offset, *fade),
+                Part::Item(item) => (slice::from_ref(item), Vec2::default(), 1.0),
+                Part::Group(_) => unreachable!("parts expands shared groups"),
+            };
+            items.iter().map(move |item| PlacedItem { item, offset, fade })
+        })
     }
+
+    /// Clones every item in drawing order, in window coordinates. Use [`Self::placed_items`]
+    /// to stream the shared items with their placement.
+    pub fn items(&self) -> Vec<Item> {
+        self.placed_items().map(|placed| placed.resolve().into_owned()).collect()
+    }
+
     /// Calls `f` with every item in drawing order, in window coordinates.
     pub fn each_item(&self, mut f: impl FnMut(Item)) {
-        for p in self.parts() {
-            match p {
-                Part::Drawing { offset, fade, items } => items.iter().for_each(|i| f(i.placed(*offset, *fade))),
-                Part::Item(i) => f(i.clone()),
-                Part::Group(_) => unreachable!("parts expands shared groups"),
-            }
+        for placed in self.placed_items() {
+            f(placed.resolve().into_owned());
         }
     }
     pub fn quads(&self) -> impl Iterator<Item = Quad> {
@@ -570,6 +615,55 @@ impl<'de> Deserialize<'de> for Picture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placed_items_borrow_payloads_and_preserve_nested_painter_order() {
+        let shared: Arc<[Item]> =
+            Arc::from([Item::PushClip { source: NodeId::default(), rect: Rect::new(1.0, 2.0, 8.0, 9.0), radius: [2.0; 4] }]);
+        let layer: Arc<[Item]> = Arc::from([Item::PushLayer { source: NodeId::default(), opacity: 0.8 }, Item::PopLayer]);
+        let offset = Vec2::new(4.0, 5.0);
+        let parts = vec![
+            Part::Group(Arc::from([
+                Part::Drawing { offset, fade: 1.0, items: shared.clone() },
+                Part::Group(Arc::from([Part::Drawing { offset: Vec2::default(), fade: 0.5, items: layer.clone() }])),
+            ])),
+            Part::Item(Item::PopClip),
+        ];
+        let list = DisplayList { size: Size::new(20.0, 20.0), background: Color::WHITE, parts };
+        let mut items = list.placed_items();
+        let clip = items.next().unwrap();
+        assert!(std::ptr::eq(clip.item, &shared[0]));
+        assert_eq!(clip.offset, offset);
+        assert!(matches!(clip.resolve().as_ref(), Item::PushClip { rect, .. } if *rect == Rect::new(5.0, 7.0, 8.0, 9.0)));
+        let faded = items.next().unwrap();
+        assert!(std::ptr::eq(faded.item, &layer[0]));
+        assert!(matches!(faded.resolve().as_ref(), Item::PushLayer { opacity, .. } if *opacity == 0.4));
+        assert!(std::ptr::eq(items.next().unwrap().item, &layer[1]));
+        assert!(matches!(items.next().unwrap().resolve(), Cow::Borrowed(Item::PopClip)));
+        assert!(items.next().is_none());
+    }
+
+    #[test]
+    fn placed_glyphs_use_the_borrowed_run_and_preserve_color_overrides() {
+        let glyph = Glyph { id: 1, x: 3.0, y: 4.0, source_end: 1 };
+        let run = GlyphRun {
+            source: NodeId::default(),
+            font: FontFace { id: FontId(1), data: FontData::from(&[][..]), index: 0 },
+            size: 12.0,
+            coords: vec![42],
+            embolden: false,
+            skew: 0.0,
+            color: Color::WHITE,
+            colors: Some(Arc::from([Color::BLACK])),
+            origin: Point::new(5.0, 6.0),
+            glyphs: Arc::from([glyph, Glyph { x: 7.0, source_end: 2, ..glyph }]),
+        };
+        let expected = [
+            (Glyph { x: 10.0, y: 6.0, ..glyph }, Color::BLACK),
+            (Glyph { x: 14.0, y: 6.0, source_end: 2, ..glyph }, Color::WHITE.multiply_alpha(0.5)),
+        ];
+        assert!(run.placed_colored_at(Vec2::new(2.0, -4.0), 0.5).eq(expected));
+    }
 
     #[test]
     fn picture_wire_values_validate_rgba_dimensions() {

@@ -3,14 +3,16 @@
 //! take screenshots without a GPU.
 
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
+use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, full_lod, opaque, packed_lod};
 use crate::paths::{self, PathCache};
-use crate::shape::{ClipStack, blend, blend_premultiplied, coverage, image_color, inner_rect, sd_round_rect, shadow_alpha};
+use crate::shape::{ClipStack, blend, blend_premultiplied, coverage, inner_rect, sd_round_rect, shadow_alpha};
 use color::{LinearSrgb, PremulColor, Rgba8};
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample, PaintedPicture};
-use octara_model::geometry::Rect;
+use octara_model::geometry::{Rect, Vec2};
 use octara_model::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Picture, Quad, Shadow};
 use octara_model::theme::{Color, Gradient};
 use std::alloc::Layout;
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 /// Renders display lists to RGBA images; keeps rasterized glyphs and paths between frames.
@@ -126,7 +128,9 @@ impl CpuRenderer {
         let base = [bg[0] * bga, bg[1] * bga, bg[2] * bga, bga];
         let mut t = Target { width, height, pixels: vec![base; count], clips: ClipStack::default(), layers: Vec::new() };
         let mut effects = Vec::new();
-        for item in &dl.items() {
+        for placed in dl.placed_items() {
+            let item = if matches!(placed.item, Item::Glyphs(_)) { Cow::Borrowed(placed.item) } else { placed.resolve() };
+            let item = item.as_ref();
             match item {
                 Item::Shadow(s) => shadow(&mut t, s, scale),
                 Item::Quad(q) => quad(&mut t, q, scale),
@@ -138,7 +142,7 @@ impl CpuRenderer {
                     });
                 }
                 Item::Image(i) => image(&mut t, i, scale),
-                Item::Glyphs(g) => self.glyph_run(&mut t, g, scale),
+                Item::Glyphs(g) => self.glyph_run(&mut t, g, scale, placed.offset, placed.fade),
                 Item::Path(p) => self.path(&mut t, p, scale),
                 // An underlay view the platform shows: a hole down to transparent.
                 Item::Native { rect, radius, cut: true, .. } => cutout(&mut t, *rect, *radius, scale),
@@ -208,9 +212,9 @@ impl CpuRenderer {
         }
     }
 
-    fn glyph_run(&mut self, t: &mut Target, run: &GlyphRun, scale: f32) {
+    fn glyph_run(&mut self, t: &mut Target, run: &GlyphRun, scale: f32, offset: Vec2, fade: f32) {
         let size = run.size * scale;
-        for (g, color) in run.placed_colored() {
+        for (g, color) in run.placed_colored_at(offset, fade) {
             let (color, alpha) = rgb(color);
             if alpha <= 0.0 {
                 continue;
@@ -267,30 +271,53 @@ fn shadow(t: &mut Target, s: &Shadow, scale: f32) {
 
 fn image(t: &mut Target, i: &ImagePaint, scale: f32) {
     let f = i.image.frame();
-    if f.width == 0 || f.height == 0 {
+    if f.width == 0 || f.height == 0 || i.rect.is_empty() || i.opacity <= 0.0 {
         return;
     }
     let s = |r: Rect| (r.x * scale, r.y * scale, r.w * scale, r.h * scale);
-    let rect = s(i.rect);
+    let (x, y, w, h) = s(i.rect);
     let b = s(i.bounds);
-    let bounds = (b.0, b.1, b.2, b.3, i.bounds.corner_radii(i.radius).map(|radius| radius * scale));
-    let texel = |x: u32, y: u32| {
-        let k = (y as usize * f.width as usize + x as usize) * 4;
-        linear_texel(&f.rgba[k..k + 4])
-    };
+    let radius = i.bounds.corner_radii(i.radius).map(|radius| radius * scale);
     // Pixels in both the drawn rect and the clipping box.
-    let x0 = rect.0.max(b.0);
-    let y0 = rect.1.max(b.1);
-    let x1 = (rect.0 + rect.2).min(b.0 + b.2);
-    let y1 = (rect.1 + rect.3).min(b.1 + b.3);
+    let x0 = x.max(b.0);
+    let y0 = y.max(b.1);
+    let x1 = (x + w).min(b.0 + b.2);
+    let y1 = (y + h).min(b.1 + b.3);
     let (px0, py0, px1, py1) = t.bounds(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0));
+    if px0 >= px1 || py0 >= py1 {
+        return;
+    }
+    let size = [f.width, f.height];
+    let packed_lod = packed_lod(size, IMAGE_ATLAS_EDGE);
+    let packed = packed_lod.is_some();
+    let max_lod = packed_lod.unwrap_or_else(|| full_lod(size));
+    let lod = (f.width as f32 / w).max(f.height as f32 / h).log2().clamp(0.0, f32::from(max_lod));
+    let lo = lod.floor() as u8;
+    let mut level = ImageLevel::base(size, &f.rgba, opaque(&f.rgba));
+    for _ in 0..lo {
+        level = level.downsample(packed);
+    }
+    let high = (lod.fract() != 0.0).then(|| level.downsample(packed));
+    let level_extent = |level: &ImageLevel, lod| {
+        if packed { size.map(|axis| axis as f32 / (1_u32 << lod) as f32) } else { level.size.map(|axis| axis as f32) }
+    };
+    let extent = level_extent(&level, lo);
+    let high = high.as_ref().map(|high| (high, level_extent(high, lo + 1)));
     for py in py0..py1 {
         for px in px0..px1 {
             let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
-            let c = image_color((cx, cy), rect, bounds, (f.width, f.height), texel);
-            let k = i.opacity * t.clip_coverage(cx, cy);
-            if c[3] * k <= 0.0 {
+            let edge = coverage(sd_round_rect(cx, cy, x, y, w, h, [0.0; 4]));
+            let inside = coverage(sd_round_rect(cx, cy, b.0, b.1, b.2, b.3, radius));
+            let k = i.opacity * edge * inside * t.clip_coverage(cx, cy);
+            if k <= 0.0 {
                 continue;
+            }
+            let uv = [((cx - x) / w.max(0.000001)).clamp(0.0, 1.0), ((cy - y) / h.max(0.000001)).clamp(0.0, 1.0)];
+            let mut c = level.sample(uv, extent);
+            if let Some((high, extent)) = high {
+                for (low, high) in c.iter_mut().zip(high.sample(uv, extent)) {
+                    *low += (high - *low) * lod.fract();
+                }
             }
             blend_premultiplied(&mut t.pixels[py as usize * t.width as usize + px as usize], c.map(|v| v * k));
         }

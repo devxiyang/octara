@@ -1,9 +1,9 @@
 //! Records the prepared scene and interleaves painter-prefix and transition commands.
 
-use super::atlas::Bindings;
 use super::batch::Draw;
 use super::custom::{self, CanvasPaint};
 use super::outputs::{BackdropChange, RegionImage};
+use super::pipeline::PipelineKind;
 use super::plan::{Attachment, BackdropInput, PassBounds, PlannedBackdrop, TransitionRequest};
 use super::prepare::{PlannedTransition, PreparedFrame};
 use super::recording::FrameRecording;
@@ -45,6 +45,35 @@ pub(super) fn color_pass<'encoder>(
     load: wgpu::LoadOp<wgpu::Color>,
     timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) -> wgpu::RenderPass<'encoder> {
+    attachment_pass(encoder, target, load, None, timestamp_writes)
+}
+
+fn scene_pass<'encoder>(
+    encoder: &'encoder mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+    depth: &wgpu::TextureView,
+    clear_depth: bool,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
+) -> wgpu::RenderPass<'encoder> {
+    let depth = wgpu::RenderPassDepthStencilAttachment {
+        view: depth,
+        depth_ops: Some(wgpu::Operations {
+            load: if clear_depth { wgpu::LoadOp::Clear(0.0) } else { wgpu::LoadOp::Load },
+            store: wgpu::StoreOp::Store,
+        }),
+        stencil_ops: None,
+    };
+    attachment_pass(encoder, target, load, Some(depth), timestamp_writes)
+}
+
+fn attachment_pass<'encoder>(
+    encoder: &'encoder mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    load: wgpu::LoadOp<wgpu::Color>,
+    depth_stencil_attachment: Option<wgpu::RenderPassDepthStencilAttachment<'_>>,
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
+) -> wgpu::RenderPass<'encoder> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("octara"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -53,6 +82,7 @@ pub(super) fn color_pass<'encoder>(
             resolve_target: None,
             ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
         })],
+        depth_stencil_attachment,
         timestamp_writes,
         ..Default::default()
     })
@@ -67,10 +97,14 @@ fn draw_batch(
 ) {
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bind, projection);
-    pass.draw(0..6, instances);
+    pass.draw(0..4, instances);
 }
 
 impl GpuRenderer {
+    fn bind_composite(&self, empty_array: &wgpu::TextureView, view: &wgpu::TextureView) -> wgpu::BindGroup {
+        self.buffers.bind(&self.device, self.pipelines.layout(PipelineKind::Image), PipelineKind::Image, Some(empty_array), Some(view))
+    }
+
     async fn encode_backdrop(
         &mut self,
         backdrop: &PlannedBackdrop,
@@ -179,7 +213,6 @@ impl GpuRenderer {
         }
         let draw_target = intermediate.unwrap_or(output);
         let output_format = draw_target.texture().format();
-        let buffer = self.buffers.instances().clone();
         for target_plan in &frame.plan.targets {
             let (target, format, clear, kind, index) = match target_plan.attachment {
                 Attachment::Output => (draw_target, output_format, frame.background, GpuPassKind::Ui, 0),
@@ -187,72 +220,90 @@ impl GpuRenderer {
                     (&frame.layer_views[index - 1], WORKING_FORMAT, wgpu::Color::TRANSPARENT, GpuPassKind::Layer, index)
                 }
             };
-            let mut pass = color_pass(&mut encoder, target, wgpu::LoadOp::Clear(clear), recording.pass(kind));
-            if !target_plan.batches.is_empty() {
-                pass.set_vertex_buffer(0, buffer.slice(..));
-            }
+            let mut load = wgpu::LoadOp::Clear(clear);
+            let depth = &frame.depth[index];
             let projection = [self.buffers.projection_offset(index)];
-            let plain = &frame.atlas_binds[&Bindings::EMPTY];
-            for batch in &frame.plan.batches[target_plan.batches.clone()] {
-                let pipelines = &self.pipelines.formats[&format];
-                let mut instances = batch.instances.clone();
-                let (pipeline, bind) = match batch.draw {
-                    Draw::Standard(bindings) => (&pipelines.pipeline, &frame.atlas_binds[&bindings]),
-                    Draw::Cutout => (&pipelines.cutout, plain),
-                    Draw::Layer(layer) => {
-                        if let Some(fallback) = frame.transitions.get(&layer).and_then(|transition| transition.fallback) {
-                            instances = fallback..fallback + 1;
-                        }
-                        (&pipelines.pipeline, &frame.layer_binds[layer - 1])
-                    }
-                    Draw::Canvas(view) => (&pipelines.pipeline, &frame.canvas_binds[view]),
-                    Draw::Glyph(page) => (&self.glyph_pipeline.formats[&format], &frame.glyph_binds[&page]),
-                    Draw::Sample(_) | Draw::GlyphSample | Draw::RequestedMaterial(_) => {
-                        unreachable!("draw resources prepared before encoding")
-                    }
-                    Draw::Material(material) => (self.programs.material_pipeline(material, format), plain),
-                    Draw::Backdrop(index) => {
-                        let backdrop = &frame.plan.backdrops[index];
-                        let outcome = match self.encode_backdrop(backdrop, target, input.scale, recording).await {
-                            Ok(EncodedBackdrop { view, prefix_commands, outcome }) => {
-                                if let Some(command) = prefix_commands {
-                                    // The isolated copy and author commands run after the prefix is stored.
-                                    drop(pass);
-                                    encoder = recording.continue_after(&self.device, encoder, command);
-                                    pass = color_pass(&mut encoder, target, wgpu::LoadOp::Load, recording.pass(kind));
-                                    pass.set_vertex_buffer(0, buffer.slice(..));
-                                }
-                                let bind = self.buffers.bind_texture(&self.device, &self.pipelines.layout, [&frame.empty; 2], &view);
-                                draw_batch(&mut pass, &self.pipelines.formats[&format].pipeline, &bind, &projection, instances);
-                                outcome
-                            }
-                            Err(reason) => {
-                                let fallback = backdrop.fallback;
-                                draw_batch(
-                                    &mut pass,
-                                    &self.pipelines.formats[&format].pipeline,
-                                    plain,
-                                    &projection,
-                                    fallback..fallback + 1,
-                                );
-                                PaintOutcome::Fallback { reason }
-                            }
+            let pipeline_key = (format, frame.fragment_clipping);
+            for segment in &target_plan.segments {
+                if !segment.cores.is_empty() {
+                    let mut pass = scene_pass(&mut encoder, target, load, depth, true, recording.pass(kind));
+                    let pipelines = &self.pipelines.formats[&pipeline_key];
+                    for batch in &frame.plan.batches[segment.cores.clone()] {
+                        let (pipeline, bind) = match batch.draw {
+                            Draw::Quad => (&pipelines.quad_core, &frame.quad_bind),
+                            Draw::Image(array) => (&pipelines.image_core, &frame.image_binds[&array]),
+                            _ => unreachable!("only quads and images have opaque cores"),
                         };
-                        recording.receipts[backdrop.request.receipt].outcome = outcome;
-                        continue;
+                        draw_batch(&mut pass, pipeline, bind, &projection, batch.instances.clone());
                     }
-                };
-                draw_batch(&mut pass, pipeline, bind, &projection, instances);
+                    load = wgpu::LoadOp::Load;
+                }
+                if segment.blended.is_empty() {
+                    continue;
+                }
+                let mut pass = scene_pass(&mut encoder, target, load, depth, segment.cores.is_empty(), recording.pass(kind));
+                load = wgpu::LoadOp::Load;
+                for batch in &frame.plan.batches[segment.blended.clone()] {
+                    let pipelines = &self.pipelines.formats[&pipeline_key];
+                    let mut instances = batch.instances.clone();
+                    let (pipeline, bind) = match batch.draw {
+                        Draw::Quad => (&pipelines.quad, &frame.quad_bind),
+                        Draw::Shadow => (&pipelines.shadow, &frame.shadow_bind),
+                        Draw::Image(array) => (&pipelines.image, &frame.image_binds[&array]),
+                        Draw::Cutout => (&pipelines.cutout, &frame.quad_bind),
+                        Draw::Layer(layer) => {
+                            if let Some(fallback) = frame.transitions.get(&layer).and_then(|transition| transition.fallback) {
+                                instances = fallback..fallback + 1;
+                            }
+                            (&pipelines.image, &frame.layer_binds[layer - 1])
+                        }
+                        Draw::Canvas(view) => (&pipelines.image, &frame.canvas_binds[view]),
+                        Draw::Glyph(array) => (&pipelines.glyph, &frame.glyph_binds[&array]),
+                        Draw::Sample(_) | Draw::RequestedMaterial(_) => unreachable!("draw resources prepared before encoding"),
+                        Draw::Material(material) => (self.programs.material_pipeline(material, format), &frame.material_bind),
+                        Draw::Backdrop(index) => {
+                            let backdrop = &frame.plan.backdrops[index];
+                            let outcome = match self.encode_backdrop(backdrop, target, input.scale, recording).await {
+                                Ok(EncodedBackdrop { view, prefix_commands, outcome }) => {
+                                    if let Some(command) = prefix_commands {
+                                        // The copy observes only this segment's prefix.
+                                        drop(pass);
+                                        encoder = recording.continue_after(&self.device, encoder, command);
+                                        pass = scene_pass(&mut encoder, target, load, depth, false, recording.pass(kind));
+                                    }
+                                    let bind = self.bind_composite(&frame.empty_array, &view);
+                                    draw_batch(&mut pass, &self.pipelines.formats[&pipeline_key].image, &bind, &projection, instances);
+                                    outcome
+                                }
+                                Err(reason) => {
+                                    let fallback = backdrop.fallback;
+                                    draw_batch(
+                                        &mut pass,
+                                        &self.pipelines.formats[&pipeline_key].quad,
+                                        &frame.quad_bind,
+                                        &projection,
+                                        fallback..fallback + 1,
+                                    );
+                                    PaintOutcome::Fallback { reason }
+                                }
+                            };
+                            recording.receipts[backdrop.request.receipt].outcome = outcome;
+                            continue;
+                        }
+                    };
+                    draw_batch(&mut pass, pipeline, bind, &projection, instances);
+                }
             }
-            drop(pass);
+            if matches!(load, wgpu::LoadOp::Clear(_)) {
+                drop(color_pass(&mut encoder, target, load, recording.pass(kind)));
+            }
             if let Some(transition) = frame.transitions.get_mut(&index)
                 && let Some((composite, command)) = self.encode_transition(transition, target, frame.bounds[index], input, recording).await
             {
                 // The new image is produced by this child pass. Its parent samples the output
                 // after the author commands, without splitting the parent's render pass.
                 encoder = recording.continue_after(&self.device, encoder, command);
-                frame.layer_binds[index - 1] =
-                    self.buffers.bind_texture(&self.device, &self.pipelines.layout, [&frame.empty; 2], &composite);
+                frame.layer_binds[index - 1] = self.bind_composite(&frame.empty_array, &composite);
             }
         }
         if intermediate.is_some() {

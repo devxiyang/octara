@@ -21,7 +21,7 @@ pub(super) struct FrameRecording<'a> {
 /// A frame's recorded commands and the exclusive renderer borrow protecting its staged data.
 ///
 /// Submit or drop this frame before using the renderer again. Dropping it discards its commands
-/// and uploads, and retires the atlas pages containing its uninitialized entries.
+/// and releases the atlas regions reserved for its unsubmitted uploads.
 #[must_use = "submit the recorded frame to execute its commands"]
 pub struct RecordedFrame<'renderer> {
     before: Vec<wgpu::CommandBuffer>,

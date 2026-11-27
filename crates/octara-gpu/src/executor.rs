@@ -836,11 +836,15 @@ mod tests {
         assert_eq!(poll.deadline(false, now), None);
     }
 
-    fn wait<T>(mut task: GpuTask<T>, wakes: &mpsc::Receiver<DeviceNotice>) -> T {
+    fn wait<T>(task: GpuTask<T>, wakes: &mpsc::Receiver<DeviceNotice>) -> T {
+        wait_result(task, wakes).unwrap()
+    }
+
+    fn wait_result<T>(mut task: GpuTask<T>, wakes: &mpsc::Receiver<DeviceNotice>) -> Result<T, GpuError> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if let Some(result) = task.try_take() {
-                return result.unwrap();
+                return result;
             }
             wakes.recv_timeout(deadline.saturating_duration_since(Instant::now())).expect("the worker wakes the host after GPU work");
         }
@@ -956,15 +960,18 @@ mod tests {
     }
 
     #[test]
-    fn surface_renderer_records_capture_and_can_defer_to_builtin_draw() {
+    fn surface_renderer_records_capture_defers_or_reports_an_error() {
         use octara_render::{SurfaceFrame, SurfaceRenderer};
 
         struct Surface;
 
         impl SurfaceRenderer for Surface {
             fn record(&mut self, frame: SurfaceFrame<'_>) -> Result<Option<Vec<PaintReceipt>>, String> {
-                if frame.input.sample.is_none() {
+                let Some(sample) = frame.input.sample else {
                     return Ok(None);
+                };
+                if sample.revision == 3 {
+                    return Err("surface paint failed".into());
                 }
                 assert_eq!(frame.input.scale, 2.0);
                 assert_eq!(frame.target.color, OutputColor::SrgbStraight);
@@ -1009,8 +1016,13 @@ mod tests {
         let capture = wait(executor.capture(list.clone(), 2.0, Some(sample)).unwrap(), &wakes).finish().unwrap();
         assert_eq!(capture.picture.pixel(5, 3), Some([255, 0, 255, 255]));
         assert_eq!(capture.effects, [PaintReceipt { source: Default::default(), outcome: PaintOutcome::Rendered }]);
-        let fallback = wait(executor.capture(list, 2.0, None).unwrap(), &wakes).finish().unwrap();
+        let fallback = wait(executor.capture(list.clone(), 2.0, None).unwrap(), &wakes).finish().unwrap();
         assert_eq!(fallback.picture.pixel(5, 3), Some([255, 0, 0, 255]));
+        assert!(fallback.effects.is_empty());
+        let failed = executor.capture(list, 2.0, Some(PaintSample { revision: 3, ..sample })).unwrap();
+        assert!(
+            matches!(wait_result(failed, &wakes), Err(GpuError::Readback(message)) if message == "cannot record surface: surface paint failed")
+        );
         executor.shutdown();
     }
 }

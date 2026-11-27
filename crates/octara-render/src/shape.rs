@@ -97,6 +97,19 @@ impl ClipStack {
         u32::try_from(self.nodes.len()).expect("clip node index")
     }
 
+    /// A conservative box covered completely by all rounded nodes in the chain.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn safe_box(&self, mut head: u32, mut bounds: Rect) -> Rect {
+        while head != 0 && !bounds.is_empty() {
+            let node = self.nodes[head as usize - 1];
+            let [x, y, w, h] = node.rect;
+            let inset = node.radius.into_iter().fold(0.5, f32::max);
+            bounds = bounds.intersect(&Rect::new(x + inset, y + inset, w - 2.0 * inset, h - 2.0 * inset));
+            head = node.parent;
+        }
+        bounds
+    }
+
     #[cfg(feature = "gpu")]
     pub(crate) fn into_nodes(self) -> Vec<ClipNode> {
         self.nodes

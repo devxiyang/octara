@@ -596,7 +596,7 @@ fn local_transition_composites_accepted_history_and_current_pixels_in_place() {
     close(before.picture.pixel(6, 8).unwrap(), [0, 255, 0, 255]);
     let (pending, effects, timing) = submit(&mut gpu, &incoming, 20);
     assert_eq!(effects, [PaintReceipt { source, outcome: midpoint }]);
-    assert_eq!(timing.render_passes, 3);
+    assert_eq!(timing.render_passes, 4);
     assert_eq!(timing.backdrop_copy_pixels, 0);
     gpu.accept_presentation(pending);
 
@@ -715,9 +715,9 @@ fn materials_batch_in_painter_order_with_per_instance_params() {
         passes[0].batches,
         [
             Batch { instances: 0..2, draw: Draw::Material(material) },
-            Batch { instances: 2..3, draw: Draw::PLAIN },
+            Batch { instances: 2..3, draw: Draw::Quad },
             Batch { instances: 3..4, draw: Draw::Material(material) },
-            Batch { instances: 4..6, draw: Draw::PLAIN },
+            Batch { instances: 4..6, draw: Draw::Quad },
         ]
     );
     let frame = gpu.render(&dl, 1.0);
@@ -872,7 +872,7 @@ fn backdrops_read_the_painter_prefix_and_keep_surrounding_commands_in_order() {
         let (mut frame, profile) = gpu.record(encoder, linear_target(&texture), input, Some(Box::new(|_| {}))).unwrap();
         let profile = profile.unwrap();
         assert!(frame.paint_receipts().iter().all(|receipt| receipt.outcome == PaintOutcome::Rendered));
-        assert_eq!(profile.render_passes, if copyable { 3 } else { 4 });
+        assert_eq!(profile.render_passes, if copyable { 5 } else { 6 });
         assert_eq!(profile.output_pixels, if copyable { 0 } else { 32 * 24 });
         blit.encode(frame.encoder(), &bind, &snapshot_view, None);
         copy_pixel(frame.encoder(), 3, 3, 4);
@@ -1130,7 +1130,7 @@ fn profiled_frames_measure_recorded_work_and_read_back_asynchronously() {
     let (frame, profile) =
         gpu.record(encoder(), linear_target(&target), input, Some(Box::new(move |sample| send.send(sample).unwrap()))).unwrap();
     let profile = profile.expect("a profiled frame");
-    assert_eq!((profile.draw_batches, profile.material_batches, profile.render_passes), (7, 1, 3));
+    assert_eq!((profile.draw_batches, profile.material_batches, profile.render_passes), (7, 1, 5));
     assert_eq!((profile.layer_pixels, profile.canvas_pixels, profile.backdrop_copy_pixels), (768, 80, 64));
     assert_eq!(profile.retained_backdrops, 0);
     assert_eq!(profile.gpu_sampled, timestamps_supported);
@@ -1145,7 +1145,7 @@ fn profiled_frames_measure_recorded_work_and_read_back_asynchronously() {
         let sample = receive.try_recv().expect("submitted frame reported GPU timings");
         eprintln!("{:?} GPU timings: {sample:?}", adapter.get_info().backend);
         let kinds: Vec<_> = sample.passes.iter().map(|pass| pass.kind).collect();
-        assert_eq!(kinds.iter().filter(|&&kind| kind == GpuPassKind::Ui).count(), 2);
+        assert_eq!(kinds.iter().filter(|&&kind| kind == GpuPassKind::Ui).count(), 4);
         assert!(kinds.contains(&GpuPassKind::Layer));
         if features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
             assert_eq!(
@@ -1155,10 +1155,12 @@ fn profiled_frames_measure_recorded_work_and_read_back_asynchronously() {
                     GpuPassKind::Author("test_compute"),
                     GpuPassKind::Author("test_render"),
                     GpuPassKind::Layer,
+                    GpuPassKind::Ui, // Opaque cores of the prefix.
                     GpuPassKind::Ui,
                     GpuPassKind::BackdropCopy,
                     GpuPassKind::Backdrop,
-                    GpuPassKind::Ui
+                    GpuPassKind::Ui, // Backdrop composite.
+                    GpuPassKind::Ui  // Opaque cores of the next segment.
                 ]
             );
             assert!(sample.span.is_some());
@@ -1170,9 +1172,11 @@ fn profiled_frames_measure_recorded_work_and_read_back_asynchronously() {
                     GpuPassKind::Author("test_compute"),
                     GpuPassKind::Author("test_render"),
                     GpuPassKind::Layer,
+                    GpuPassKind::Ui, // Opaque cores of the prefix.
                     GpuPassKind::Ui,
                     GpuPassKind::BackdropClear,
-                    GpuPassKind::Ui
+                    GpuPassKind::Ui, // Backdrop composite.
+                    GpuPassKind::Ui  // Opaque cores of the next segment.
                 ]
             );
             assert!(sample.span.is_none());

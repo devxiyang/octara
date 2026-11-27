@@ -26,6 +26,10 @@
 
 ---
 
+### SPI-1 Surface renderer registration
+
+Register a factory with `octara_host_native::run_app_with_surface_renderer` for native windows and GPU captures. With the `webgpu` feature, use `octara_host_web::WebApp::launch_with_surface_renderer` for local GPU canvases. The host creates a backend for each GPU device, including replacements after device loss. The backend receives a borrowed `DisplayList`, the required output color encoding, and a command encoder. Use `DisplayList::placed_items` to traverse the shared drawing payloads with their offset and fade. Return paint receipts for the recorded frame or `Ok(None)` to use the built-in renderer for that frame.
+
 ### SPI-2 Media registration
 
 Use `BuildCx::provide::<Arc<dyn MediaResolver>>` for logical URI resolution at a view scope. Register a persistent response store with `AppDefinition::with_media_cache_backend` and a custom native video slot provider with `AppDefinition::with_video_surface_provider`. Returning `None` from either resolver or video provider selects the built-in behavior. The persistent cache receives public HTTP bodies and validators only. The runtime enforces source policy before giving the Native loader a cache backend. See [Async Media](10-ai-document-media-and-markdown.md#34-viewport-aware-async-media-zero-cls-probing--3-tier-image-cache).

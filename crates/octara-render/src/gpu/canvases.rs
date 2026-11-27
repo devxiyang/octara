@@ -95,7 +95,7 @@ impl GpuRenderer {
                         .expect("one batch belongs to the requested canvas")
                         .instances
                         .start;
-                    pass.insts[instance] = request.fallback;
+                    pass.paints[instance] = request.fallback;
                     slots.push(None);
                     PaintOutcome::Fallback { reason }
                 }
@@ -106,7 +106,7 @@ impl GpuRenderer {
         for pass in passes {
             for batch in &mut pass.batches {
                 if let Draw::Canvas(request) = batch.draw {
-                    batch.draw = slots[request].map_or(Draw::PLAIN, Draw::Canvas);
+                    batch.draw = slots[request].map_or(Draw::Quad, Draw::Canvas);
                 }
             }
         }

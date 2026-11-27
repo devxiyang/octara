@@ -4,20 +4,27 @@ use super::{FrameInput, FrameTarget, RecordError, custom};
 use octara_model::capture::PaintReceipt;
 use std::sync::Arc;
 
-/// Creates a fresh renderer for the initial device and for each replacement device.
+/// Creates a fresh renderer for each device, including replacements after device loss.
+/// On native hosts, the resulting renderer can move to the device's worker thread.
 pub type SurfaceRendererFactory = Arc<dyn Fn(&wgpu::Device) -> Box<dyn SurfaceRenderer> + Send + Sync>;
 
 /// Arguments for recording one frame. The host owns the queue and submits the recorded commands.
 pub struct SurfaceFrame<'a> {
+    /// The same device that created the renderer and owns the output texture.
     pub device: &'a wgpu::Device,
+    /// Records uploads and draws for this frame, subject to host submission.
     pub encoder: &'a mut wgpu::CommandEncoder,
+    /// The output texture and its required color representation.
     pub target: FrameTarget<'a>,
+    /// The frozen display list at the host's drawing scale and sample time.
     pub input: FrameInput<'a>,
 }
 
 /// Records a display list into the host's output attachment using the requested color encoding.
 pub trait SurfaceRenderer: wgpu::WasmNotSendSync {
-    /// Return the paint receipts for a recorded frame or `Ok(None)` to use the built-in renderer.
+    /// Return paint receipts in display-list order for the author draws this frame records.
+    /// `Ok(None)` discards this encoder and asks the built-in renderer to record the frame.
+    /// `Err` reports a recording failure to the host.
     /// The host may record the same input again or discard commands before submission.
     /// Record uploads and rendering in the supplied encoder. Keep its resources usable through
     /// submission and avoid depending on a previously recorded frame having been submitted.

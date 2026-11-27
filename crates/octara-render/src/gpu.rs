@@ -1,6 +1,6 @@
 //! The GPU renderer: wgpu, instanced batches for each target, and author-defined paint programs.
 //! Glyphs and paths use the reference rasterizers ([`crate::glyphs::GlyphCache`], [`crate::paths`]).
-//! Draws bind the pages or dedicated textures that hold their samples, in painter order.
+//! Draws sample array-backed atlases and preserve painter order at overlapping blended pixels.
 
 use octara_model::capture::PaintSample;
 use octara_model::paint::DisplayList;
@@ -12,6 +12,7 @@ mod custom;
 mod device_loss;
 mod encode;
 mod glyph_pipeline;
+mod instances;
 mod outputs;
 mod pipeline;
 pub mod plan;
@@ -20,6 +21,7 @@ mod profile;
 mod readback;
 mod recording;
 mod resolve;
+mod schedule;
 mod surface;
 mod upload;
 
@@ -36,7 +38,6 @@ pub use custom::{Backdrop, CanvasFrame, Transition, TransitionImage, backdrop, c
 pub use custom::{ErrorScopes, local};
 #[doc(hidden)]
 pub use device_loss::DeviceLoss;
-use glyph_pipeline::GlyphPipeline;
 pub use outputs::PendingPresentation;
 use outputs::{CanvasCache, PresentationHistory};
 use pipeline::PipelineCache;
@@ -66,7 +67,6 @@ pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipelines: PipelineCache,
-    glyph_pipeline: GlyphPipeline,
     surface_renderer: Option<Box<dyn SurfaceRenderer>>,
     output_resolve: OutputResolve,
     buffers: FrameBuffers,
@@ -75,6 +75,7 @@ pub struct GpuRenderer {
     layers: Vec<Option<wgpu::Texture>>,
     /// A 1×1 texture bound where no layer is.
     no_layer: wgpu::Texture,
+    depth: rustc_hash::FxHashMap<[u32; 2], wgpu::TextureView>,
     programs: custom::Programs,
     canvas_cache: CanvasCache,
     presentation_history: PresentationHistory,
@@ -105,18 +106,17 @@ impl GpuRenderer {
             view_formats: &[],
         });
         let pipelines = PipelineCache::new(&device);
-        let glyph_pipeline = GlyphPipeline::new(&device);
         GpuRenderer {
             device,
             queue,
             pipelines,
-            glyph_pipeline,
             surface_renderer: None,
             output_resolve: OutputResolve::default(),
             buffers,
             textures: None,
             layers: Vec::new(),
             no_layer,
+            depth: Default::default(),
             programs: custom::Programs::default(),
             canvas_cache: CanvasCache::default(),
             presentation_history: PresentationHistory::default(),

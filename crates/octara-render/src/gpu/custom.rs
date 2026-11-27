@@ -1,6 +1,6 @@
 use super::WORKING_FORMAT;
-use super::batch::Inst;
-use super::pipeline::{GEOMETRY_SHADER, render_pipeline};
+use super::batch::Paint;
+use super::pipeline::{Phase, SHARED_SHADER, render_pipeline};
 use super::plan::BackdropRegion;
 use super::profile::{FrameMeasurement, GpuPassKind, Instant, TimestampFrame};
 use octara_model::capture::{PaintFallback, PaintSample};
@@ -254,7 +254,7 @@ pub(super) struct CanvasPaint {
 impl CanvasPaint {
     pub(super) fn from_custom(
         paint: &CustomPaint,
-        fallback: Inst,
+        fallback: Paint,
         mode: CanvasMode,
         scale: f32,
         sample: Option<PaintSample>,
@@ -420,18 +420,10 @@ impl Programs {
                     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some("octara material"),
                         source: wgpu::ShaderSource::Wgsl(
-                            format!("{}\n{GEOMETRY_SHADER}{}", material.wgsl, include_str!("material.wgsl")).into(),
+                            format!("{}\n{SHARED_SHADER}{}", material.wgsl, include_str!("material.wgsl")).into(),
                         ),
                     });
-                    render_pipeline(
-                        device,
-                        layout,
-                        format,
-                        &shader,
-                        "fs_material",
-                        "octara material",
-                        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-                    )
+                    render_pipeline(device, layout, format, &shader, "octara material", Phase::Material, true)
                 })
                 .await
                 .map_err(|error| eprintln!("Octara material at {node:?}: {error}"))

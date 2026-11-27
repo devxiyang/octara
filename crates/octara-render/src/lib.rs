@@ -4,13 +4,14 @@
 //!   gives agents and tests screenshots without a GPU and is the oracle the GPU renderer is
 //!   compared with.
 //! - [`GpuRenderer`] (feature `gpu`): wgpu, batched instances, materials, canvases, and backdrop effects.
-//!   The built-in shader implements the formulas of [`shape`] and uses the same [`glyphs`] and
-//!   [`paths`] rasterization as the reference renderer.
+//!   The built-in pipelines use the reference renderer's [`shape`] formulas, [`glyphs`] and
+//!   [`paths`] rasterizers, and image mip generation.
 
 pub mod cpu;
 pub mod glyphs;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+mod image_mips;
 pub mod paths;
 mod pixels;
 pub mod shape;

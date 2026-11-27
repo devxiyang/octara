@@ -13,6 +13,59 @@ struct ClipNode {
 
 @group(0) @binding(5) var<storage, read> clip_nodes: array<ClipNode>;
 
+struct DrawInst {
+    bounds: vec4f,
+    clip: vec4f,
+    core: vec4f,
+    depth: f32,
+    payload: u32,
+    clip_head: u32,
+    flags: u32,
+};
+
+struct VsOut {
+    @builtin(position) pos: vec4f,
+    @location(0) @interpolate(flat) inst_id: u32,
+};
+
+const FRACTIONAL_CLIP: u32 = 1u;
+
+// Integral rectangular clips are already resolved by the vertex clamp.
+override FRAGMENT_CLIPPING: bool = true;
+
+fn draw_vertex(vi: u32, id: u32, rect: vec4f, draw_inst: DrawInst) -> VsOut {
+    let corner = vec2f(f32(vi & 1u), f32(vi >> 1u));
+    let clip = draw_inst.clip;
+    let pad = select(0.0, 0.5, (draw_inst.flags & FRACTIONAL_CLIP) != 0u);
+    let lo = max(rect.xy, clip.xy - pad);
+    let hi = max(lo, min(rect.xy + rect.zw, clip.xy + clip.zw + pad));
+    let p = select(lo + corner * (hi - lo), lo, any(clip.zw <= vec2f(0.0)));
+    let local = (p - globals.origin) / globals.size;
+    return VsOut(vec4f(local.x * 2.0 - 1.0, 1.0 - local.y * 2.0, draw_inst.depth, 1.0), id);
+}
+
+fn in_core(p: vec2f, core: vec4f) -> bool {
+    // Core bounds are pixel-aligned, so no sample center falls on a shared edge.
+    return all(p >= core.xy) && all(p < core.xy + core.zw);
+}
+
+fn quad_uv(p: vec2f, rect: vec4f) -> vec2f {
+    return clamp((p - rect.xy) / max(rect.zw, vec2f(0.000001)), vec2f(0.0), vec2f(1.0));
+}
+
+fn srgb_to_linear(c: vec3f) -> vec3f {
+    return select(pow((c + 0.055) / 1.055, vec3f(2.4)), c / 12.92, c <= vec3f(0.04045));
+}
+
+fn unpack_color(rgba8: u32) -> vec4f {
+    let color = unpack4x8unorm(rgba8);
+    return vec4f(srgb_to_linear(color.rgb), color.a);
+}
+
+fn premultiply(color: vec4f) -> vec4f {
+    return vec4f(color.rgb * color.a, color.a);
+}
+
 fn corner_distance(d: f32, p: vec2f, radius: f32) -> f32 {
     if all(p < vec2f(radius)) {
         return max(d, length(vec2f(radius) - p) - radius);
@@ -51,4 +104,18 @@ fn clip_chain_coverage(p: vec2f, clip_head: u32) -> f32 {
         head = node.parent;
     }
     return alpha;
+}
+
+fn clip_coverage(p: vec2f, draw_inst: DrawInst) -> f32 {
+    if !FRAGMENT_CLIPPING {
+        return 1.0;
+    }
+    if draw_inst.clip_head != 0u {
+        return clip_chain_coverage(p, draw_inst.clip_head);
+    }
+    // Integral rectangles have no fractional coverage at device-pixel centers.
+    if (draw_inst.flags & FRACTIONAL_CLIP) != 0u {
+        return coverage(sd_round_rect(p, draw_inst.clip, vec4f(0.0)));
+    }
+    return 1.0;
 }
