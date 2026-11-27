@@ -1,11 +1,13 @@
-//! Winit orchestration driven by runtime deadlines and device completion events.
+//! Native orchestration driven by platform events, runtime deadlines, and GPU completion.
 
 mod frame_input;
 
 use self::frame_input::FrameInput;
-use crate::os::{self, FrameTick, HostEvent, KeyDispatch, OsHost, OsWindowContext};
-use crate::window::{Device, FileDrop, HostWindow, transparent_background};
-use crate::{NativeAppOptions, ShellConfig, ShellError, ShellHook, trace};
+use crate::os::{
+    self, FileDropPhase, HostEvent, LoopState, OsHost, OsWindowInit, PlatformEvent, PlatformKey, PlatformSender, PointerPhase, ShellDriver,
+};
+use crate::window::{Device, FileDrop, HostWindow, create_surface, transparent_background};
+use crate::{NativeAppOptions, ShellConfig, ShellHook, trace};
 use octara::module::HostLifecycleEvent;
 use octara::runtime::cycle::AppError;
 use octara::runtime::{HostCommand, Input, RestartState, WindowId};
@@ -17,11 +19,10 @@ use octara_gpu::{
 };
 use octara_model::ask::{Answer, ServiceError, ServiceOutcome, ServiceRequest};
 use octara_model::capture::FrameReceipt;
-use octara_model::geometry::{Point, Size, Vec2};
+use octara_model::geometry::{Point, Size};
 use octara_model::identity::{NativeId, TargetGuard};
 use octara_model::input::{
-    Button, ContactTarget, DroppedFile, EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, Modifiers, PointerId, PointerKind,
-    TextEdit, WheelPhase,
+    Button, ContactTarget, DroppedFile, EditorEvent, HostReply, InteractionEvent, Key, Modifiers, PointerId, PointerKind, TextEdit,
 };
 use octara_model::native::{NativeEvent, TypedNativeCommand};
 use octara_model::theme::ColorScheme;
@@ -29,74 +30,18 @@ use octara_model::window::{SystemPreferences, WindowMaterial};
 use octara_pipeline::{NativeEngine, NativeEngineConfig, NativePublication};
 use octara_render::wgpu;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
-use winit::keyboard::{Key as NativeKey, KeyCode, NamedKey, PhysicalKey};
-use winit::window::{Window, WindowId as HostId};
-
-pub enum ShellEvent {
-    Wake,
-    PlatformReady,
-    Lifecycle(HostLifecycleEvent),
-    Device {
-        generation: u64,
-        notice: DeviceNotice,
-    },
-    Input {
-        window: WindowId,
-        input: Input,
-    },
-    Frame {
-        window: WindowId,
-        target: Instant,
-    },
-    DisplayTick {
-        window: WindowId,
-        tick: FrameTick,
-    },
-    Native {
-        window: WindowId,
-        id: NativeId,
-        event: NativeEvent,
-    },
-    RefreshViewport {
-        window: WindowId,
-    },
-    RefreshSystemPreferences,
-    SystemPreferencesChanged {
-        color_scheme: Option<ColorScheme>,
-        reduced_motion: Option<bool>,
-        text_scale: Option<f32>,
-        high_contrast: Option<bool>,
-    },
-    Accessibility(accesskit_winit::Event),
-    PlatformAccessibilityAction {
-        window: WindowId,
-        target: TargetGuard,
-        action: octara_model::semantics::A11yAction,
-    },
-}
-
-impl From<accesskit_winit::Event> for ShellEvent {
-    fn from(event: accesskit_winit::Event) -> Self {
-        Self::Accessibility(event)
-    }
-}
-
 enum CaptureStage {
     Read(GpuTask<CapturePixels>, PathBuf),
     Write(CaptureOutput<StagedCapture>),
     Publish(CaptureOutput<PathBuf>),
 }
 
-pub(crate) struct Shell {
+struct Shell {
     config: ShellConfig,
     definition: Option<AppDefinition>,
     first_frame: Option<Box<dyn FnOnce(FrameReceipt)>>,
@@ -104,14 +49,14 @@ pub(crate) struct Shell {
     hook: Option<Box<dyn ShellHook>>,
     hook_deadline: Option<Instant>,
     app: App,
-    os: Box<dyn OsHost>,
-    proxy: EventLoopProxy<ShellEvent>,
+    sender: PlatformSender,
     pending_lifecycle: Vec<HostLifecycleEvent>,
     foreground: Option<bool>,
     focus_changed: bool,
     frame_sources: Rc<RefCell<BTreeMap<WindowId, NativePublication>>>,
     windows: BTreeMap<WindowId, HostWindow>,
-    ids: HashMap<HostId, WindowId>,
+    retired: Vec<HostWindow>,
+    pending_windows: BTreeSet<WindowId>,
     frame_input: FrameInput,
     instance: wgpu::Instance,
     device: Option<Device>,
@@ -123,17 +68,16 @@ pub(crate) struct Shell {
     capture_writer: Option<CaptureWriter>,
     capture_stage: Option<CaptureStage>,
     capture_finished: bool,
-    error: Option<ShellError>,
+    terminating: bool,
 }
 
 impl Shell {
-    pub(crate) fn new(definition: AppDefinition, proxy: EventLoopProxy<ShellEvent>, options: NativeAppOptions) -> Self {
-        let NativeAppOptions { config, os_host, surface_renderer, hook, first_frame } = options;
+    fn new(definition: AppDefinition, host: &dyn OsHost, sender: PlatformSender, options: NativeAppOptions) -> Self {
+        let NativeAppOptions { config, surface_renderer, hook, first_frame, .. } = options;
         let config = config.unwrap_or_else(ShellConfig::from_env);
         let frame_sources = Rc::new(RefCell::new(BTreeMap::new()));
         let outputs = frame_sources.clone();
-        let mut os = os_host.unwrap_or_else(os::create_os_host);
-        let supports_vibrancy = os.supports_window_vibrancy();
+        let supports_vibrancy = host.supports_window_vibrancy();
         let mut app = App::new(move |id, _| {
             let publication = NativePublication::for_window_host();
             outputs.borrow_mut().insert(id, publication.clone());
@@ -142,14 +86,10 @@ impl Shell {
                 publication,
             ))
         });
-        let thread_setup = os.utility_thread_setup().unwrap_or(|| {});
+        let thread_setup = host.utility_thread_setup().unwrap_or(|| {});
         app.runtime_mut().set_media_loader(crate::media::NativeMediaLoader { thread_setup });
-        app.runtime_mut().set_module_host_kind(os.module_surface_kind());
-        let wake = proxy.clone();
-        app.runtime_mut().set_wake(Some(Arc::new(move || {
-            let _ = wake.send_event(ShellEvent::Wake);
-        })));
-        os.initialize(proxy.clone());
+        app.runtime_mut().set_module_host_kind(host.module_surface_kind());
+        app.runtime_mut().set_wake(Some(host.wake()));
         Self {
             config,
             definition: Some(definition),
@@ -158,14 +98,14 @@ impl Shell {
             hook,
             hook_deadline: None,
             app,
-            os,
-            proxy,
+            sender,
             pending_lifecycle: Vec::new(),
             foreground: None,
             focus_changed: false,
             frame_sources,
             windows: BTreeMap::new(),
-            ids: HashMap::new(),
+            retired: Vec::new(),
+            pending_windows: BTreeSet::new(),
             frame_input: FrameInput::default(),
             instance: wgpu::Instance::default(),
             device: None,
@@ -177,21 +117,17 @@ impl Shell {
             capture_writer: None,
             capture_stage: None,
             capture_finished: false,
-            error: None,
+            terminating: false,
         }
     }
 
-    pub(crate) fn take_error(&mut self) -> Option<ShellError> {
-        self.error.take()
-    }
-
-    fn create_device(&mut self, surface: &wgpu::Surface<'static>) -> Result<(), String> {
+    fn create_device(&mut self, os: &dyn OsHost, surface: &wgpu::Surface<'static>) -> Result<(), String> {
         self.generation = self.generation.checked_add(1).expect("device generation exhausted");
-        let proxy = self.proxy.clone();
+        let sender = self.sender.clone();
         let generation = Arc::new(DeviceGeneration::new(
             self.generation,
             Some(Arc::new(move |generation, notice| {
-                let _ = proxy.send_event(ShellEvent::Device { generation, notice });
+                sender.send_event(PlatformEvent::Device { generation, notice });
             })),
         ));
         self.device = Some(Device::create(
@@ -200,78 +136,55 @@ impl Shell {
             generation,
             self.config.trace_gpu,
             self.surface_renderer.as_ref(),
-            self.os.frame_thread_setup().unwrap_or(|| {}),
+            os.frame_thread_setup().unwrap_or(|| {}),
         )?);
         Ok(())
     }
 
-    fn create_window(&mut self, event_loop: &ActiveEventLoop, id: WindowId) -> Result<(), String> {
+    fn create_window(&mut self, os: &mut dyn OsHost, id: WindowId) -> Result<(), String> {
         let Some(runtime) = self.app.runtime().window(id) else { return Ok(()) };
         let options = runtime.options().clone();
         let presentation = runtime.presentation();
-        let size = options.viewport.size;
         let transparent = transparent_background(&presentation.theme)
-            || (self.os.supports_window_vibrancy() && matches!(presentation.material, WindowMaterial::Vibrancy(_)));
+            || (os.supports_window_vibrancy() && matches!(presentation.material, WindowMaterial::Vibrancy(_)));
         let initial_fullscreen = runtime.window_geometry().fullscreen;
-        let mut attributes = Window::default_attributes()
-            .with_title(presentation.title.as_ref())
-            .with_inner_size(LogicalSize::new(size.width, size.height))
-            .with_resizable(options.resizable)
-            .with_maximized(options.maximized)
-            .with_visible(false)
-            .with_transparent(transparent);
-        if let Some(position) = options.position {
-            attributes = attributes.with_position(LogicalPosition::new(position.x, position.y));
-        }
-        if let Some(size) = options.min_size {
-            attributes = attributes.with_min_inner_size(LogicalSize::new(size.width, size.height));
-        }
-        if let Some(size) = options.max_size {
-            attributes = attributes.with_max_inner_size(LogicalSize::new(size.width, size.height));
-        }
-        let attributes = self.os.window_attributes(attributes, &options);
-        let window = Arc::new(event_loop.create_window(attributes).map_err(|error| error.to_string())?);
-        let platform_accessibility = self.os.platform_accessibility_active();
-        let a11y = platform_accessibility
-            .is_none()
-            .then(|| accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone()));
-        self.os.prepare_window(&window)?;
-        let surface = Arc::new(self.instance.create_surface(window.clone()).map_err(|error| error.to_string())?);
+        let backend = self.device.as_ref().map_or(wgpu::Backends::all(), |device| device.adapter.get_info().backend.into());
+        let mut window =
+            os.create_window(id, &options, OsWindowInit { backend, config: &self.config, sender: self.sender.clone(), transparent })?;
+        window.configure_chrome(&options);
+        window.apply_presentation(&presentation.title, presentation.theme.scheme, presentation.material, presentation.status_bar);
+        let raw = window.host_surface().raw_native();
+        let surface = create_surface(&self.instance, window.as_ref())?;
         if self.device.is_none() {
-            self.create_device(&surface)?;
+            self.create_device(os, &surface)?;
         }
-        let backend = self.device.as_ref().expect("initialized device").adapter.get_info().backend;
-        let mut os =
-            self.os.create_window(OsWindowContext { window: &window, id, backend, config: &self.config, proxy: self.proxy.clone() })?;
-        os.configure_chrome(&window, &options);
+
         let publication = self.frame_sources.borrow().get(&id).cloned().ok_or("missing native publication")?;
-        let mut host = HostWindow::new(id, window.clone(), os, a11y, surface, publication, transparent);
-        if let Some(active) = platform_accessibility
+        let mut host = HostWindow::new(id, window, surface, publication, transparent);
+        if let Some(active) = os.platform_accessibility_active()
             && let Some(runtime) = self.app.runtime().window(id)
         {
             host.set_accessibility_active(runtime, active);
         }
         host.initial_fullscreen = initial_fullscreen;
-        let raw = host.os.module_surface(&host.window, self.os.module_surface_kind(), id).raw_native();
-        self.ids.insert(window.id(), id);
         self.windows.insert(id, host);
         if let Some(raw) = raw {
             // SAFETY: The attached HostWindow owns the handles and clears the registration before drop.
             unsafe { self.app.runtime_mut().set_module_native_surface(id, raw) };
         }
         self.lifecycle(HostLifecycleEvent::WindowAttached { window: id })?;
-        if let Some(theme) = window.theme() {
-            self.refresh_system_preferences(Some(color_scheme(theme)))?;
-        }
         self.refresh_viewport(id)
     }
 
     fn detach_window(&mut self, id: WindowId) -> Result<(), String> {
+        self.pending_windows.remove(&id);
         self.frame_sources.borrow_mut().remove(&id);
         self.app.runtime_mut().clear_module_native_surface(id);
         if let Some(host) = self.windows.remove(&id) {
-            self.ids.remove(&host.window.id());
-            drop(host);
+            // A canceled draw can still own a surface texture on the GPU worker. Keep the window
+            // under shell ownership before calling any native cleanup that may unwind.
+            self.retired.push(host);
+            self.retired.last_mut().expect("retiring window").retire();
             self.lifecycle(HostLifecycleEvent::WindowDetached { window: id })?;
         }
         Ok(())
@@ -310,25 +223,38 @@ impl Shell {
         }
     }
 
-    fn drain_commands(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
+    fn drain_commands(&mut self, os: &mut dyn OsHost) -> Result<(), String> {
+        let ready = os.is_ready();
+        if ready {
+            for id in std::mem::take(&mut self.pending_windows) {
+                self.create_window(os, id)?;
+            }
+        }
         let mut native_commands = Vec::new();
         for command in self.app.runtime_mut().take_host_commands() {
             match command {
-                HostCommand::Opened(id) => self.create_window(event_loop, id)?,
+                HostCommand::Opened(id) if ready => self.create_window(os, id)?,
+                HostCommand::Opened(id) => {
+                    self.pending_windows.insert(id);
+                }
                 HostCommand::Closed(id) => self.detach_window(id)?,
-                HostCommand::Menus(menus) => self.os.set_menus(&menus),
+                HostCommand::Menus(menus) => os.set_menus(&menus),
                 HostCommand::UpdateWindowPresentation { window, title, color_scheme, material, status_bar } => {
                     if let Some(host) = self.windows.get_mut(&window) {
-                        host.os.apply_presentation(&host.window, &title, color_scheme, material, status_bar);
+                        host.os.apply_presentation(&title, color_scheme, material, status_bar);
                     }
                 }
-                HostCommand::SetAppBadge { badge } => self.os.set_app_badge(badge.as_deref()),
+                HostCommand::SetAppBadge { badge } => os.set_app_badge(badge.as_deref()),
                 HostCommand::RequestUserAttention { window, attention } => {
-                    let host = window
-                        .and_then(|id| self.windows.get(&id))
-                        .or_else(|| self.windows.values().find(|host| host.window.has_focus()))
-                        .or_else(|| self.windows.values().next());
-                    self.os.request_user_attention(host.map(|host| host.window.as_ref()), attention);
+                    let id = window.filter(|id| self.windows.contains_key(id)).or_else(|| {
+                        self.windows.iter().find(|(_, host)| host.os.is_focused()).or_else(|| self.windows.iter().next()).map(|(&id, _)| id)
+                    });
+                    let window = id.and_then(|id| self.windows.get_mut(&id));
+                    if let Some(host) = window {
+                        os.request_user_attention(Some(&mut *host.os), attention);
+                    } else {
+                        os.request_user_attention(None, attention);
+                    }
                 }
                 HostCommand::SetWindowGeometry { window, mut geometry } => {
                     if let Some(host) = self.windows.get_mut(&window)
@@ -338,29 +264,29 @@ impl Shell {
                         if geometry.fullscreen.is_some() {
                             host.initial_fullscreen = false;
                         }
-                        host.os.set_window_geometry(&host.window, geometry);
+                        host.os.set_window_geometry(geometry);
                         self.refresh_viewport(window)?;
                     }
                 }
                 HostCommand::FocusWindow { window } => {
                     if let Some(host) = self.windows.get_mut(&window) {
-                        host.os.focus_window(&host.window);
+                        host.os.focus();
                     }
                 }
                 HostCommand::MinimizeWindow { window } => {
                     if let Some(host) = self.windows.get_mut(&window) {
-                        host.os.minimize_window(&host.window);
+                        host.os.minimize();
                     }
                 }
                 HostCommand::ToggleMaximizeWindow { window } => {
                     if let Some(host) = self.windows.get_mut(&window) {
-                        host.os.toggle_maximize(&host.window);
+                        host.os.toggle_maximize();
                         self.refresh_viewport(window)?;
                     }
                 }
                 HostCommand::StartWindowDrag { window } => {
                     if let Some(host) = self.windows.get_mut(&window) {
-                        host.os.start_window_drag(&host.window);
+                        host.os.start_window_drag();
                     }
                 }
                 HostCommand::Ask { window, id, ask } => {
@@ -370,7 +296,7 @@ impl Shell {
                             None => Some(ask),
                         };
                         if let Some(ask) = unhandled {
-                            os::reply(&self.proxy, window, HostReply::AskAnswer { id, answer: Answer::dismissed(&ask) });
+                            os::reply(&self.sender, window, HostReply::AskAnswer { id, answer: Answer::dismissed(&ask) });
                         }
                     }
                 }
@@ -380,7 +306,7 @@ impl Shell {
                     }
                 }
                 command @ (HostCommand::NativeCommand { .. } | HostCommand::TypedNativeCommand { .. }) => native_commands.push(command),
-                HostCommand::OpenUrl { url } => self.os.open_url(&url),
+                HostCommand::OpenUrl { url } => os.open_url(&url),
                 HostCommand::Service { window, id, request } => {
                     let Some(host) = self.windows.get_mut(&window) else { continue };
                     if let Some(cleanup) = host.os.request_service(id, request.clone()) {
@@ -388,19 +314,18 @@ impl Shell {
                         continue;
                     }
                     let outcome = match request {
-                        ServiceRequest::ReadClipboard { accept } => self
-                            .os
-                            .read_clipboard(accept)
-                            .map_or(ServiceOutcome::Error(ServiceError::Unavailable), ServiceOutcome::Clipboard),
+                        ServiceRequest::ReadClipboard { accept } => {
+                            os.read_clipboard(accept).map_or(ServiceOutcome::Error(ServiceError::Unavailable), ServiceOutcome::Clipboard)
+                        }
                         ServiceRequest::WriteClipboard { items } => {
-                            self.os.write_clipboard(&items).map_or_else(ServiceOutcome::Error, |()| ServiceOutcome::ClipboardWritten)
+                            os.write_clipboard(&items).map_or_else(ServiceOutcome::Error, |()| ServiceOutcome::ClipboardWritten)
                         }
                     };
-                    os::reply(&self.proxy, window, HostReply::ServiceReply { id, outcome });
+                    os::reply(&self.sender, window, HostReply::ServiceReply { id, outcome });
                 }
             }
         }
-        self.synchronize()?;
+        self.synchronize(os)?;
         for command in native_commands {
             match command {
                 HostCommand::NativeCommand { window, command } => {
@@ -431,9 +356,9 @@ impl Shell {
 
     fn refresh_viewport(&mut self, window: WindowId) -> Result<(), String> {
         if let Some(host) = self.windows.get_mut(&window) {
-            host.os.prepare_window_metrics(&host.window);
+            host.os.prepare_window_metrics();
             let viewport = host.viewport();
-            let geometry = host.os.window_geometry(&host.window, viewport);
+            let geometry = host.os.window_geometry(viewport);
             let chrome = host.os.window_chrome();
             let chrome_changed = std::mem::replace(&mut host.chrome, chrome) != chrome;
             if self.app.runtime().window(window).is_some_and(|runtime| runtime.window_geometry() != geometry) {
@@ -449,14 +374,14 @@ impl Shell {
         Ok(())
     }
 
-    fn refresh_system_preferences(&mut self, color_scheme: Option<ColorScheme>) -> Result<(), String> {
-        self.refresh_platform_accessibility();
+    fn refresh_system_preferences(&mut self, os: &dyn OsHost, color_scheme: Option<ColorScheme>) -> Result<(), String> {
+        self.refresh_platform_accessibility(os);
         let mut next = self.app.runtime().system_preferences();
-        next.color_scheme = color_scheme.unwrap_or(next.color_scheme);
-        next.reduced_motion = self.os.reduced_motion().unwrap_or(next.reduced_motion);
-        next.locale = self.os.locale().unwrap_or(next.locale);
-        next.text_scale = self.os.text_scale().unwrap_or(next.text_scale);
-        next.high_contrast = self.os.high_contrast().unwrap_or(next.high_contrast);
+        next.color_scheme = color_scheme.or_else(|| os.color_scheme()).unwrap_or(next.color_scheme);
+        next.reduced_motion = os.reduced_motion().unwrap_or(next.reduced_motion);
+        next.locale = os.locale().unwrap_or(next.locale);
+        next.text_scale = os.text_scale().unwrap_or(next.text_scale);
+        next.high_contrast = os.high_contrast().unwrap_or(next.high_contrast);
         self.apply_system_preferences(next)
     }
 
@@ -484,10 +409,9 @@ impl Shell {
         Ok(())
     }
 
-    fn synchronize(&mut self) -> Result<(), String> {
+    fn synchronize(&mut self, os: &mut dyn OsHost) -> Result<(), String> {
         let mut upcoming = Vec::new();
-        self.os.drain_platform_events(&mut upcoming);
-        let kind = self.os.module_surface_kind();
+        os.drain_platform_events(&mut upcoming);
         let runtime = self.app.runtime_mut();
         let dispatcher = runtime.module_dispatcher();
         for host in self.windows.values_mut() {
@@ -495,7 +419,7 @@ impl Shell {
                 continue;
             }
             if let Some(frame) = host.publication.latest().filter(|frame| Some(frame.number) != host.synchronized) {
-                host.synchronize_native(kind, runtime, &dispatcher);
+                host.synchronize_native(runtime, &dispatcher);
                 let window = runtime.window(host.id).expect("attached runtime window");
                 host.synchronize(window, &frame);
                 let tree = window.tree();
@@ -542,30 +466,32 @@ impl Shell {
             for HostEvent { window, input } in upcoming {
                 self.dispatch(window, input)?;
             }
-            let _ = self.proxy.send_event(ShellEvent::Wake);
+            self.sender.send_event(PlatformEvent::UserWake);
         }
         Ok(())
     }
 
-    fn configure_surfaces(&mut self, now: Instant) -> Result<(), String> {
+    fn configure_surfaces(&mut self, os: &dyn OsHost, now: Instant) -> Result<(), String> {
         if self.device.as_ref().is_some_and(|device| device.executor.generation().is_lost()) {
             self.drain = None;
             let old = self.device.take().expect("lost device");
             old.executor.shutdown();
+            self.retired.clear();
             for host in self.windows.values_mut() {
                 host.invalidate_surface(true);
             }
             if let Some(surface) = self.windows.values().next().map(HostWindow::surface) {
-                self.create_device(&surface)?;
+                self.create_device(os, &surface)?;
             }
         }
         let Some(device) = &self.device else { return Ok(()) };
-        if self.drain.is_none() && self.windows.values().any(|host| host.can_configure(now)) {
+        if self.drain.is_none() && (!self.retired.is_empty() || self.windows.values().any(|host| host.can_configure(now))) {
             self.drain = Some(device.executor.drain_surfaces().map_err(|error| error.to_string())?);
         }
         if let Some(result) = self.drain.as_mut().and_then(GpuTask::try_take) {
             self.drain = None;
             let lease = result.map_err(|error| error.to_string())?;
+            self.retired.clear();
             for host in self.windows.values_mut().filter(|host| host.can_configure(now)) {
                 if host.configure(&self.instance, &device.adapter, lease.device())? {
                     host.request_frame();
@@ -621,21 +547,19 @@ impl Shell {
         Ok(())
     }
 
-    fn capture(&mut self) -> Result<(), String> {
+    fn capture(&mut self, os: &dyn OsHost) -> Result<(), String> {
         let Some(request) = self.config.capture.as_ref() else { return Ok(()) };
         if self.capture_finished {
             return Ok(());
         }
-        let wake = self.proxy.clone();
-        let notify = move || {
-            let _ = wake.send_event(ShellEvent::Wake);
-        };
+        let wake = os.wake();
+        let notify = move || wake();
         match self.capture_stage.as_mut() {
             Some(CaptureStage::Read(task, path)) => {
                 if let Some(capture) = task.try_take() {
                     let pixels = capture.map_err(|error| error.to_string())?;
                     if self.capture_writer.is_none() {
-                        let setup = self.os.background_thread_setup().unwrap_or(|| {});
+                        let setup = os.background_thread_setup().unwrap_or(|| {});
                         self.capture_writer = Some(CaptureWriter::spawn_with_thread_setup(setup).map_err(|error| error.to_string())?);
                     }
                     let output = self.capture_writer.as_ref().expect("capture writer").stage(path.clone(), move || pixels.finish(), notify);
@@ -686,20 +610,20 @@ impl Shell {
         Ok(())
     }
 
-    fn run_ready(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
+    fn run_ready(&mut self, os: &mut dyn OsHost) -> Result<(), String> {
         if self.config.manual_clock {
             self.app.runtime_mut().settle().map_err(|error| error.to_string())?;
         } else {
             self.app.advance_to(self.started.elapsed()).map_err(|error| error.to_string())?;
         }
-        self.run_ready_after_clock(event_loop)
+        self.run_ready_after_clock(os)
     }
 
-    fn run_ready_after_clock(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
-        self.drain_commands(event_loop)?;
-        self.configure_surfaces(Instant::now())?;
+    fn run_ready_after_clock(&mut self, os: &mut dyn OsHost) -> Result<(), String> {
+        self.drain_commands(os)?;
+        self.configure_surfaces(os, Instant::now())?;
         self.finish_frames()?;
-        self.capture()?;
+        self.capture(os)?;
         let now = Instant::now();
         if self.hook_deadline.is_none_or(|deadline| deadline <= now)
             && let Some(hook) = self.hook.as_mut()
@@ -708,14 +632,14 @@ impl Shell {
                 |window| self.windows.get(&window).and_then(|host| host.presented.as_ref().map(|progress| progress.receipt(None)));
             let delay = hook.tick(&mut self.app, &presented).map_err(|error| error.to_string())?;
             self.hook_deadline = delay.and_then(|delay| now.checked_add(delay));
-            self.drain_commands(event_loop)?;
+            self.drain_commands(os)?;
         }
         for host in self.windows.values_mut() {
             if host.take_retry(now) {
                 host.request_frame();
             }
         }
-        // A scene can become ready without delivering a winit redraw. Admit the
+        // A scene can become ready without a separate redraw notification. Admit the
         // latest settled revision once when the OS has no separate frame clock.
         let ready: Vec<_> = self.windows.iter_mut().filter_map(|(&id, host)| host.needs_unpaced_frame(now).then_some(id)).collect();
         for id in ready {
@@ -724,14 +648,14 @@ impl Shell {
         Ok(())
     }
 
-    fn schedule(&mut self, event_loop: &ActiveEventLoop) {
+    fn schedule(&self) -> LoopState {
         let limit = self.config.exit_after_frames.is_some_and(|count| self.frames >= count);
-        if self.definition.is_none() && self.windows.is_empty() && self.app.runtime().windows().next().is_none()
+        if self.terminating
+            || self.definition.is_none() && self.windows.is_empty() && self.app.runtime().windows().next().is_none()
             || limit && (self.config.capture.is_none() || self.capture_finished) && self.first_frame.is_none()
             || self.hook.as_ref().is_some_and(|hook| hook.shutdown_requested())
         {
-            event_loop.exit();
-            return;
+            return LoopState { exit: true, deadline: None };
         }
         let runtime_deadline =
             (!self.config.manual_clock).then(|| self.app.runtime().next_deadline()).flatten().map(|at| self.started + at);
@@ -746,7 +670,7 @@ impl Shell {
             .chain(self.hook_deadline)
             .chain(self.windows.values().filter_map(HostWindow::deadline))
             .min();
-        event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+        LoopState { exit: false, deadline }
     }
 
     fn hit(&self, id: WindowId, at: Point) -> Option<ContactTarget> {
@@ -757,216 +681,124 @@ impl Shell {
     fn pointer(
         &mut self,
         id: WindowId,
-        phase: TouchPhase,
-        at: Point,
-        pointer: PointerId,
-        kind: PointerKind,
+        phase: PointerPhase,
+        at: Option<Point>,
+        contact: (PointerId, PointerKind),
         button: Button,
-    ) -> Result<(), String> {
-        let mods = self.windows[&id].modifiers;
+        mods: Modifiers,
+    ) -> Result<bool, String> {
+        let Some(host) = self.windows.get_mut(&id) else { return Ok(false) };
+        let (pointer, kind) = contact;
+        let at = at.or(host.pointer);
+        if kind == PointerKind::Mouse && at.is_some() {
+            host.pointer = at;
+            host.pointer_modifiers = mods;
+        }
         let event = match phase {
-            TouchPhase::Started => {
+            PointerPhase::Started => {
+                let Some(at) = at else { return Ok(false) };
                 if !self.config.manual_clock {
                     self.app.advance_to(self.started.elapsed()).map_err(|error| error.to_string())?;
                 }
-                let Some(target) = self.hit(id, at) else { return Ok(()) };
+                let Some(target) = self.hit(id, at) else { return Ok(false) };
                 InteractionEvent::PointerDown { id: pointer, kind, target, pos: at, button, mods }
             }
-            TouchPhase::Moved => InteractionEvent::PointerMove { id: pointer, pos: at, mods },
-            TouchPhase::Ended => InteractionEvent::PointerUp { id: pointer, target: self.hit(id, at), pos: at, mods },
-            TouchPhase::Cancelled => InteractionEvent::PointerCancel { id: pointer },
+            PointerPhase::Moved => {
+                let Some(pos) = at else { return Ok(false) };
+                InteractionEvent::PointerMove { id: pointer, pos, mods }
+            }
+            PointerPhase::Ended => {
+                let Some(pos) = at else { return Ok(false) };
+                InteractionEvent::PointerUp { id: pointer, target: self.hit(id, pos), pos, mods }
+            }
+            PointerPhase::Cancelled => InteractionEvent::PointerCancel { id: pointer },
         };
-        self.dispatch(id, Input::Interaction(event))?;
-        Ok(())
+        self.dispatch(id, Input::Interaction(event))
     }
 
-    fn text_key(&mut self, id: WindowId, event: winit::event::KeyEvent) -> Result<(), String> {
-        let host = self.windows.get_mut(&id).expect("known host window");
-        let mods = host.modifiers;
-        match host.os.text_input().on_winit_key(&event) {
-            KeyDispatch::Consumed => {}
-            KeyDispatch::Input(input) => {
-                self.dispatch(id, input)?;
+    fn text_key(&mut self, id: WindowId, event: PlatformKey) -> Result<bool, String> {
+        let editor = self
+            .app
+            .runtime()
+            .window(id)
+            .and_then(|window| EditorSession::active(window.tree()))
+            .map(|session| (session.id(), session.editor().document_rev()));
+        let handled = match (event.event, editor) {
+            (Some(key), Some((session, expected_rev))) => {
+                self.dispatch(id, Input::Editor(EditorEvent::KeyIntercept { session, expected_rev, key }))?
             }
-            KeyDispatch::Forward if event.state == ElementState::Pressed => {
-                let key = translate_key(&event, mods);
-                let editor = self
-                    .app
-                    .runtime()
-                    .window(id)
-                    .and_then(|window| EditorSession::active(window.tree()))
-                    .map(|session| (session.id(), session.editor().document_rev()));
-                let handled = match (key, editor) {
-                    (Some(key), Some((session, expected_rev))) => {
-                        self.dispatch(id, Input::Editor(EditorEvent::KeyIntercept { session, expected_rev, key }))?
-                    }
-                    (Some(key), None) => self.dispatch(id, Input::Interaction(InteractionEvent::Key(key)))?,
-                    (None, _) => false,
-                };
-                let os_handled =
-                    self.windows.get_mut(&id).is_some_and(|host| !handled && host.os.text_input().on_unhandled_winit_key(&event));
-                if !handled
-                    && !os_handled
-                    && let Some((session, expected_rev)) = editor
-                {
-                    if let Some(key) = key
-                        && self.dispatch(id, Input::Editor(EditorEvent::KeyFallback { session, expected_rev, key }))?
-                    {
-                        return Ok(());
-                    }
-                    if let Some(edit) = fallback_edit(self.app.runtime().window(id), &event, mods) {
-                        self.dispatch(id, Input::Editor(edit))?;
-                    }
-                }
-            }
-            KeyDispatch::Forward => {}
-        }
-        Ok(())
-    }
-
-    fn window_input(&mut self, id: WindowId, event: WindowEvent) -> Result<(), String> {
-        let wheel_phase = if let WindowEvent::MouseWheel { delta, phase, .. } = event {
-            let native = self.windows.get_mut(&id).and_then(|host| host.os.on_winit_wheel(delta, phase));
-            Some(native.unwrap_or_else(|| frame_input::wheel_phase(delta, phase)))
-        } else {
-            None
+            (Some(key), None) => self.dispatch(id, Input::Interaction(InteractionEvent::Key(key)))?,
+            (None, _) => false,
         };
-        if self.frame_input.window.is_some_and(|window| window != id) {
-            self.flush_frame_input(None)?;
+        if handled {
+            return Ok(true);
         }
-        if matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::MouseWheel { .. })
-            && self.windows.get_mut(&id).is_some_and(HostWindow::externally_paced)
+        if self.windows.get_mut(&id).is_some_and(|host| host.os.text_input().on_unhandled_key(&event)) {
+            return Ok(true);
+        }
+        if let Some((session, expected_rev)) = editor
+            && let Some(key) = event.event
+            && self.dispatch(id, Input::Editor(EditorEvent::KeyFallback { session, expected_rev, key }))?
         {
-            return self.queue_frame_input(id, event, wheel_phase);
+            return Ok(true);
         }
-        if !matches!(event, WindowEvent::RedrawRequested) {
-            self.flush_frame_input(None)?;
+        match fallback_edit(self.app.runtime().window(id), &event) {
+            Some(edit) => self.dispatch(id, Input::Editor(edit)),
+            None => Ok(false),
         }
-        let cursor_moved = matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. });
-        match event {
-            WindowEvent::CloseRequested => {
-                self.dispatch(id, Input::Host(HostReply::CloseRequested))?;
+    }
+
+    fn cursor(&mut self, id: WindowId, at: Option<Point>, modifiers: Modifiers) -> Result<bool, String> {
+        let Some(host) = self.windows.get_mut(&id) else { return Ok(false) };
+        if let Some(at) = at
+            && host.externally_paced()
+        {
+            let previous = self.frame_input.latest_cursor().or_else(|| host.pointer.map(|pos| (pos, host.pointer_modifiers)));
+            if previous != Some((at, modifiers)) {
+                self.queue_frame_input(id, frame_input::cursor(at, modifiers))?;
             }
-            WindowEvent::Destroyed => self.app.close_window(id).map_err(|error| error.to_string())?,
-            WindowEvent::ThemeChanged(theme) => self.refresh_system_preferences(Some(color_scheme(theme)))?,
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                self.windows.get_mut(&id).expect("known window").invalidate_surface(false);
-                self.refresh_viewport(id)?;
-            }
-            WindowEvent::Moved(_) => self.refresh_viewport(id)?,
-            WindowEvent::RedrawRequested => self.draw(id, Instant::now(), false)?,
-            WindowEvent::Focused(active) => {
-                self.focus_changed |= self.os.follows_window_focus();
-                self.windows.get_mut(&id).expect("known window").os.text_input().focused(active);
-                self.dispatch(id, Input::Interaction(InteractionEvent::WindowActive(active)))?;
-            }
-            WindowEvent::ModifiersChanged(mods) => {
-                let state = mods.state();
-                let mut value = Modifiers::empty();
-                value.set(Modifiers::SHIFT, state.shift_key());
-                value.set(Modifiers::CTRL, state.control_key());
-                value.set(Modifiers::ALT, state.alt_key());
-                value.set(Modifiers::META, state.super_key());
-                self.windows.get_mut(&id).expect("known window").modifiers = value;
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                let host = self.windows.get_mut(&id).expect("known window");
-                let p = position.to_logical::<f32>(host.window.scale_factor());
-                let at = Point::new(p.x, p.y);
-                host.pointer = Some(at);
-                self.pointer(id, TouchPhase::Moved, at, PointerId(0), PointerKind::Mouse, Button::Primary)?;
-            }
-            WindowEvent::CursorLeft { .. } => {
-                self.windows.get_mut(&id).expect("known window").pointer = None;
-                self.dispatch(id, Input::Interaction(InteractionEvent::PointerLeave))?;
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let Some(at) = self.windows[&id].pointer else { return Ok(()) };
-                let button = match button {
-                    MouseButton::Left => Button::Primary,
-                    MouseButton::Right => Button::Secondary,
-                    MouseButton::Middle => Button::Middle,
-                    _ => return Ok(()),
-                };
-                let phase = if state == ElementState::Pressed { TouchPhase::Started } else { TouchPhase::Ended };
-                self.pointer(id, phase, at, PointerId(0), PointerKind::Mouse, button)?;
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let host = &self.windows[&id];
-                let Some(pos) = host.pointer else { return Ok(()) };
-                self.dispatch(id, Input::Interaction(wheel_input(host, pos, delta, wheel_phase.expect("wheel phase"))))?;
-            }
-            event @ (WindowEvent::PinchGesture { .. } | WindowEvent::RotationGesture { .. }) => {
-                let host = self.windows.get_mut(&id).expect("known window");
-                if let Some(gesture) = host.os.on_winit_gesture(&event, host.pointer, host.modifiers) {
-                    self.dispatch(id, Input::Interaction(InteractionEvent::Gesture(gesture)))?;
-                }
-            }
-            WindowEvent::Touch(Touch { phase, location, id: touch, .. }) => {
-                let scale = self.windows[&id].window.scale_factor();
-                let position: LogicalPosition<f32> = location.to_logical(scale);
-                self.pointer(
-                    id,
-                    phase,
-                    Point::new(position.x, position.y),
-                    PointerId(touch.wrapping_add(1)),
-                    PointerKind::Touch,
-                    Button::Primary,
-                )?;
-            }
-            WindowEvent::HoveredFile(_) if self.windows[&id].file_drop.is_some() => self.flush_file_drops()?,
-            WindowEvent::DroppedFile(path) => {
-                let host = self.windows.get_mut(&id).expect("known window");
-                let batch = host.file_drop.get_or_insert_with(|| {
-                    // Winit emits a separate event for each path and supplies no drag coordinates.
-                    let target = host
-                        .os
-                        .file_drop_position()
-                        .or(host.pointer)
-                        .and_then(|point| self.app.runtime().window(id)?.file_drop_target(point));
-                    FileDrop { target, files: Vec::new() }
-                });
-                batch.files.push(DroppedFile::Path(path));
-            }
-            WindowEvent::KeyboardInput { event, .. } => self.text_key(id, event)?,
-            WindowEvent::Ime(event) => {
-                if let Some(edit) = self.windows.get_mut(&id).and_then(|host| host.os.text_input().on_winit_ime(&event)) {
-                    self.dispatch(id, Input::Editor(edit))?;
-                }
-            }
-            _ => {}
+            return Ok(false);
         }
-        if cursor_moved && let (Some(host), Some(runtime)) = (self.windows.get_mut(&id), self.app.runtime().window(id)) {
+        self.flush_frame_input(None)?;
+        let Some(host) = self.windows.get_mut(&id) else { return Ok(false) };
+        host.pointer = at;
+        host.pointer_modifiers = modifiers;
+        let event = at.map_or(InteractionEvent::PointerLeave, |at| frame_input::cursor(at, modifiers));
+        let handled = self.dispatch(id, Input::Interaction(event))?;
+        if let (Some(host), Some(runtime)) = (self.windows.get_mut(&id), self.app.runtime().window(id)) {
             host.synchronize_cursor(runtime);
         }
-        Ok(())
+        Ok(handled)
     }
 
-    fn queue_frame_input(&mut self, id: WindowId, event: WindowEvent, wheel_phase: Option<WheelPhase>) -> Result<(), String> {
-        let host = &self.windows[&id];
-        let pos = self.frame_input.pointer(host.pointer);
-        let event = match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let p = position.to_logical::<f32>(host.window.scale_factor());
-                let next = Point::new(p.x, p.y);
-                // AppKit emits a cursor-position update before each wheel sample.
-                if Some(next) == pos {
-                    return Ok(());
-                }
-                frame_input::cursor(next, host.modifiers)
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let Some(pos) = pos else { return Ok(()) };
-                let input = wheel_input(host, pos, delta, wheel_phase.expect("wheel phase"));
-                if let InteractionEvent::Wheel { phase, .. } = input
-                    && self.frame_input.wheel_phase().is_some_and(|previous| previous != phase)
-                {
-                    self.flush_frame_input(None)?;
-                }
-                input
-            }
-            _ => unreachable!("only continuous pointer input is queued"),
-        };
+    fn interaction(&mut self, id: WindowId, event: InteractionEvent) -> Result<bool, String> {
+        if matches!(event, InteractionEvent::Wheel { .. }) && self.windows.get_mut(&id).is_some_and(HostWindow::externally_paced) {
+            self.queue_frame_input(id, event)?;
+            return Ok(false);
+        }
+        self.dispatch(id, Input::Interaction(event))
+    }
+
+    fn file_drop(&mut self, id: WindowId, phase: FileDropPhase, position: Option<Point>, paths: Vec<PathBuf>) -> Result<bool, String> {
+        if phase != FileDropPhase::Dropped {
+            self.flush_file_drops()?;
+        }
+        let Some(host) = self.windows.get_mut(&id) else { return Ok(false) };
+        let target = position.or(host.pointer).and_then(|point| self.app.runtime().window(id)?.file_drop_target(point));
+        if phase == FileDropPhase::Dropped {
+            let batch = host.file_drop.get_or_insert_with(|| FileDrop { target, files: Vec::new() });
+            batch.files.extend(paths.into_iter().map(DroppedFile::Path));
+            return Ok(batch.target.is_some());
+        }
+        Ok(phase == FileDropPhase::Entered && target.is_some())
+    }
+
+    fn queue_frame_input(&mut self, id: WindowId, event: InteractionEvent) -> Result<(), String> {
+        if let InteractionEvent::Wheel { phase, .. } = event
+            && self.frame_input.wheel_phase().is_some_and(|previous| previous != phase)
+        {
+            self.flush_frame_input(None)?;
+        }
         self.windows.get_mut(&id).expect("buffered window").activate_frame_clock();
         self.frame_input.window = Some(id);
         let merge_wheel = if let InteractionEvent::Wheel { pos, .. } = event
@@ -987,7 +819,10 @@ impl Shell {
             return Ok(false);
         };
         let previous = host.pointer;
-        host.pointer = self.frame_input.pointer(previous);
+        if let Some((position, modifiers)) = self.frame_input.latest_cursor() {
+            host.pointer = Some(position);
+            host.pointer_modifiers = modifiers;
+        }
         self.app.runtime_mut().set_keyboard_open(id, host.os.scene().is_some_and(|scene| scene.keyboard_open()));
         if let Some(hook) = self.hook.as_mut() {
             for &event in &self.frame_input.packets {
@@ -1006,8 +841,8 @@ impl Shell {
         }
     }
 
-    fn refresh_platform_accessibility(&mut self) {
-        let Some(active) = self.os.platform_accessibility_active() else { return };
+    fn refresh_platform_accessibility(&mut self, os: &dyn OsHost) {
+        let Some(active) = os.platform_accessibility_active() else { return };
         let runtime = self.app.runtime();
         for host in self.windows.values_mut() {
             if let Some(window) = runtime.window(host.id) {
@@ -1016,40 +851,15 @@ impl Shell {
         }
     }
 
-    fn accessibility(&mut self, event: accesskit_winit::Event) -> Result<(), String> {
-        let Some(&id) = self.ids.get(&event.window_id) else { return Ok(()) };
-        let Some(host) = self.windows.get_mut(&id) else { return Ok(()) };
-        match event.window_event {
-            accesskit_winit::WindowEvent::InitialTreeRequested => {
-                if let Some(runtime) = self.app.runtime().window(id) {
-                    host.set_accessibility_active(runtime, true);
-                }
-            }
-            accesskit_winit::WindowEvent::ActionRequested(request) => {
-                if let Some(runtime) = self.app.runtime().window(id)
-                    && let Some(reply) = host.publication.accessibility_host_action(runtime.tree(), request)
-                {
-                    self.dispatch(id, Input::Host(reply))?;
-                }
-            }
-            accesskit_winit::WindowEvent::AccessibilityDeactivated => {
-                if let Some(runtime) = self.app.runtime().window(id) {
-                    host.set_accessibility_active(runtime, false);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn launch_definition(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
-        if !self.os.is_ready() {
+    fn launch_definition(&mut self, os: &mut dyn OsHost) -> Result<(), String> {
+        if !os.is_ready() {
             return Ok(());
         }
         if let Some(definition) = self.definition.take() {
-            self.refresh_system_preferences(event_loop.system_theme().map(color_scheme))?;
+            self.refresh_system_preferences(os, None)?;
             let restart = read_restart(&self.config)?;
             definition.launch(&mut self.app, restart).map_err(|error| error.to_string())?;
-            let (urls, files) = self.os.take_launch_items();
+            let (urls, files) = os.take_launch_items();
             self.dispatch_lifecycle(HostLifecycleEvent::AppLaunched { urls, files })?;
             for event in std::mem::take(&mut self.pending_lifecycle) {
                 self.dispatch_lifecycle(event)?;
@@ -1081,199 +891,219 @@ impl Shell {
         Ok(())
     }
 
-    fn handle(&mut self, event_loop: &ActiveEventLoop, f: impl FnOnce(&mut Self) -> Result<(), String>) {
-        if self.error.is_some() {
-            return;
+    fn resume(&mut self, os: &mut dyn OsHost) -> Result<(), String> {
+        self.launch_definition(os)?;
+        for host in self.windows.values_mut() {
+            host.set_suspended(false);
         }
-        if let Err(error) = f(self) {
-            self.os.report_error(&error);
-            self.error = Some(ShellError(error));
-            event_loop.exit();
+        self.refresh_platform_accessibility(os);
+        if os.application_active().unwrap_or(true) {
+            self.lifecycle(HostLifecycleEvent::AppForeground)?;
         }
-    }
-}
-
-impl ApplicationHandler<ShellEvent> for Shell {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.handle(event_loop, |shell| {
-            shell.launch_definition(event_loop)?;
-            for host in shell.windows.values_mut() {
-                host.set_suspended(false);
-            }
-            shell.refresh_platform_accessibility();
-            if shell.os.application_active().unwrap_or(true) {
-                shell.lifecycle(HostLifecycleEvent::AppForeground)?;
-            }
-            shell.run_ready(event_loop)?;
-            shell.schedule(event_loop);
-            Ok(())
-        });
+        self.run_ready(os)
     }
 
-    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        self.handle(event_loop, |shell| {
-            shell.flush_frame_input(None)?;
-            for host in shell.windows.values_mut() {
-                host.set_suspended(true);
+    fn platform_event(&mut self, os: &mut dyn OsHost, event: PlatformEvent) -> Result<bool, String> {
+        let buffered = match event {
+            PlatformEvent::CursorMoved { window, .. } | PlatformEvent::Interaction { window, event: InteractionEvent::Wheel { .. } } => {
+                Some(window)
             }
-            if shell.os.application_active().is_none() {
-                shell.lifecycle(HostLifecycleEvent::AppBackground)?;
-            }
-            Ok(())
-        });
-    }
-
-    fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
-        self.handle(event_loop, |shell| {
-            shell.flush_frame_input(None)?;
-            shell.lifecycle(HostLifecycleEvent::MemoryWarning)
-        });
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, raw: HostId, event: WindowEvent) {
-        let Some(&id) = self.ids.get(&raw) else { return };
-        if let Some(host) = self.windows.get_mut(&id)
-            && let Some(a11y) = &mut host.a11y
+            _ => None,
+        };
+        if self.frame_input.window.is_some_and(|window| Some(window) != buffered)
+            && !matches!(
+                event,
+                PlatformEvent::FrameClockTick { .. }
+                    | PlatformEvent::Frame { .. }
+                    | PlatformEvent::UserWake
+                    | PlatformEvent::WindowRedrawRequested(_)
+            )
         {
-            a11y.process_event(&host.window, &event);
+            self.flush_frame_input(None)?;
         }
-        let can_drag = matches!(
-            event,
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. }
-                | WindowEvent::Touch(Touch { phase: TouchPhase::Started, .. })
-        );
-        self.handle(event_loop, |shell| {
-            shell.window_input(id, event)?;
-            if can_drag {
-                // Window systems require a drag request from the initiating pointer event.
-                shell.drain_commands(event_loop)?;
-            }
-            Ok(())
-        });
-    }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
-        self.handle(event_loop, |shell| {
-            if !matches!(event, ShellEvent::DisplayTick { .. } | ShellEvent::Frame { .. } | ShellEvent::Wake) {
-                shell.flush_frame_input(None)?;
+        match event {
+            PlatformEvent::Launched | PlatformEvent::Resumed => self.resume(os)?,
+            PlatformEvent::PlatformReady => {
+                self.launch_definition(os)?;
+                self.run_ready(os)?;
             }
-            match event {
-                ShellEvent::PlatformReady => {
-                    shell.launch_definition(event_loop)?;
-                    shell.run_ready(event_loop)?;
-                    shell.schedule(event_loop);
+            PlatformEvent::Suspended => {
+                for host in self.windows.values_mut() {
+                    host.set_suspended(true);
                 }
-                ShellEvent::Lifecycle(event) => shell.lifecycle(event)?,
-                ShellEvent::Input { window, input } => {
-                    shell.dispatch(window, input)?;
+                if os.application_active().is_none() {
+                    self.lifecycle(HostLifecycleEvent::AppBackground)?;
                 }
-                ShellEvent::Frame { window, target } => shell.draw(window, target, false)?,
-                ShellEvent::DisplayTick { window, tick } => {
-                    if shell.config.trace_frame_clock {
-                        trace::display_tick(window, tick, shell.started);
-                    }
-                    shell.app.runtime_mut().set_frame_interval(tick.interval);
-                    if shell.frame_input.window == Some(window) {
-                        let time = (!shell.config.manual_clock).then(|| shell.started.elapsed());
-                        if shell.flush_frame_input(time)? {
-                            shell.run_ready_after_clock(event_loop)?;
-                        } else {
-                            shell.run_ready(event_loop)?;
-                        }
-                    } else {
-                        shell.run_ready(event_loop)?;
-                    }
-                    shell.draw(window, tick.target, true)?;
-                    if let Some(host) = shell.windows.get_mut(&window) {
-                        host.idle_frame_clock_if_clean();
-                    }
-                    shell.schedule(event_loop);
-                }
-                ShellEvent::Native { window, id, event } => shell.native_reply(window, id, event)?,
-                ShellEvent::RefreshViewport { window } => shell.refresh_viewport(window)?,
-                ShellEvent::RefreshSystemPreferences => shell.refresh_system_preferences(None)?,
-                ShellEvent::SystemPreferencesChanged { color_scheme, reduced_motion, text_scale, high_contrast } => {
-                    let mut next = shell.app.runtime().system_preferences();
-                    next.color_scheme = color_scheme.unwrap_or(next.color_scheme);
-                    next.reduced_motion = reduced_motion.unwrap_or(next.reduced_motion);
-                    next.text_scale = text_scale.unwrap_or(next.text_scale);
-                    next.high_contrast = high_contrast.unwrap_or(next.high_contrast);
-                    shell.apply_system_preferences(next)?;
-                }
-                ShellEvent::Accessibility(event) => shell.accessibility(event)?,
-                ShellEvent::PlatformAccessibilityAction { window, target, action } => {
-                    if let Some(host) = shell.windows.get_mut(&window)
-                        && let Some(accessibility) = host.os.accessibility()
-                        && accessibility.accepts_action(&host.publication, target, &action)
-                    {
-                        shell.dispatch(window, Input::Host(HostReply::AccessibilityAction { target, action }))?;
-                    }
-                }
-                ShellEvent::Device { generation, notice: DeviceNotice::Failed(error) } if generation == shell.generation => {
-                    return Err(error);
-                }
-                ShellEvent::Wake | ShellEvent::Device { .. } => {}
             }
-            Ok(())
-        });
-    }
-
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.handle(event_loop, |shell| {
-            shell.flush_file_drops()?;
-            if std::mem::take(&mut shell.focus_changed) {
-                let active = shell.windows.values().any(|host| host.window.has_focus());
-                shell.lifecycle(if active { HostLifecycleEvent::AppForeground } else { HostLifecycleEvent::AppBackground })?;
+            PlatformEvent::WillTerminate => self.terminating = true,
+            PlatformEvent::Lifecycle(event) => self.lifecycle(event)?,
+            PlatformEvent::WindowCloseRequested(window) => return self.dispatch(window, Input::Host(HostReply::CloseRequested)),
+            PlatformEvent::WindowDestroyed(window) => {
+                if self.app.runtime().window(window).is_some() {
+                    self.app.close_window(window).map_err(|error| error.to_string())?;
+                }
             }
-            shell.run_ready(event_loop)?;
-            shell.schedule(event_loop);
-            Ok(())
-        });
-    }
-
-    fn exiting(&mut self, _: &ActiveEventLoop) {
-        if self.definition.is_none()
-            && let Err(error) = self.dispatch_lifecycle(HostLifecycleEvent::WillTerminate)
-            && self.error.is_none()
-        {
-            self.os.report_error(&error);
-            self.error = Some(ShellError(error));
+            PlatformEvent::WindowResized(window) => {
+                if let Some(host) = self.windows.get_mut(&window) {
+                    host.invalidate_surface(false);
+                    self.refresh_viewport(window)?;
+                }
+            }
+            PlatformEvent::WindowMoved(window) | PlatformEvent::RefreshViewport { window } => self.refresh_viewport(window)?,
+            PlatformEvent::WindowRedrawRequested(window) => self.draw(window, Instant::now(), false)?,
+            PlatformEvent::WindowFocused { window, active } => {
+                self.focus_changed |= os.follows_window_focus();
+                if let Some(host) = self.windows.get_mut(&window) {
+                    host.os.text_input().focused(active);
+                }
+                return self.dispatch(window, Input::Interaction(InteractionEvent::WindowActive(active)));
+            }
+            PlatformEvent::CursorMoved { window, position, modifiers } => return self.cursor(window, Some(position), modifiers),
+            PlatformEvent::CursorLeft(window) => return self.cursor(window, None, Modifiers::empty()),
+            PlatformEvent::Pointer { window, phase, position, id, kind, button, modifiers } => {
+                let handled = self.pointer(window, phase, position, (id, kind), button, modifiers)?;
+                if phase == PointerPhase::Started && button == Button::Primary {
+                    // Interactive system dragging can use the current native pointer event.
+                    self.drain_commands(os)?;
+                }
+                return Ok(handled);
+            }
+            PlatformEvent::Key { window, event } => return self.text_key(window, event),
+            PlatformEvent::Editor { window, event } => return self.dispatch(window, Input::Editor(event)),
+            PlatformEvent::Interaction { window, event } => return self.interaction(window, event),
+            PlatformEvent::FileDrop { window, phase, position, paths } => return self.file_drop(window, phase, position, paths),
+            PlatformEvent::HostReply { window, reply } => return self.dispatch(window, Input::Host(reply)),
+            PlatformEvent::Frame { window, target } => self.draw(window, target, false)?,
+            PlatformEvent::FrameClockTick { window, tick } => {
+                if self.config.trace_frame_clock {
+                    trace::display_tick(window, tick, self.started);
+                }
+                self.app.runtime_mut().set_frame_interval(tick.interval);
+                let time = (!self.config.manual_clock).then(|| self.started.elapsed());
+                if self.frame_input.window == Some(window) && self.flush_frame_input(time)? {
+                    self.run_ready_after_clock(os)?;
+                } else {
+                    self.run_ready(os)?;
+                }
+                self.draw(window, tick.target, true)?;
+                if let Some(host) = self.windows.get_mut(&window) {
+                    host.idle_frame_clock_if_clean();
+                }
+            }
+            PlatformEvent::Native { window, id, event } => self.native_reply(window, id, event)?,
+            PlatformEvent::RefreshSystemPreferences => self.refresh_system_preferences(os, None)?,
+            PlatformEvent::SystemPreferencesChanged { color_scheme, reduced_motion, text_scale, high_contrast } => {
+                let mut next = self.app.runtime().system_preferences();
+                next.color_scheme = color_scheme.unwrap_or(next.color_scheme);
+                next.reduced_motion = reduced_motion.unwrap_or(next.reduced_motion);
+                next.text_scale = text_scale.unwrap_or(next.text_scale);
+                next.high_contrast = high_contrast.unwrap_or(next.high_contrast);
+                self.apply_system_preferences(next)?;
+            }
+            PlatformEvent::AccessibilityEnabledChanged { window, enabled } => {
+                if let (Some(host), Some(runtime)) = (self.windows.get_mut(&window), self.app.runtime().window(window)) {
+                    host.set_accessibility_active(runtime, enabled);
+                }
+            }
+            PlatformEvent::AccessKitAction { window, request } => {
+                if let (Some(host), Some(runtime)) = (self.windows.get(&window), self.app.runtime().window(window))
+                    && let Some(reply) = host.publication.accessibility_host_action(runtime.tree(), request)
+                {
+                    return self.dispatch(window, Input::Host(reply));
+                }
+            }
+            PlatformEvent::PlatformAccessibilityAction { window, target, action } => {
+                if let Some(host) = self.windows.get_mut(&window)
+                    && let Some(accessibility) = host.os.accessibility()
+                    && accessibility.accepts_action(&host.publication, target, &action)
+                {
+                    return self.dispatch(window, Input::Host(HostReply::AccessibilityAction { target, action }));
+                }
+            }
+            PlatformEvent::Device { generation, notice: DeviceNotice::Failed(error) } if generation == self.generation => {
+                return Err(error);
+            }
+            PlatformEvent::UserWake | PlatformEvent::Device { .. } => {}
         }
+        Ok(false)
+    }
+
+    fn idle(&mut self, os: &mut dyn OsHost) -> Result<LoopState, String> {
+        self.flush_file_drops()?;
+        if std::mem::take(&mut self.focus_changed) {
+            let active = self.windows.values().any(|host| host.os.is_focused());
+            self.lifecycle(if active { HostLifecycleEvent::AppForeground } else { HostLifecycleEvent::AppBackground })?;
+        }
+        if !self.terminating {
+            self.run_ready(os)?;
+        }
+        Ok(self.schedule())
+    }
+
+    fn stop_rendering(&mut self) {
         self.capture_stage = None;
         self.capture_writer.take();
         self.drain = None;
+        if let Some(device) = self.device.take() {
+            // GPU work must release all borrowed surfaces before the native windows are dropped.
+            device.executor.shutdown();
+        }
+        self.retired.clear();
+    }
+
+    fn shutdown(&mut self) -> Result<(), String> {
+        let mut error = None;
+        if self.definition.is_none() {
+            error = self.dispatch_lifecycle(HostLifecycleEvent::WillTerminate).err();
+        }
         let windows: Vec<_> = self.windows.keys().copied().collect();
         for id in windows {
-            if let Err(error) = self.detach_window(id)
-                && self.error.is_none()
-            {
-                self.os.report_error(&error);
-                self.error = Some(ShellError(error));
+            if let Err(detach_error) = self.detach_window(id) {
+                error.get_or_insert(detach_error);
             }
         }
         self.app.shutdown();
-        if let Some(device) = self.device.take() {
-            device.executor.shutdown();
-        }
+        self.stop_rendering();
+        error.map_or(Ok(()), Err)
     }
 }
 
-fn color_scheme(theme: winit::window::Theme) -> ColorScheme {
-    match theme {
-        winit::window::Theme::Light => ColorScheme::Light,
-        winit::window::Theme::Dark => ColorScheme::Dark,
+impl Drop for Shell {
+    fn drop(&mut self) {
+        self.stop_rendering();
     }
 }
 
-fn wheel_input(host: &HostWindow, pos: Point, delta: MouseScrollDelta, phase: WheelPhase) -> InteractionEvent {
-    let delta = match delta {
-        MouseScrollDelta::LineDelta(x, y) => Vec2::new(-x * 32.0, -y * 32.0),
-        MouseScrollDelta::PixelDelta(point) => {
-            let point = point.to_logical::<f32>(host.window.scale_factor());
-            Vec2::new(-point.x, -point.y)
-        }
-    };
-    InteractionEvent::Wheel { pos, delta, phase, mods: host.modifiers }
+pub(crate) struct Driver {
+    startup: Option<(AppDefinition, NativeAppOptions)>,
+    shell: Option<Shell>,
+}
+
+impl Driver {
+    pub(crate) fn new(definition: AppDefinition, options: NativeAppOptions) -> Self {
+        Self { startup: Some((definition, options)), shell: None }
+    }
+}
+
+impl ShellDriver for Driver {
+    fn start(&mut self, host: &mut dyn OsHost, sender: PlatformSender) -> Result<(), String> {
+        let (definition, options) = self.startup.take().ok_or("Native host started twice")?;
+        self.shell = Some(Shell::new(definition, host, sender, options));
+        Ok(())
+    }
+
+    fn event(&mut self, host: &mut dyn OsHost, event: PlatformEvent) -> Result<bool, String> {
+        self.shell.as_mut().ok_or("Native host sent an event before startup")?.platform_event(host, event)
+    }
+
+    fn idle(&mut self, host: &mut dyn OsHost) -> Result<LoopState, String> {
+        self.shell.as_mut().ok_or("Native host entered idle before startup")?.idle(host)
+    }
+
+    fn shutdown(&mut self, _: &mut dyn OsHost) -> Result<(), String> {
+        self.shell.take().map_or(Ok(()), |mut shell| shell.shutdown())
+    }
 }
 
 fn read_restart(config: &ShellConfig) -> Result<Option<RestartState>, String> {
@@ -1296,135 +1126,8 @@ fn constrained_size(mut size: Size, options: &WindowOptions) -> Size {
     size
 }
 
-fn translate_key(event: &winit::event::KeyEvent, modifiers: Modifiers) -> Option<KeyEvent> {
-    let key = match event.logical_key.as_ref() {
-        NativeKey::Character(text) => Key::Char(text.chars().next()?),
-        NativeKey::Named(name) => match name {
-            NamedKey::Tab => Key::Tab,
-            NamedKey::Enter => Key::Enter,
-            NamedKey::Escape => Key::Escape,
-            NamedKey::Backspace => Key::Backspace,
-            NamedKey::Delete => Key::Delete,
-            NamedKey::Space => Key::Space,
-            NamedKey::ArrowUp => Key::Up,
-            NamedKey::ArrowDown => Key::Down,
-            NamedKey::ArrowLeft => Key::Left,
-            NamedKey::ArrowRight => Key::Right,
-            NamedKey::Home => Key::Home,
-            NamedKey::End => Key::End,
-            NamedKey::PageUp => Key::PageUp,
-            NamedKey::PageDown => Key::PageDown,
-            NamedKey::ContextMenu => Key::Menu,
-            _ => Key::F(function_key(name)?),
-        },
-        _ => return None,
-    };
-    let mut key = KeyEvent::new(key, modifiers);
-    key.repeat = event.repeat;
-    key.code = physical_character(event.physical_key);
-    Some(key)
-}
-
-fn function_key(key: NamedKey) -> Option<u8> {
-    const KEYS: [NamedKey; 24] = [
-        NamedKey::F1,
-        NamedKey::F2,
-        NamedKey::F3,
-        NamedKey::F4,
-        NamedKey::F5,
-        NamedKey::F6,
-        NamedKey::F7,
-        NamedKey::F8,
-        NamedKey::F9,
-        NamedKey::F10,
-        NamedKey::F11,
-        NamedKey::F12,
-        NamedKey::F13,
-        NamedKey::F14,
-        NamedKey::F15,
-        NamedKey::F16,
-        NamedKey::F17,
-        NamedKey::F18,
-        NamedKey::F19,
-        NamedKey::F20,
-        NamedKey::F21,
-        NamedKey::F22,
-        NamedKey::F23,
-        NamedKey::F24,
-    ];
-    KEYS.iter().position(|&candidate| candidate == key).map(|index| index as u8 + 1)
-}
-
-fn physical_character(key: PhysicalKey) -> Option<char> {
-    let PhysicalKey::Code(key) = key else { return None };
-    const LETTERS: [KeyCode; 26] = [
-        KeyCode::KeyA,
-        KeyCode::KeyB,
-        KeyCode::KeyC,
-        KeyCode::KeyD,
-        KeyCode::KeyE,
-        KeyCode::KeyF,
-        KeyCode::KeyG,
-        KeyCode::KeyH,
-        KeyCode::KeyI,
-        KeyCode::KeyJ,
-        KeyCode::KeyK,
-        KeyCode::KeyL,
-        KeyCode::KeyM,
-        KeyCode::KeyN,
-        KeyCode::KeyO,
-        KeyCode::KeyP,
-        KeyCode::KeyQ,
-        KeyCode::KeyR,
-        KeyCode::KeyS,
-        KeyCode::KeyT,
-        KeyCode::KeyU,
-        KeyCode::KeyV,
-        KeyCode::KeyW,
-        KeyCode::KeyX,
-        KeyCode::KeyY,
-        KeyCode::KeyZ,
-    ];
-    const DIGITS: [KeyCode; 10] = [
-        KeyCode::Digit0,
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-        KeyCode::Digit7,
-        KeyCode::Digit8,
-        KeyCode::Digit9,
-    ];
-    if let Some(index) = LETTERS.iter().position(|&candidate| candidate == key) {
-        return Some(char::from(b'a' + index as u8));
-    }
-    if let Some(index) = DIGITS.iter().position(|&candidate| candidate == key) {
-        return Some(char::from(b'0' + index as u8));
-    }
-    Some(match key {
-        KeyCode::Backquote => '`',
-        KeyCode::Backslash => '\\',
-        KeyCode::BracketLeft => '[',
-        KeyCode::BracketRight => ']',
-        KeyCode::Comma => ',',
-        KeyCode::Equal => '=',
-        KeyCode::Minus => '-',
-        KeyCode::Period => '.',
-        KeyCode::Quote => '\'',
-        KeyCode::Semicolon => ';',
-        KeyCode::Slash => '/',
-        _ => return None,
-    })
-}
-
-fn fallback_edit(
-    window: Option<&octara::runtime::WindowRuntime>,
-    event: &winit::event::KeyEvent,
-    modifiers: Modifiers,
-) -> Option<EditorEvent> {
-    if modifiers.intersects(Modifiers::CTRL | Modifiers::META) {
+fn fallback_edit(window: Option<&octara::runtime::WindowRuntime>, event: &PlatformKey) -> Option<EditorEvent> {
+    if event.event.is_some_and(|key| key.modifiers.intersects(Modifiers::CTRL | Modifiers::META)) {
         return None;
     }
     let session = EditorSession::active(window?.tree())?;
@@ -1432,7 +1135,7 @@ fn fallback_edit(
     if editor.composition().is_some() {
         return None;
     }
-    let edit = if event.logical_key == NativeKey::Named(NamedKey::Enter) && editor.multiline {
+    let edit = if event.event.is_some_and(|key| key.key == Key::Enter) && editor.multiline {
         TextEdit::Insert { text: "\n".into(), replacement: None }
     } else {
         let text = event.text.as_deref().filter(|text| !text.is_empty() && !text.chars().any(char::is_control))?;

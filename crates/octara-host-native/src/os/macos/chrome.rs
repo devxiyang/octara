@@ -1,141 +1,193 @@
-//! AppKit's titlebar, native window observations, and visual-effect backing view.
+//! AppKit titlebar geometry and visual-effect backing view.
 
-use crate::ShellEvent;
-use crate::os::{apply_window_geometry, read_window_geometry};
-use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSAutoresizingMaskOptions, NSButton, NSEventType, NSUserInterfaceLayoutDirection, NSView, NSVisualEffectBlendingMode,
-    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowButton, NSWindowDidEnterFullScreenNotification,
-    NSWindowDidExitFullScreenNotification, NSWindowStyleMask,
+    NSApplication, NSAutoresizingMaskOptions, NSButton, NSEventType, NSScreen, NSUserInterfaceLayoutDirection, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowButton,
+    NSWindowStyleMask,
 };
-use objc2_foundation::{NSNotificationCenter, NSPoint, NSRect};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 use octara::{
-    Rect, TitlebarStyle, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowId, WindowOptions, WindowViewport,
+    Point, Rect, TitlebarStyle, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowOptions, WindowViewport,
 };
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use winit::event_loop::EventLoopProxy;
-use winit::window::Window;
+use std::cell::Cell;
+use std::rc::Rc;
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub(super) enum Fullscreen {
+    #[default]
+    Windowed,
+    Entering,
+    Entered,
+    Exiting,
+}
 
 pub(super) struct Chrome {
     style: TitlebarStyle,
     window: Retained<NSWindow>,
-    fullscreen_observers: [Retained<ProtocolObject<dyn NSObjectProtocol>>; 2],
-    fullscreen: Arc<AtomicBool>,
+    fullscreen: Rc<Cell<Fullscreen>>,
     pending_geometry: Option<WindowGeometryRequest>,
+    shown: bool,
     maximized: bool,
-    initial_geometry: Option<WindowGeometryRequest>,
+    restore_frame: Option<NSRect>,
+    restore_fixed_size: bool,
 }
 
 impl Chrome {
-    pub(super) fn new(window: Retained<NSWindow>, proxy: EventLoopProxy<ShellEvent>, id: WindowId) -> Self {
-        let center = NSNotificationCenter::defaultCenter();
-        let fullscreen = Arc::new(AtomicBool::new(false));
-        // SAFETY: These AppKit notifications are posted on the main thread by this window.
-        let names = unsafe { [(NSWindowDidEnterFullScreenNotification, true), (NSWindowDidExitFullScreenNotification, false)] };
-        let fullscreen_observers = names.map(|(name, entered)| {
-            let fullscreen = fullscreen.clone();
-            let proxy = proxy.clone();
-            let callback = RcBlock::new(move |_| {
-                fullscreen.store(entered, Ordering::Relaxed);
-                let _ = proxy.send_event(ShellEvent::RefreshViewport { window: id });
-            });
-            // SAFETY: The callback captures thread-safe values and is registered for this window.
-            unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), Some(&window), None, &callback) }
-        });
+    pub(super) fn new(window: Retained<NSWindow>, fullscreen: Rc<Cell<Fullscreen>>) -> Self {
         Self {
             style: TitlebarStyle::System,
             window,
-            fullscreen_observers,
             fullscreen,
             pending_geometry: None,
+            shown: false,
             maximized: false,
-            initial_geometry: Some(WindowGeometryRequest::default()),
+            restore_frame: None,
+            restore_fixed_size: false,
         }
     }
 
-    pub(super) fn configure(&mut self, window: &Window, options: &WindowOptions) {
+    pub(super) fn configure(&mut self, options: &WindowOptions) {
         self.style = options.titlebar;
-        self.window.setMovableByWindowBackground(false);
-        self.set_geometry(
-            window,
-            WindowGeometryRequest { position: options.position, maximized: options.maximized.then_some(true), ..Default::default() },
-        );
+        self.set_geometry(WindowGeometryRequest {
+            position: options.position,
+            maximized: options.maximized.then_some(true),
+            ..Default::default()
+        });
     }
 
-    pub(super) fn did_show(&mut self, window: &Window) {
-        if let Some(geometry) = self.initial_geometry.take() {
-            apply_window_geometry(window, geometry);
+    pub(super) fn did_show(&mut self) {
+        self.shown = true;
+        self.apply_pending();
+    }
+
+    pub(super) fn geometry(&mut self, viewport: WindowViewport) -> WindowGeometry {
+        let fullscreen = self.fullscreen.get();
+        if fullscreen == Fullscreen::Windowed {
+            self.maximized = self.is_zoomed();
+        }
+        let frame = self.window.frame();
+        let position =
+            primary_screen(&self.window).map(|screen| Point::new(frame.origin.x as f32, (screen.frame().max().y - frame.max().y) as f32));
+        WindowGeometry {
+            position,
+            size: viewport.size,
+            scale: viewport.scale,
+            maximized: self.maximized,
+            fullscreen: matches!(fullscreen, Fullscreen::Entered | Fullscreen::Exiting),
         }
     }
 
-    pub(super) fn geometry(&mut self, window: &Window, viewport: WindowViewport) -> WindowGeometry {
-        let fullscreen = self.fullscreen();
-        if !fullscreen && window.fullscreen().is_none() && !self.has_fullscreen_style() {
-            self.maximized = window.is_maximized();
-        }
-        read_window_geometry(window, viewport, self.maximized, fullscreen)
-    }
-
-    pub(super) fn apply_pending(&mut self, window: &Window) {
-        if !self.fullscreen()
-            && window.fullscreen().is_none()
-            && let Some(geometry) = self.pending_geometry.take()
-        {
-            apply_window_geometry(window, geometry);
-        }
-    }
-
-    pub(super) fn set_geometry(&mut self, window: &Window, mut geometry: WindowGeometryRequest) {
-        if let Some(initial) = &mut self.initial_geometry {
-            initial.position = geometry.position.or(initial.position);
-            initial.maximized = geometry.maximized.take().or(initial.maximized);
-            initial.fullscreen = geometry.fullscreen.take().or(initial.fullscreen);
-            apply_window_geometry(window, geometry);
+    pub(super) fn apply_pending(&mut self) {
+        if !self.shown {
             return;
         }
-        if let Some(pending) = &mut self.pending_geometry {
-            pending.position = geometry.position.or(pending.position);
-            pending.size = geometry.size.or(pending.size);
-            pending.maximized = geometry.maximized.or(pending.maximized);
-            if let Some(fullscreen) = geometry.fullscreen {
-                pending.fullscreen = fullscreen.then_some(true);
+        match self.fullscreen.get() {
+            Fullscreen::Windowed => {
+                if std::mem::take(&mut self.restore_fixed_size) {
+                    self.window.setStyleMask(self.window.styleMask() - NSWindowStyleMask::Resizable);
+                }
+                if let Some(geometry) = self.pending_geometry.take() {
+                    self.apply_windowed(geometry);
+                }
             }
-            return;
-        }
-        if geometry.fullscreen == Some(false) && (self.fullscreen() || window.fullscreen().is_some()) {
-            geometry.fullscreen = None;
-            self.pending_geometry = Some(geometry);
-            window.set_fullscreen(None);
-        } else {
-            apply_window_geometry(window, geometry);
+            Fullscreen::Entered => {
+                if let Some(geometry) = &mut self.pending_geometry
+                    && geometry.fullscreen == Some(false)
+                {
+                    geometry.fullscreen = None;
+                    self.fullscreen.set(Fullscreen::Exiting);
+                    self.window.toggleFullScreen(None);
+                }
+            }
+            Fullscreen::Entering | Fullscreen::Exiting => {}
         }
     }
 
-    pub(super) fn toggle_maximize(&mut self, window: &Window) {
-        let maximized = self.initial_geometry.and_then(|geometry| geometry.maximized).unwrap_or(self.maximized);
-        self.set_geometry(window, WindowGeometryRequest { maximized: Some(!maximized), ..Default::default() });
+    pub(super) fn set_geometry(&mut self, geometry: WindowGeometryRequest) {
+        let pending = self.pending_geometry.get_or_insert_with(WindowGeometryRequest::default);
+        pending.position = geometry.position.or(pending.position);
+        pending.size = geometry.size.or(pending.size);
+        pending.maximized = geometry.maximized.or(pending.maximized);
+        pending.fullscreen = geometry.fullscreen.or(pending.fullscreen);
+        if !self.shown {
+            // Set the restore frame before the AppKit zoom or fullscreen animation starts.
+            let (size, position) = (pending.size, pending.position);
+            self.resize_and_move(size, position);
+        }
+        self.apply_pending();
+    }
+
+    fn apply_windowed(&mut self, geometry: WindowGeometryRequest) {
+        if geometry.maximized == Some(false) {
+            self.set_maximized(false);
+        }
+        self.resize_and_move(geometry.size, geometry.position);
+        if geometry.maximized == Some(true) {
+            self.set_maximized(true);
+        }
+        if geometry.fullscreen == Some(true) {
+            self.maximized = self.is_zoomed();
+            self.fullscreen.set(Fullscreen::Entering);
+            let style = self.window.styleMask();
+            if !style.contains(NSWindowStyleMask::Resizable) {
+                self.restore_fixed_size = true;
+                self.window.setStyleMask(style | NSWindowStyleMask::Resizable);
+            }
+            self.window.toggleFullScreen(None);
+        }
+    }
+
+    fn resize_and_move(&self, size: Option<octara::Size>, position: Option<Point>) {
+        if let Some(size) = size.filter(|size| size.width.is_finite() && size.height.is_finite() && size.width > 0.0 && size.height > 0.0) {
+            self.window.setContentSize(NSSize::new(f64::from(size.width), f64::from(size.height)));
+        }
+        if let Some(point) = position.filter(|point| point.x.is_finite() && point.y.is_finite())
+            && let Some(screen) = primary_screen(&self.window)
+        {
+            let bottom = screen.frame().max().y - f64::from(point.y) - self.window.frame().size.height;
+            self.window.setFrameOrigin(NSPoint::new(f64::from(point.x), bottom));
+        }
+    }
+
+    fn is_zoomed(&self) -> bool {
+        self.restore_frame.is_some() || self.window.isZoomed()
+    }
+
+    fn set_maximized(&mut self, maximized: bool) {
+        if self.is_zoomed() == maximized {
+            return;
+        }
+        if self.window.styleMask().contains(NSWindowStyleMask::Resizable) {
+            self.window.zoom(None);
+        } else if maximized {
+            if let Some(screen) = self.window.screen().or_else(|| primary_screen(&self.window)) {
+                self.restore_frame = Some(self.window.frame());
+                self.window.setFrame_display(screen.visibleFrame(), true);
+            }
+        } else if let Some(restore) = self.restore_frame.take() {
+            self.window.setFrame_display(restore, true);
+        }
+    }
+
+    pub(super) fn toggle_maximize(&mut self) {
+        let maximized = self.pending_geometry.and_then(|geometry| geometry.maximized).unwrap_or_else(|| self.is_zoomed());
+        self.set_geometry(WindowGeometryRequest { maximized: Some(!maximized), ..Default::default() });
     }
 
     pub(super) fn minimize(&self) {
         self.window.performMiniaturize(None);
     }
 
-    pub(super) fn start_drag(&self, window: &Window) {
+    pub(super) fn start_drag(&self) {
         let mtm = MainThreadMarker::from(&*self.window);
-        if NSApplication::sharedApplication(mtm)
-            .currentEvent()
-            .is_some_and(|event| event.r#type() == NSEventType::LeftMouseDown && event.windowNumber() == self.window.windowNumber())
+        if let Some(event) = NSApplication::sharedApplication(mtm).currentEvent()
+            && event.r#type() == NSEventType::LeftMouseDown
+            && event.windowNumber() == self.window.windowNumber()
         {
-            let _ = window.drag_window();
+            self.window.performWindowDragWithEvent(&event);
         }
-    }
-
-    fn fullscreen(&self) -> bool {
-        self.fullscreen.load(Ordering::Relaxed)
     }
 
     fn has_fullscreen_style(&self) -> bool {
@@ -193,14 +245,8 @@ impl Chrome {
     }
 }
 
-impl Drop for Chrome {
-    fn drop(&mut self) {
-        let center = NSNotificationCenter::defaultCenter();
-        for observer in &self.fullscreen_observers {
-            // SAFETY: The observer token belongs to this notification center.
-            unsafe { center.removeObserver((**observer).as_ref()) };
-        }
-    }
+fn primary_screen(window: &NSWindow) -> Option<Retained<NSScreen>> {
+    NSScreen::screens(MainThreadMarker::from(window)).firstObject()
 }
 
 fn button_rect(view: &NSView, button: &NSButton) -> Option<Rect> {

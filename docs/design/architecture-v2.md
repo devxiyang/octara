@@ -86,7 +86,7 @@ flowchart TB
         Pipeline["octara-pipeline<br/>NativeEngine (HostEngine): Taffy · Parley Text Geometry<br/>MotionEngine · PaintCompiler · AccessKitProjector"]
         Render["octara-render (Thread-Agnostic: Native + WebGPU)<br/>RenderGraph(plan) · Batch · Atlas · wgpu Encode<br/>Custom Shaders · CPU Reference Oracle"]
         Gpu["octara-gpu (Native Only)<br/>Event-Driven DeviceExecutor · Surface/Readback Leases<br/>Async Background PNG Writer"]
-        HostNative["octara-host-native<br/>Pure-Rust winit Orchestrator + OsHost/OsWindow traits<br/>backends/{macos, ios, desktop}"]
+        HostNative["octara-host-native<br/>Platform-neutral shell + OsHost/OsWindow SPI<br/>os/{macos, ios, desktop}"]
     end
 
     subgraph L3W["Layer 3b: Web Pipeline & Host"]
@@ -373,12 +373,11 @@ pub trait HostEngine {
   - Per-generation `DeviceExecutor`, surface reconfiguration barrier, readback leases, async background PNG encoding.
   - **Event-driven GPU completion**: `queue.on_submitted_work_done` and buffer-map callbacks actively wake the executor thread (adaptive backoff fallback only if a backend lacks prompt callback delivery), eliminating the constant `1ms` polling loop.
 - **`octara-host-native`**:
-  - Pure-Rust winit event-loop orchestrator + `HostWindow` state machine with **zero `#[cfg(target_os)]` business logic**.
-  - Internal `OsHost` / `OsWindow` traits implemented cleanly in:
-    - macOS and iOS share a `CADisplayLink` driver with on-demand drawable acquisition.
-    - `backends/macos/`: AppKit `NSTextInputClient`, `NSView` island, `NSMenu` bar, AppKit asks.
-    - `backends/ios/`: UIKit Scene, `UITextField`/`UITextView`, interactive swipe-back coordinator.
-    - `backends/desktop/`: Linux & Windows winit IME, clipboard, `rfd` file picker, standard wgpu surface.
+  - The platform-neutral shell consumes `PlatformEvent` and manages `HostWindow` without OS-specific branching. Each `OsHost` owns its event loop and supplies raw surface handles through `OsWindow`.
+  - Apple hosts share a `CADisplayLink` driver with on-demand drawable acquisition.
+    - `os/macos/`: AppKit application and window delegates, an `NSView` implementing `NSTextInputClient`, direct AccessKit, and AppKit menus and asks.
+    - `os/ios/`: UIKit application and scene delegates, a `UIViewController` for presentation, and a `UIView` implementing `UITextInput` with VoiceOver support.
+    - `os/desktop/`: The transitional Winit adapter handles Linux and Windows windowing, IME, and accessibility. See [Direct native platform hosts](v2/17-native-platform-hosts-without-winit.md) for the remaining migration.
 
 ### 7.2 Web Stack (`octara-host-web`)
 - **`DomEngine`**:

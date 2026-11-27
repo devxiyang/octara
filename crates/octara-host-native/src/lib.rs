@@ -11,14 +11,13 @@ mod window;
 pub use config::{LaunchCapture, ShellConfig};
 pub use media::DiskMediaCache;
 pub use octara_gpu::{SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory};
-pub use shell::ShellEvent;
+pub use os::{HostWake, PlatformEvent};
 
 use octara::runtime::{BuildCx, Input, WindowId, WindowOptions};
 use octara::{App, AppDefinition, IntoView, WindowDefinition};
 use octara_model::capture::FrameReceipt;
 use os::OsHost;
 use std::time::Duration;
-use winit::event_loop::EventLoop;
 
 #[derive(Debug)]
 pub struct ShellError(pub String);
@@ -83,9 +82,7 @@ pub struct NativeAppOptions {
 }
 
 /// Runs a native app with the supplied OS host, renderer and event-loop hook.
-pub fn run_app_with_options(application: AppDefinition, options: NativeAppOptions) -> Result<(), ShellError> {
-    let event_loop = EventLoop::<ShellEvent>::with_user_event().build().map_err(|error| ShellError(error.to_string()))?;
-    let mut shell = shell::Shell::new(application, event_loop.create_proxy(), options);
-    event_loop.run_app(&mut shell).map_err(|error| ShellError(error.to_string()))?;
-    shell.take_error().map_or(Ok(()), Err)
+pub fn run_app_with_options(application: AppDefinition, mut options: NativeAppOptions) -> Result<(), ShellError> {
+    let host = options.os_host.take().unwrap_or_else(os::create_os_host);
+    host.run(Box::new(shell::Driver::new(application, options))).map_err(ShellError)
 }

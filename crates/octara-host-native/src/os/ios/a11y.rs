@@ -1,7 +1,7 @@
 //! Publish the committed native semantic tree as UIKit VoiceOver elements.
 
-use crate::ShellEvent;
 use crate::os::WindowAccessibility;
+use crate::os::{PlatformEvent, PlatformSender};
 use accesskit::{Action, Affine, Live, NodeId, Rect, Role, Toggled, TreeUpdate};
 use accesskit_consumer::{FullNodeId, NodeRef, Tree, TreeChangeHandler};
 use objc2::rc::{Retained, Weak};
@@ -24,7 +24,6 @@ use octara_pipeline::{AccessibilityContext, NativePublication};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use winit::event_loop::EventLoopProxy;
 
 pub(super) fn platform_accessibility_active() -> bool {
     UIAccessibilityIsVoiceOverRunning() || UIAccessibilityIsSwitchControlRunning() || UIAccessibilityIsSpeakScreenEnabled()
@@ -56,7 +55,7 @@ impl Actions {
 struct Route {
     view: Weak<UIView>,
     window: WindowId,
-    proxy: EventLoopProxy<ShellEvent>,
+    proxy: PlatformSender,
     focused: Cell<Option<TargetGuard>>,
 }
 
@@ -78,10 +77,8 @@ struct ElementState {
 
 impl ElementState {
     fn send(&self, action: A11yAction) -> bool {
-        self.route
-            .proxy
-            .send_event(ShellEvent::PlatformAccessibilityAction { window: self.route.window, target: self.target, action })
-            .is_ok()
+        self.route.proxy.send_event(PlatformEvent::PlatformAccessibilityAction { window: self.route.window, target: self.target, action });
+        true
     }
 }
 
@@ -416,7 +413,7 @@ pub(super) struct Bridge {
 }
 
 impl Bridge {
-    pub(super) fn new(view: Retained<UIView>, window: WindowId, proxy: EventLoopProxy<ShellEvent>) -> Self {
+    pub(super) fn new(view: Retained<UIView>, window: WindowId, proxy: PlatformSender) -> Self {
         let route = Rc::new(Route { view: Weak::new(&*view), window, proxy, focused: Cell::new(None) });
         Self { view, route, tree: None, elements: HashMap::new(), order: Vec::new() }
     }

@@ -1,13 +1,12 @@
 //! AppKit text services for the retained tree's focused editor.
 
-use super::super::{ActiveEditorView, KeyDispatch, WindowHostEvent, WindowTextInput};
+use super::super::{ActiveEditorView, HostWake, PlatformKey, WindowHostEvent, WindowTextInput};
+use super::view::OctaraView;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
-use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSTextInputClient, NSTextInputContext, NSView};
-use objc2_foundation::{
-    NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSPoint, NSRange, NSRangePointer, NSRect, NSSize, NSString,
-};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+use objc2::{AllocAnyThread, DefinedClass, MainThreadOnly, Message};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSTextInputContext};
+use objc2_foundation::{NSArray, NSAttributedString, NSNotFound, NSPoint, NSRange, NSRangePointer, NSRect, NSSize, NSString};
 use octara::EditorRope;
 use octara::runtime::Input;
 use octara::tree::editor::EditorMirror;
@@ -20,8 +19,6 @@ use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ops::Range;
-use winit::event::{ElementState, KeyEvent};
-use winit::platform::scancode::PhysicalKeyExtScancode;
 
 struct Session {
     id: EditorSessionId,
@@ -63,18 +60,11 @@ impl Session {
     }
 }
 
-struct RetainedKey {
-    session: EditorSessionId,
-    scancode: u32,
-    event: Retained<NSEvent>,
-}
-
 #[derive(Default)]
 struct State {
     session: Option<Session>,
     pending: Vec<Input>,
     predicted: VecDeque<(u64, EditorMirror)>,
-    keys: VecDeque<RetainedKey>,
 }
 
 impl State {
@@ -89,197 +79,157 @@ impl State {
     }
 }
 
-struct InputIvars {
+pub(super) struct TextInput {
     state: RefCell<State>,
     context: RefCell<Option<Retained<NSTextInputContext>>>,
-    wake: Box<dyn Fn()>,
+    wake: HostWake,
     handled: Cell<bool>,
     forward: Cell<bool>,
     discarding: Cell<bool>,
     anchor: Cell<Option<NSRect>>,
 }
 
-define_class!(
-    // SAFETY: NSView has no additional subclass requirements. Its state is main-thread owned.
-    #[unsafe(super(NSView))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "OctaraNativeTextInput"]
-    #[ivars = InputIvars]
-    struct InputView;
-
-    unsafe impl NSObjectProtocol for InputView {}
-
-    impl InputView {
-        #[unsafe(method(isFlipped))]
-        fn is_flipped(&self) -> bool { true }
-
-        #[unsafe(method(acceptsFirstResponder))]
-        fn accepts_first_responder(&self) -> bool { self.ivars().context.borrow().is_some() }
-
-        #[unsafe(method_id(inputContext))]
-        fn input_context(&self) -> Option<Retained<NSTextInputContext>> {
-            self.ivars().context.borrow().clone()
+impl TextInput {
+    pub(super) fn new(wake: HostWake) -> Self {
+        Self {
+            state: RefCell::default(),
+            context: RefCell::default(),
+            wake,
+            handled: Cell::new(false),
+            forward: Cell::new(false),
+            discarding: Cell::new(false),
+            anchor: Cell::default(),
         }
+    }
+}
 
-        #[unsafe(method_id(hitTest:))]
-        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> { None }
-
-        #[unsafe(method(keyDown:))]
-        fn key_down(&self, event: &NSEvent) {
-            let _keep_alive = self.retain();
-            let session = self.ivars().state.borrow().session.as_ref().map(|session| session.id);
-            if let Some(session) = session {
-                let key = RetainedKey { session, scancode: event.keyCode().into(), event: event.retain() };
-                self.ivars().state.borrow_mut().keys.push_back(key);
-            }
-            // winit translates the physical event; the host decides when to interpret it.
-            if let Some(parent) = unsafe { self.superview() } {
-                parent.keyDown(event);
-            }
+impl OctaraView {
+    pub(super) fn interpret_editor_key(&self, event: &NSEvent) -> bool {
+        let ivars = &self.ivars().text_input;
+        let Some(context) = self.editor_context() else { return false };
+        ivars.handled.set(false);
+        ivars.forward.set(false);
+        if !self.composing()
+            && let Some(command) = edit_shortcut(event)
+        {
+            return self.command(command);
         }
-
-        #[unsafe(method(paste:))]
-        fn paste_action(&self, _: Option<&AnyObject>) {
-            self.paste();
+        let consumed = context.handleEvent(event);
+        if !consumed && !ivars.handled.get() && !ivars.forward.get() {
+            self.interpretKeyEvents(&NSArray::from_slice(&[event]));
         }
+        ivars.handled.get() || (consumed && !ivars.forward.get())
+    }
 
-        #[unsafe(method(keyUp:))]
-        fn key_up(&self, event: &NSEvent) {
-            if let Some(parent) = unsafe { self.superview() } {
-                parent.keyUp(event);
-            }
+    pub(super) fn editor_context(&self) -> Option<Retained<NSTextInputContext>> {
+        self.ivars().text_input.context.borrow().clone()
+    }
+
+    pub(super) fn editor_insert_text(&self, string: &AnyObject, replacement: NSRange) {
+        let Some(text) = native_string(string) else { return };
+        let replaced = self
+            .ivars()
+            .text_input
+            .state
+            .borrow()
+            .session
+            .as_ref()
+            .is_some_and(|session| !session.multiline && matches!(text.as_str(), "\r" | "\n"));
+        if replaced {
+            self.ivars().text_input.forward.set(true);
+            return;
         }
+        let replacement = self.replacement(replacement);
+        self.enqueue(TextEdit::Insert { text, replacement });
+    }
 
-        #[unsafe(method(flagsChanged:))]
-        fn flags_changed(&self, event: &NSEvent) {
-            if let Some(parent) = unsafe { self.superview() } {
-                parent.flagsChanged(event);
-            }
+    pub(super) fn editor_do_command(&self, selector: Sel) {
+        let name = selector.name().to_bytes();
+        if name == b"cancelOperation:" && self.composing() {
+            self.enqueue(TextEdit::Cancel);
+            self.discard_composer();
+        }
+        if !self.ivars().text_input.handled.get() && !self.command(name) {
+            self.ivars().text_input.forward.set(true);
         }
     }
 
-    unsafe impl NSTextInputClient for InputView {
-        #[unsafe(method(insertText:replacementRange:))]
-        unsafe fn insert_text(&self, string: &AnyObject, replacement: NSRange) {
-            let Some(text) = native_string(string) else { return };
-            let replaced = self.ivars().state.borrow().session.as_ref().is_some_and(|session| {
-                !session.multiline && matches!(text.as_str(), "\r" | "\n")
-            });
-            if replaced {
-                self.ivars().forward.set(true);
-                return;
-            }
-            let replacement = self.replacement(replacement);
-            self.enqueue(TextEdit::Insert { text, replacement });
-        }
+    pub(super) fn editor_set_marked_text(&self, string: &AnyObject, selection: NSRange, replacement: NSRange) {
+        let Some(text) = native_string(string) else { return };
+        let selection = byte_range(&EditorRope::new(text.clone()), selection);
+        let replacement = self.replacement(replacement);
+        self.enqueue(TextEdit::Mark { text, selection, replacement });
+    }
 
-        #[unsafe(method(doCommandBySelector:))]
-        unsafe fn do_command(&self, selector: Sel) {
-            let name = selector.name().to_bytes();
-            if name == b"cancelOperation:" && self.composing() {
-                self.enqueue(TextEdit::Cancel);
-                self.discard_composer();
-            }
-            if !self.ivars().handled.get() && !self.command(name) {
-                self.ivars().forward.set(true);
-            }
-        }
+    pub(super) fn editor_unmark_text(&self) {
+        self.enqueue(TextEdit::Unmark);
+    }
 
-        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
-        unsafe fn set_marked_text(&self, string: &AnyObject, selection: NSRange, replacement: NSRange) {
-            let Some(text) = native_string(string) else { return };
-            let selection = byte_range(&EditorRope::new(text.clone()), selection);
-            let replacement = self.replacement(replacement);
-            self.enqueue(TextEdit::Mark { text, selection, replacement });
-        }
+    pub(super) fn editor_selected_range(&self) -> NSRange {
+        let state = self.ivars().text_input.state.borrow();
+        state.session.as_ref().and_then(|s| s.selection().map(|r| native_range(s.rope(), r))).unwrap_or_else(not_found)
+    }
 
-        #[unsafe(method(unmarkText))]
-        fn unmark_text(&self) {
-            self.enqueue(TextEdit::Unmark);
-        }
+    pub(super) fn editor_marked_range(&self) -> NSRange {
+        let state = self.ivars().text_input.state.borrow();
+        state.session.as_ref().and_then(|s| s.marked().map(|r| native_range(s.rope(), r))).unwrap_or_else(not_found)
+    }
 
-        #[unsafe(method(selectedRange))]
-        fn selected_range(&self) -> NSRange {
-            let state = self.ivars().state.borrow();
-            state.session.as_ref().and_then(|s| s.selection().map(|r| native_range(s.rope(), r)))
-                .unwrap_or_else(not_found)
-        }
+    pub(super) fn editor_has_marked_text(&self) -> bool {
+        self.composing()
+    }
 
-        #[unsafe(method(markedRange))]
-        fn marked_range(&self) -> NSRange {
-            let state = self.ivars().state.borrow();
-            state.session.as_ref().and_then(|s| s.marked().map(|r| native_range(s.rope(), r)))
-                .unwrap_or_else(not_found)
-        }
+    pub(super) unsafe fn editor_substring(&self, proposed: NSRange, actual: NSRangePointer) -> Option<Retained<NSAttributedString>> {
+        // SAFETY: AppKit provides writable storage or null.
+        unsafe { write_range(actual, not_found()) };
+        self.substring_value(proposed).map(|(text, range)| {
+            unsafe { write_range(actual, range) };
+            NSAttributedString::initWithString(NSAttributedString::alloc(), &NSString::from_str(&text))
+        })
+    }
 
-        #[unsafe(method(hasMarkedText))]
-        fn has_marked_text(&self) -> bool {
-            self.composing()
-        }
-
-        #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
-        unsafe fn substring(&self, proposed: NSRange, actual: NSRangePointer) -> Option<Retained<NSAttributedString>> {
-            // SAFETY: AppKit provides writable storage or null.
-            unsafe { write_range(actual, not_found()) };
-            self.substring_value(proposed).map(|(text, range)| {
-                unsafe { write_range(actual, range) };
-                NSAttributedString::initWithString(NSAttributedString::alloc(), &NSString::from_str(&text))
-            })
-        }
-
-        #[unsafe(method_id(validAttributesForMarkedText))]
-        fn valid_attributes(&self) -> Retained<NSArray<NSAttributedStringKey>> { NSArray::new() }
-
-        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
-        unsafe fn first_rect(&self, proposed: NSRange, actual: NSRangePointer) -> NSRect {
-            unsafe { write_range(actual, not_found()) };
-            let (position, covered) = {
-                let state = self.ivars().state.borrow();
-                let Some(session) = &state.session else { return NSRect::ZERO };
-                let text = session.rope();
-                let Some(requested) = query_range(text, proposed) else { return NSRect::ZERO };
-                let current_caret = session.document.editor().displayed_selection().map(|(_, caret)| caret);
-                let found = session.geometry.as_ref().and_then(|geometry| first_rect(geometry, requested.clone()));
-                let fallback = || {
-                    let byte = current_caret.unwrap_or(requested.start);
-                    session.caret.map(|caret| (byte..byte, caret))
-                };
-                let geometry = if requested.is_empty() && current_caret == Some(requested.start) {
-                    fallback().or(found)
-                } else {
-                    found.or_else(fallback)
-                };
-                let Some((range, rect)) = geometry else { return NSRect::ZERO };
-                (rect, native_range(text, range))
+    pub(super) unsafe fn editor_first_rect(&self, proposed: NSRange, actual: NSRangePointer) -> NSRect {
+        unsafe { write_range(actual, not_found()) };
+        let (position, covered) = {
+            let state = self.ivars().text_input.state.borrow();
+            let Some(session) = &state.session else { return NSRect::ZERO };
+            let text = session.rope();
+            let Some(requested) = query_range(text, proposed) else { return NSRect::ZERO };
+            let current_caret = session.document.editor().displayed_selection().map(|(_, caret)| caret);
+            let found = session.geometry.as_ref().and_then(|geometry| first_rect(geometry, requested.clone()));
+            let fallback = || {
+                let byte = current_caret.unwrap_or(requested.start);
+                session.caret.map(|caret| (byte..byte, caret))
             };
-            let Some(window) = self.window() else { return NSRect::ZERO };
-            let local = NSRect::new(
-                NSPoint::new(position.x.into(), position.y.into()),
-                NSSize::new(position.w.max(1.0).into(), position.h.into()),
-            );
-            let screen = window.convertRectToScreen(self.convertRect_toView(local, None));
-            self.ivars().anchor.set(Some(screen));
-            unsafe { write_range(actual, covered) };
-            screen
-        }
-
-        #[unsafe(method(characterIndexForPoint:))]
-        fn character_index(&self, point: NSPoint) -> usize {
-            let Some(window) = self.window() else { return NSNotFound as usize };
-            let local = self.convertPoint_fromView(window.convertPointFromScreen(point), None);
-            let state = self.ivars().state.borrow();
-            let Some(session) = &state.session else { return NSNotFound as usize };
-            let point = Point::new(local.x as f32, local.y as f32);
-            session.geometry.as_ref().and_then(|geometry| index_at(geometry, point)).map_or(NSNotFound as usize, |index| {
-                session.rope().byte_to_utf16(index).unwrap_or(NSNotFound as usize)
-            })
-        }
+            let geometry =
+                if requested.is_empty() && current_caret == Some(requested.start) { fallback().or(found) } else { found.or_else(fallback) };
+            let Some((range, rect)) = geometry else { return NSRect::ZERO };
+            (rect, native_range(text, range))
+        };
+        let Some(window) = self.window() else { return NSRect::ZERO };
+        let local =
+            NSRect::new(NSPoint::new(position.x.into(), position.y.into()), NSSize::new(position.w.max(1.0).into(), position.h.into()));
+        let screen = window.convertRectToScreen(self.convertRect_toView(local, None));
+        self.ivars().text_input.anchor.set(Some(screen));
+        unsafe { write_range(actual, covered) };
+        screen
     }
-);
 
-impl InputView {
+    pub(super) fn editor_character_index(&self, point: NSPoint) -> usize {
+        let Some(window) = self.window() else { return NSNotFound as usize };
+        let local = self.convertPoint_fromView(window.convertPointFromScreen(point), None);
+        let state = self.ivars().text_input.state.borrow();
+        let Some(session) = &state.session else { return NSNotFound as usize };
+        let point = Point::new(local.x as f32, local.y as f32);
+        session
+            .geometry
+            .as_ref()
+            .and_then(|geometry| index_at(geometry, point))
+            .map_or(NSNotFound as usize, |index| session.rope().byte_to_utf16(index).unwrap_or(NSNotFound as usize))
+    }
+
     fn substring_value(&self, proposed: NSRange) -> Option<(String, NSRange)> {
-        let state = self.ivars().state.borrow();
+        let state = self.ivars().text_input.state.borrow();
         let session = state.session.as_ref().filter(|session| !session.secure)?;
         let text = session.rope();
         let range = query_range(text, proposed)?;
@@ -288,16 +238,20 @@ impl InputView {
     }
 
     fn replacement(&self, range: NSRange) -> Option<Range<usize>> {
-        let state = self.ivars().state.borrow();
+        let state = self.ivars().text_input.state.borrow();
         byte_range(state.session.as_ref()?.rope(), range)
     }
 
-    fn composing(&self) -> bool {
-        self.ivars().state.borrow().session.as_ref().is_some_and(|s| s.marked().is_some())
+    pub(super) fn editor_session(&self) -> Option<EditorSessionId> {
+        self.ivars().text_input.state.borrow().session.as_ref().map(|session| session.id)
+    }
+
+    pub(super) fn composing(&self) -> bool {
+        self.ivars().text_input.state.borrow().session.as_ref().is_some_and(|s| s.marked().is_some())
     }
 
     fn enqueue(&self, edit: TextEdit) {
-        let ivars = self.ivars();
+        let ivars = &self.ivars().text_input;
         ivars.handled.set(true);
         if ivars.discarding.get() {
             return;
@@ -306,9 +260,9 @@ impl InputView {
     }
 
     fn propose(&self, change: impl FnOnce(&mut Session) -> Option<EditorEvent>) {
-        let changed = self.ivars().state.borrow_mut().propose(change);
+        let changed = self.ivars().text_input.state.borrow_mut().propose(change);
         if changed {
-            (self.ivars().wake)();
+            (self.ivars().text_input.wake)();
         }
     }
 
@@ -327,7 +281,7 @@ impl InputView {
             b"paste:" | b"pasteAsPlainText:" => return self.paste(),
             _ => {}
         }
-        let state = self.ivars().state.borrow();
+        let state = self.ivars().text_input.state.borrow();
         let Some(session) = state.session.as_ref() else { return false };
         let rope = session.rope();
         let (anchor, caret) = session.document.editor().displayed_selection().unwrap_or((rope.len(), rope.len()));
@@ -370,7 +324,7 @@ impl InputView {
 
     fn copy_selection(&self, cut: bool) -> bool {
         let (revision, selected, text) = {
-            let state = self.ivars().state.borrow();
+            let state = self.ivars().text_input.state.borrow();
             let Some(session) = &state.session else { return false };
             let Some(selected) = session.selection().filter(|range| !session.secure && !range.is_empty()) else {
                 return true;
@@ -385,8 +339,8 @@ impl InputView {
         true
     }
 
-    fn paste(&self) -> bool {
-        let ivars = self.ivars();
+    pub(super) fn paste(&self) -> bool {
+        let ivars = &self.ivars().text_input;
         if ivars.state.borrow().session.is_none() {
             return false;
         }
@@ -399,47 +353,32 @@ impl InputView {
     }
 
     fn has_revision(&self, revision: (EditorSessionId, u64)) -> bool {
-        self.ivars().state.borrow().session.as_ref().is_some_and(|session| (session.id, session.revision) == revision)
+        self.ivars().text_input.state.borrow().session.as_ref().is_some_and(|session| (session.id, session.revision) == revision)
     }
 
     fn discard_composer(&self) {
-        let previous = self.ivars().discarding.replace(true);
-        if let Some(context) = self.inputContext() {
+        let previous = self.ivars().text_input.discarding.replace(true);
+        if let Some(context) = self.editor_context() {
             context.discardMarkedText();
         }
-        self.ivars().discarding.set(previous);
+        self.ivars().text_input.discarding.set(previous);
     }
 }
 
 pub(super) struct Editor {
-    view: Retained<InputView>,
-    parent: Retained<NSView>,
+    view: Retained<OctaraView>,
     secure: bool,
-    key: Option<RetainedKey>,
 }
 
 impl Editor {
-    pub(super) fn new(parent: &NSView, mtm: MainThreadMarker, wake: impl Fn() + 'static) -> Self {
-        let this = InputView::alloc(mtm).set_ivars(InputIvars {
-            state: RefCell::default(),
-            context: RefCell::default(),
-            wake: Box::new(wake),
-            handled: Cell::new(false),
-            forward: Cell::new(false),
-            discarding: Cell::new(false),
-            anchor: Cell::new(None),
-        });
-        let view: Retained<InputView> = unsafe { msg_send![super(this), initWithFrame: parent.bounds()] };
-        use objc2_app_kit::NSAutoresizingMaskOptions as Mask;
-        view.setAutoresizingMask(Mask::ViewWidthSizable | Mask::ViewHeightSizable);
-        parent.addSubview(&view);
-        Self { view, parent: parent.retain(), secure: false, key: None }
+    pub(super) fn new(view: &OctaraView) -> Self {
+        Self { view: view.retain(), secure: false }
     }
 
     fn sync(&mut self, active: Option<&ActiveEditorView<'_>>) {
         let next = active.map(Session::new);
         let (replace_context, selection_changed) = {
-            let mut state = self.view.ivars().state.borrow_mut();
+            let mut state = self.view.ivars().text_input.state.borrow_mut();
             let old = state.session.as_ref();
             let replace = old.map(|s| s.id) != next.as_ref().map(|s| s.id);
             let changed = old.and_then(|s| s.selection()) != next.as_ref().and_then(|s| s.selection());
@@ -463,8 +402,6 @@ impl Editor {
             }
             state.predicted.clear();
             if discard {
-                self.key = None;
-                state.keys.clear();
                 state.pending.clear();
             }
             state.session = next;
@@ -474,27 +411,21 @@ impl Editor {
         self.set_secure(secure);
         if replace_context {
             self.view.discard_composer();
-            self.view.ivars().anchor.set(None);
-            if self.is_focused()
-                && let Some(window) = self.view.window()
-            {
-                window.makeFirstResponder(Some(&self.parent));
-            }
+            self.view.ivars().text_input.anchor.set(None);
             let context = active.map(|_| {
                 NSTextInputContext::initWithClient(NSTextInputContext::alloc(self.view.mtm()), ProtocolObject::from_ref(&*self.view))
             });
-            self.view.ivars().context.replace(context);
+            let old = self.view.ivars().text_input.context.replace(context);
+            if self.is_focused() {
+                if let Some(old) = old {
+                    old.deactivate();
+                }
+                if let Some(context) = self.view.editor_context() {
+                    context.activate();
+                }
+            }
         }
-        if active.is_some()
-            && let Some(window) = self.view.window()
-            && (replace_context
-                || window
-                    .firstResponder()
-                    .is_some_and(|responder| std::ptr::eq(Retained::as_ptr(&responder).cast::<NSView>(), &*self.parent)))
-        {
-            window.makeFirstResponder(Some(&self.view));
-        }
-        if let Some(context) = self.view.inputContext() {
+        if let Some(context) = self.view.editor_context() {
             context.invalidateCharacterCoordinates();
             if selection_changed {
                 context.textInputClientDidUpdateSelection();
@@ -502,37 +433,12 @@ impl Editor {
         }
     }
 
-    fn begin_key(&mut self, event: &KeyEvent) {
-        let mut state = self.view.ivars().state.borrow_mut();
-        self.key = state.keys.front().is_some_and(|key| matching(key, event)).then(|| state.keys.pop_front().expect("matching AppKit key"));
-    }
-
-    fn interpret(&mut self) -> bool {
-        let Some(key) = self.key.take() else { return false };
-        let ivars = self.view.ivars();
-        if ivars.state.borrow().session.as_ref().is_none_or(|session| session.id != key.session) {
-            return true;
-        }
-        ivars.handled.set(false);
-        ivars.forward.set(false);
-        if !self.view.composing()
-            && let Some(command) = edit_shortcut(&key.event)
-        {
-            return self.view.command(command);
-        }
-        let consumed = self.view.inputContext().is_some_and(|context| context.handleEvent(&key.event));
-        if !consumed && !ivars.handled.get() && !ivars.forward.get() {
-            self.view.interpretKeyEvents(&NSArray::from_slice(&[&*key.event]));
-        }
-        ivars.handled.get() || !ivars.forward.get()
-    }
-
     fn drain(&self) -> Vec<Input> {
-        std::mem::take(&mut self.view.ivars().state.borrow_mut().pending)
+        std::mem::take(&mut self.view.ivars().text_input.state.borrow_mut().pending)
     }
 
     fn set_focused(&mut self, active: bool) {
-        let secure = self.view.ivars().state.borrow().session.as_ref().is_some_and(|session| session.secure);
+        let secure = self.view.ivars().text_input.state.borrow().session.as_ref().is_some_and(|session| session.secure);
         self.set_secure(active && secure);
     }
 
@@ -555,19 +461,19 @@ impl Editor {
         self.view
             .window()
             .and_then(|window| window.firstResponder())
-            .is_some_and(|responder| std::ptr::eq(Retained::as_ptr(&responder).cast::<InputView>(), &*self.view))
+            .is_some_and(|responder| std::ptr::eq(Retained::as_ptr(&responder).cast::<OctaraView>(), &*self.view))
     }
 
     fn inspect(&self) -> Value {
         let native_focus = self.is_focused();
-        let state = self.view.ivars().state.borrow();
+        let state = self.view.ivars().text_input.state.borrow();
         json!({
             "active": state.session.is_some(),
             "secure": self.secure,
             "native_focus": native_focus,
             "composing": state.session.as_ref().is_some_and(|session| session.marked().is_some()),
             "pending": state.pending.len(),
-            "screen_anchor": self.view.ivars().anchor.get().map(|r| [r.origin.x, r.origin.y, r.size.width, r.size.height]),
+            "screen_anchor": self.view.ivars().text_input.anchor.get().map(|r| [r.origin.x, r.origin.y, r.size.width, r.size.height]),
         })
     }
 }
@@ -581,13 +487,8 @@ impl WindowTextInput for Editor {
         self.set_focused(active);
     }
 
-    fn on_winit_key(&mut self, event: &KeyEvent) -> KeyDispatch {
-        self.begin_key(event);
-        if self.view.composing() && self.interpret() { KeyDispatch::Consumed } else { KeyDispatch::Forward }
-    }
-
-    fn on_unhandled_winit_key(&mut self, _: &KeyEvent) -> bool {
-        self.interpret()
+    fn on_unhandled_key(&mut self, key: &PlatformKey) -> bool {
+        self.view.interpret_pending_key(key)
     }
 
     fn drain_text_input(&mut self, out: &mut Vec<WindowHostEvent>) {
@@ -602,12 +503,7 @@ impl WindowTextInput for Editor {
 impl Drop for Editor {
     fn drop(&mut self) {
         self.sync(None);
-        self.view.removeFromSuperview();
     }
-}
-
-fn matching(key: &RetainedKey, event: &KeyEvent) -> bool {
-    event.state == ElementState::Pressed && event.physical_key.to_scancode() == Some(key.scancode)
 }
 
 #[link(name = "Carbon", kind = "framework")]

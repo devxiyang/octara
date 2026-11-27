@@ -20,8 +20,12 @@ harness = false
 name = "macos_chrome"
 harness = false
 
+[[test]]
+name = "macos_input"
+harness = false
+
 [dependencies]
-accesskit_winit.workspace = true
+accesskit.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
 sha2.workspace = true
@@ -34,7 +38,7 @@ octara-render = { workspace = true, features = ["gpu"] }
 pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-winit.workspace = true
+raw-window-handle = "0.6.2"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.6", features = ["event", "fs"] }
@@ -52,14 +56,16 @@ zbus = { version = "5.19.0", default-features = false, features = ["async-io"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(not(any(target_os = "ios", target_os = "macos")))'.dependencies]
+accesskit_winit.workspace = true
 open.workspace = true
+winit.workspace = true
 
 [target.'cfg(not(any(target_os = "ios", target_os = "linux", target_os = "macos")))'.dependencies]
 arboard = { workspace = true, features = ["image-data"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
-accesskit.workspace = true
 accesskit_consumer = "0.39.2"
+dispatch2 = "0.3.1"
 block2.workspace = true
 objc2.workspace = true
 objc2-core-foundation.workspace = true
@@ -70,13 +76,15 @@ objc2-ui-kit = { workspace = true, features = [
     "std", "block2", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core",
     "NSLayoutAnchor", "NSLayoutConstraint", "UIKeyboardLayoutGuide", "UITrackingLayoutGuide",
     "UIApplication", "UIPasteboard", "UIScreenEdgePanGestureRecognizer", "UIPanGestureRecognizer", "UIPinchGestureRecognizer", "UIRotationGestureRecognizer",
-    "UIAccessibility", "UIAccessibilityConstants", "UIAccessibilityContainer", "UIAccessibilityElement", "UIColor", "UICommand", "UIContentSizeCategory", "UIControl", "UIEvent", "UIFont", "UIFontDescriptor", "UIGeometry", "UIGestureRecognizer", "UIInterface", "UILayoutGuide", "UIOpenURLContext", "UIScreen",
-    "UIImage", "UINavigationController", "UIResponder", "UIScene", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UITextField", "UITextInput",
-    "UIScrollView", "UITextInputTraits", "UITextView", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "UIWindowScene",
+    "UIAccessibility", "UIAccessibilityConstants", "UIAccessibilityContainer", "UIAccessibilityElement", "UIColor", "UICommand", "UIContentSizeCategory", "UIEvent", "UIFont", "UIFontDescriptor", "UIGeometry", "UIGestureRecognizer", "UIInterface", "UILayoutGuide", "UIOpenURLContext", "UIScreen",
+    "UIImage", "NSText", "UITrait", "UITraitCollection", "UINavigationController", "UIResponder", "UIScene", "UISceneConfiguration", "UIWindowSceneGeometry", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UITextInput",
+    "UIHoverGestureRecognizer", "UIKey", "UIKeyConstants", "UIPress", "UIPressesEvent", "UITouch",
+    "UITextInputTraits", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "UIWindowScene",
 ] }
 
 # AppKit views and the frame's Core Animation transaction.
 [target.'cfg(target_os = "macos")'.dependencies]
+accesskit_macos = "0.27.2"
 block2.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true

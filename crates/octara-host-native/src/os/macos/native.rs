@@ -13,7 +13,6 @@ use objc2_map_kit::{
     MKCoordinateRegion, MKCoordinateSpan, MKHybridMapConfiguration, MKImageryMapConfiguration, MKMapConfiguration, MKMapSnapshot,
     MKMapSnapshotOptions, MKMapSnapshotter, MKMapView, MKMapViewDelegate, MKStandardMapConfiguration,
 };
-use objc2_quartz_core::CAMetalLayer;
 use octara_model::geometry::{Rect, Size};
 use octara_model::identity::NativeId;
 use octara_model::native::{NativeChange, NativeEvent, NativePlacement, NativeSlot, NativeSnapshot, NativeSnapshotRequest};
@@ -203,7 +202,7 @@ define_class!(
         }
 
         /// An underlay view takes the pointer where it shows and nothing of Octara's covers it;
-        /// elsewhere the event falls through to winit's view (`point` is in the superview's
+        /// elsewhere the event falls through to OctaraView (`point` is in the superview's
         /// coordinates, which the host shares, flipped: Octara's logical pixels).
         #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
@@ -221,7 +220,7 @@ impl Underlay {
     fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Regions::default());
         let host: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
-        // Width and height follow winit's view.
+        // Width and height follow the content container.
         host.setAutoresizingMask(
             objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable,
         );
@@ -379,11 +378,9 @@ pub(super) struct Views {
     inbox: Rc<Inbox>,
     hosted: HashMap<NativeId, Hosted>,
     pending: PendingNativeViews<Hosted>,
-    /// The host of underlay views, below winit's view's subviews (made with the first one).
+    /// Mounts MapKit views below the render layer.
     underlay: Option<Retained<Underlay>>,
     vibrancy: Option<Retained<NSVisualEffectView>>,
-    /// The window's Metal layer, kept above the underlay host.
-    metal: Option<Retained<CAMetalLayer>>,
 }
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> NSRect {
@@ -464,8 +461,7 @@ impl Views {
         self.hosted.get(&id)?.delegate.as_ref()?.ivars().loading.get().then(|| "loading map tiles".to_owned())
     }
 
-    /// The underlay host: made with the first underlay view, below every subview of winit's
-    /// view, with the Metal layer above it.
+    /// On demand, mount the host above the vibrancy backdrop.
     fn underlay_host(&mut self) -> Retained<Underlay> {
         if let Some(h) = &self.underlay {
             return h.clone();
@@ -475,15 +471,6 @@ impl Views {
             self.parent.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Above, Some(effect));
         } else {
             self.parent.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Below, None);
-        }
-        if let (Some(root), Some(host_layer), Some(metal)) = (self.parent.layer(), host.layer(), self.metal.as_ref()) {
-            let inside = unsafe { root.sublayers() }.is_some_and(|ls| ls.iter().any(|l| std::ptr::eq(&*l, &***metal)));
-            if !inside && !std::ptr::eq(&*root, &***metal) {
-                root.insertSublayer_above(metal, Some(&host_layer));
-            }
-            // AppKit re-sorts sublayers to its subviews' order when it updates the layer tree;
-            // siblings composite by z position first.
-            metal.setZPosition(1.0);
         }
         self.underlay = Some(host.clone());
         host
@@ -538,7 +525,6 @@ impl Views {
             pending: PendingNativeViews::default(),
             underlay: None,
             vibrancy: None,
-            metal: None,
         }
     }
 
@@ -562,38 +548,10 @@ impl Views {
             layer.setZPosition(-1.0);
         }
         self.vibrancy = Some(effect);
-        self.order_metal_above_backing();
     }
 
     pub(super) fn has_vibrancy(&self) -> bool {
         self.vibrancy.is_some()
-    }
-
-    pub(super) fn set_layer(&mut self, metal: Option<&CAMetalLayer>) {
-        if match (self.metal.as_deref(), metal) {
-            (Some(current), Some(next)) => std::ptr::eq(current, next),
-            (None, None) => true,
-            _ => false,
-        } {
-            return;
-        }
-        if let Some(metal) = metal {
-            // Keep the render surface between module-owned underlays and overlays.
-            metal.setZPosition(1.0);
-        }
-        self.metal = metal.map(objc2::Message::retain);
-        self.order_metal_above_backing();
-    }
-
-    fn order_metal_above_backing(&self) {
-        let backing = self.underlay.as_deref().map(|host| host.as_super()).or(self.vibrancy.as_deref().map(|effect| effect.as_super()));
-        if let (Some(layer), Some(backing)) = (&self.metal, backing)
-            && let (Some(root), Some(host_layer)) = (self.parent.layer(), backing.layer())
-            && !std::ptr::eq(&*root, &***layer)
-        {
-            root.insertSublayer_above(layer, Some(&host_layer));
-            layer.setZPosition(1.0);
-        }
     }
 
     pub(super) fn sync(&mut self, changes: &[NativeChange]) {

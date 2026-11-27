@@ -1,117 +1,107 @@
-//! AppKit window services, native text input and Metal presentation.
+//! Direct AppKit ownership, native window services, and Metal presentation.
 
 mod acquisition;
+mod application;
 mod asks;
 mod chrome;
 mod editor;
-mod lifecycle;
+mod input;
 mod menus;
 mod metal_frame;
 mod native;
 mod preferences;
 mod services;
-mod wheel;
+mod view;
+mod window;
 
 use super::apple_frame_clock::{DisplayClock, retry_on_clock};
-use super::gestures::TrackpadGestures;
 use super::{
-    Drawable, DrawableAcquisition, FrameClockActivity, HostEvent, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowAsks,
-    WindowHostEvent, WindowNativeViews, WindowPresentation, WindowTextInput, reply, surface_drawable,
+    Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowInit, PlatformEvent, PlatformSender,
+    ServiceCleanup, ShellDriver, WindowAccessibility, WindowAsks, WindowHostEvent, WindowNativeViews, WindowPresentation, WindowTextInput,
+    reply, surface_drawable,
 };
-use crate::ShellEvent;
-use objc2::MainThreadMarker;
+use application::{Application, EventQueue, Launch};
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSRequestUserAttentionType, NSView, NSWorkspace};
-use objc2_foundation::{NSString, NSURL};
+use objc2::{ClassType, MainThreadMarker};
+use objc2_app_kit::{
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSColor,
+    NSRequestUserAttentionType, NSView, NSWindow, NSWorkspace,
+};
+use objc2_foundation::{NSPoint, NSRect, NSString, NSURL};
 use objc2_quartz_core::CATransaction;
-use octara::module::{HostSurfaceKind, RawNativeSurface};
+use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
 use octara::runtime::{Input, WindowId};
-use octara::{StatusBarStyle, TitlebarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
+use octara::{StatusBarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
-use octara_model::geometry::{Point, Size, WindowViewport};
+use octara_model::geometry::{Size, WindowViewport};
 use octara_model::identity::NativeId;
-use octara_model::input::{GestureEvent, HostReply, Modifiers, PasteEvent, WheelPhase};
+use octara_model::input::{CursorStyle, HostReply, InteractionEvent, PasteEvent};
 use octara_model::native::{NativeChange, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::theme::ColorScheme;
 use octara_model::window::UserAttention;
 use octara_render::{gpu::OutputColor, wgpu};
-use std::cell::RefCell;
+use raw_window_handle::{AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::ptr::NonNull;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::event_loop::EventLoopProxy;
-use winit::platform::macos::WindowAttributesExtMacOS;
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::{Window, WindowAttributes};
 
 pub(super) const SURFACE_KIND: HostSurfaceKind = HostSurfaceKind::MacOs;
 
-pub(super) fn raw_module_surface(window: &Window) -> Option<RawNativeSurface> {
-    let view = content_view(window).ok()?;
-    let window = view.window()?;
-    Some(RawNativeSurface::AppKit { ns_window: NonNull::from(&*window).cast(), ns_view: NonNull::from(&*view).cast() })
-}
-
-fn content_view(window: &Window) -> Result<Retained<NSView>, String> {
-    let _mtm = MainThreadMarker::new().ok_or("AppKit windows must be accessed on the main thread")?;
-    let RawWindowHandle::AppKit(handle) = window.window_handle().map_err(|error| error.to_string())?.as_raw() else {
-        return Err("winit did not supply an AppKit window".into());
-    };
-    // SAFETY: The AppKit raw handle is the live winit NSView on its owning thread.
-    unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) }.ok_or_else(|| "AppKit content view is unavailable".into())
-}
-
-#[derive(Default)]
-struct MenuRouting {
-    windows: HashMap<isize, WindowId>,
-    pending: Vec<HostEvent>,
-    proxy: Option<EventLoopProxy<ShellEvent>>,
-}
+type MenuRouting = Rc<RefCell<HashMap<NonNull<NSWindow>, WindowId>>>;
 
 struct MacHost {
     menu_bar: Option<menus::MenuBar>,
-    routing: Rc<RefCell<MenuRouting>>,
-    preferences: Option<preferences::Observer>,
-    lifecycle: Option<lifecycle::ActivationObserver>,
+    routing: MenuRouting,
+    queue: EventQueue,
+    launch: Rc<Launch>,
+    application: Weak<Application>,
 }
 
 pub(super) fn create() -> Box<dyn OsHost> {
-    let routing = Rc::<RefCell<MenuRouting>>::default();
+    let routing = MenuRouting::default();
     let commands = routing.clone();
+    let queue = EventQueue::default();
+    let sender = queue.sender();
     let menu_bar = menus::MenuBar::new(move |selection| {
         let Some(mtm) = MainThreadMarker::new() else { return };
         let app = NSApplication::sharedApplication(mtm);
-        let mut routing = commands.borrow_mut();
         let window = [app.keyWindow(), app.mainWindow()]
             .into_iter()
             .flatten()
-            .find_map(|window| routing.windows.get(&window.windowNumber()).copied());
+            .find_map(|window| commands.borrow().get(&NonNull::from(&*window)).copied());
         let Some(window) = window else { return };
-        let reply = match selection {
+        let response = match selection {
             menus::Selection::Command { name, chord } => HostReply::MenuCommand { name, chord },
             menus::Selection::Paste => HostReply::Paste(PasteEvent { items: services::read_clipboard(ClipboardKinds::all()) }),
         };
-        routing.pending.push(HostEvent { window, input: Input::Host(reply) });
-        if let Some(proxy) = &routing.proxy {
-            let _ = proxy.send_event(ShellEvent::Wake);
-        }
+        reply(&sender, window, response);
     });
-    Box::new(MacHost { menu_bar, routing, preferences: None, lifecycle: None })
+    Box::new(MacHost { menu_bar, routing, queue, launch: Rc::default(), application: Weak::new() })
 }
 
 impl OsHost for MacHost {
-    fn initialize(&mut self, proxy: EventLoopProxy<ShellEvent>) {
-        super::scheduling::interactive();
-        self.preferences = Some(preferences::Observer::new(proxy.clone()));
-        self.lifecycle = lifecycle::ActivationObserver::new(proxy);
-        self.set_menus(&[]);
+    fn run(self: Box<Self>, driver: Box<dyn ShellDriver>) -> Result<(), String> {
+        application::run(self, driver)
+    }
+
+    fn wake(&self) -> HostWake {
+        self.queue.wake()
+    }
+
+    fn take_launch_items(&mut self) -> (Vec<String>, Vec<PathBuf>) {
+        self.launch.take_items()
     }
 
     fn application_active(&self) -> Option<bool> {
         MainThreadMarker::new().map(|main| NSApplication::sharedApplication(main).isActive())
+    }
+
+    fn color_scheme(&self) -> Option<ColorScheme> {
+        preferences::color_scheme()
     }
 
     fn reduced_motion(&self) -> Option<bool> {
@@ -130,57 +120,70 @@ impl OsHost for MacHost {
         true
     }
 
-    fn window_attributes(&self, attributes: WindowAttributes, options: &WindowOptions) -> WindowAttributes {
-        // The outer position is applied after creation, before AppKit records its zoom restore frame.
-        let attributes = attributes.with_maximized(false);
-        match options.titlebar {
-            TitlebarStyle::System => attributes,
-            TitlebarStyle::HiddenInset { .. } => {
-                attributes.with_fullsize_content_view(true).with_titlebar_transparent(true).with_title_hidden(true)
-            }
-        }
-    }
-
-    fn create_window(&mut self, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String> {
-        let OsWindowContext { window, id, backend, config, proxy } = context;
+    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowInit<'_>) -> Result<Box<dyn OsWindow>, String> {
         let mtm = MainThreadMarker::new().ok_or("AppKit windows must be created on the main thread")?;
-        let view = content_view(window)?;
-        let ns_window = view.window().ok_or("AppKit content view has no window")?;
-        wheel::install(&view);
-        let number = ns_window.windowNumber();
-        let chrome = chrome::Chrome::new(ns_window, proxy.clone(), id);
-        {
-            let mut routing = self.routing.borrow_mut();
-            routing.windows.insert(number, id);
-            routing.proxy = Some(proxy.clone());
-        }
-        window.set_ime_allowed(false);
-        let editor = editor::Editor::new(&view, mtm, wake(proxy.clone()));
-        let native = native::Views::new(view.clone(), mtm, backend == wgpu::Backend::Metal, wake(proxy.clone()));
-        let metal = backend == wgpu::Backend::Metal;
-        let clock =
-            (metal && !config.manual_clock && config.metal_acquire_delay.is_zero()).then(|| DisplayClock::new(&view, id, proxy.clone()));
+        let OsWindowInit { backend, config, sender, transparent } = context;
+        let window = window::create(mtm, options);
+        let content_size = window.contentRectForFrameRect(window.frame()).size;
+        let application = self.application.clone();
+        let input_sender = sender.clone();
+        let dispatch = Rc::new(move |event| {
+            if matches!(event, PlatformEvent::CursorMoved { .. } | PlatformEvent::Interaction { event: InteractionEvent::Wheel { .. }, .. })
+            {
+                input_sender.send_event(event);
+                return false;
+            }
+            application.upgrade().is_some_and(|app| app.dispatch(event))
+        });
+        let view = view::OctaraView::new(mtm, NSRect::new(NSPoint::ZERO, content_size), id, dispatch, sender.wake());
+        let container = window::attach(&window, &view);
+        let editor = editor::Editor::new(&view);
+        let accessibility = view::Accessibility::new(&view, sender.clone());
+        let fullscreen = Rc::default();
+        let closed = Rc::default();
+        let delegate = window::Delegate::install(
+            &window,
+            window::DelegateState {
+                window: id,
+                view: view.clone(),
+                sender: sender.clone(),
+                fullscreen: Rc::clone(&fullscreen),
+                closed: Rc::clone(&closed),
+            },
+        );
+        let chrome = chrome::Chrome::new(window.clone(), fullscreen);
+        self.routing.borrow_mut().insert(NonNull::from(&*window), id);
+        let metal = backend.contains(wgpu::Backends::METAL);
+        let wake = sender.wake();
+        let native = native::Views::new(container.clone(), mtm, metal, move || wake());
+        let clock = (metal && !config.manual_clock && config.metal_acquire_delay.is_zero())
+            .then(|| DisplayClock::new(&view.clone().into_super(), id, sender.clone()));
         let acquisition = metal.then(|| {
-            let frame_wake = proxy.clone();
+            let frame_sender = sender.clone();
             acquisition::Acquisition::new(config.metal_acquire_delay, move |target| {
-                let _ = frame_wake.send_event(ShellEvent::Frame { window: id, target });
+                frame_sender.send_event(PlatformEvent::Frame { window: id, target });
             })
         });
-        Ok(Box::new(MacWindow {
+        let mut window = MacWindow {
             routing: self.routing.clone(),
-            number,
             id,
-            proxy,
+            sender,
+            window,
+            container,
             view,
+            _delegate: delegate,
+            closed,
             chrome,
             editor,
-            gestures: TrackpadGestures::default(),
+            accessibility,
             native,
             asks: Rc::default(),
             clock,
             acquisition,
             transactional: false,
-        }))
+        };
+        window.set_transparent(transparent);
+        Ok(Box::new(window))
     }
 
     fn set_menus(&mut self, menus: &[Menu]) {
@@ -195,7 +198,7 @@ impl OsHost for MacHost {
         NSApplication::sharedApplication(mtm).dockTile().setBadgeLabel(label.as_deref());
     }
 
-    fn request_user_attention(&mut self, _: Option<&Window>, attention: UserAttention) {
+    fn request_user_attention(&mut self, _: Option<&mut dyn OsWindow>, attention: UserAttention) {
         let Some(mtm) = MainThreadMarker::new() else { return };
         NSApplication::sharedApplication(mtm).requestUserAttention(match attention {
             UserAttention::Informational => NSRequestUserAttentionType::InformationalRequest,
@@ -221,10 +224,6 @@ impl OsHost for MacHost {
         services::write_image(image);
     }
 
-    fn drain_platform_events(&mut self, out: &mut Vec<HostEvent>) {
-        out.append(&mut self.routing.borrow_mut().pending);
-    }
-
     fn frame_thread_setup(&self) -> Option<fn()> {
         Some(super::scheduling::interactive)
     }
@@ -239,14 +238,17 @@ impl OsHost for MacHost {
 }
 
 struct MacWindow {
-    routing: Rc<RefCell<MenuRouting>>,
-    number: isize,
+    routing: MenuRouting,
     id: WindowId,
-    proxy: EventLoopProxy<ShellEvent>,
-    view: Retained<NSView>,
+    sender: PlatformSender,
+    window: Retained<NSWindow>,
+    container: Retained<NSView>,
+    view: Retained<view::OctaraView>,
+    _delegate: Retained<window::Delegate>,
+    closed: Rc<Cell<bool>>,
     chrome: chrome::Chrome,
     editor: editor::Editor,
-    gestures: TrackpadGestures,
+    accessibility: view::Accessibility,
     native: native::Views,
     asks: Rc<asks::Shown>,
     clock: Option<DisplayClock>,
@@ -254,37 +256,73 @@ struct MacWindow {
     transactional: bool,
 }
 
-impl OsWindow for MacWindow {
-    fn on_winit_wheel(&mut self, delta: MouseScrollDelta, phase: TouchPhase) -> Option<WheelPhase> {
-        wheel::take_phase(&self.view, delta, phase)
+// SAFETY: MacWindow retains the NSWindow, content container, and render view on AppKit's
+// main thread for its entire lifetime, including after close().
+unsafe impl OsWindow for MacWindow {
+    fn raw_handles(&self) -> Result<(RawDisplayHandle, RawWindowHandle), String> {
+        Ok((
+            RawDisplayHandle::AppKit(AppKitDisplayHandle::new()),
+            RawWindowHandle::AppKit(AppKitWindowHandle::new(NonNull::from(self.view.as_super()).cast())),
+        ))
     }
 
-    fn on_winit_gesture(&mut self, event: &WindowEvent, anchor: Option<Point>, modifiers: Modifiers) -> Option<GestureEvent> {
-        // Winit forwards magnifyWithEvent: and rotateWithEvent: after their cursor update.
-        self.gestures.update(event, anchor, modifiers)
+    fn host_surface(&self) -> HostSurface<'_> {
+        let surface = HostSurface::new(SURFACE_KIND, Some(self.id));
+        let raw =
+            RawNativeSurface::AppKit { ns_window: NonNull::from(&*self.window).cast(), ns_view: NonNull::from(&*self.container).cast() };
+        // SAFETY: The window and native view container are retained for the surface's borrow.
+        unsafe { surface.with_raw_native(raw) }
+    }
+
+    fn physical_size(&self) -> [u32; 2] {
+        let size = self.view.convertRectToBacking(self.view.bounds()).size;
+        [size.width.round() as u32, size.height.round() as u32]
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.window.backingScaleFactor() as f32
+    }
+
+    fn request_redraw(&mut self) {
+        self.sender.send_event(PlatformEvent::WindowRedrawRequested(self.id));
+    }
+
+    fn set_cursor(&mut self, style: CursorStyle) {
+        self.view.set_cursor(style);
+    }
+
+    fn set_transparent(&mut self, transparent: bool) {
+        self.window.setOpaque(!transparent);
+        let background = if transparent { NSColor::clearColor() } else { NSColor::windowBackgroundColor() };
+        self.window.setBackgroundColor(Some(&background));
+    }
+
+    fn is_focused(&self) -> bool {
+        self.window.isKeyWindow()
     }
 
     fn text_input(&mut self) -> &mut dyn WindowTextInput {
         &mut self.editor
     }
 
-    fn configure_chrome(&mut self, window: &Window, options: &WindowOptions) {
-        self.chrome.configure(window, options);
+    fn accessibility(&mut self) -> Option<&mut dyn WindowAccessibility> {
+        Some(&mut self.accessibility)
     }
 
-    fn apply_presentation(
-        &mut self,
-        window: &Window,
-        title: &str,
-        color_scheme: ColorScheme,
-        material: WindowMaterial,
-        _status_bar: StatusBarStyle,
-    ) {
-        window.set_title(title);
-        window.set_theme(Some(match color_scheme {
-            ColorScheme::Light => winit::window::Theme::Light,
-            ColorScheme::Dark => winit::window::Theme::Dark,
-        }));
+    fn configure_chrome(&mut self, options: &WindowOptions) {
+        self.chrome.configure(options);
+    }
+
+    fn apply_presentation(&mut self, title: &str, color_scheme: ColorScheme, material: WindowMaterial, _status_bar: StatusBarStyle) {
+        self.window.setTitle(&NSString::from_str(title));
+        // SAFETY: These are process-lifetime AppKit appearance names.
+        let name = unsafe {
+            match color_scheme {
+                ColorScheme::Light => NSAppearanceNameAqua,
+                ColorScheme::Dark => NSAppearanceNameDarkAqua,
+            }
+        };
+        self.window.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
         self.native.set_vibrancy(match material {
             WindowMaterial::Opaque => None,
             WindowMaterial::Vibrancy(material) => Some(material),
@@ -296,31 +334,38 @@ impl OsWindow for MacWindow {
     }
 
     fn window_chrome(&mut self) -> WindowChrome {
-        self.chrome.metrics(&self.view)
+        self.chrome.metrics(&self.container)
     }
 
-    fn window_geometry(&mut self, window: &Window, viewport: WindowViewport) -> WindowGeometry {
-        self.chrome.geometry(window, viewport)
+    fn window_geometry(&mut self, viewport: WindowViewport) -> WindowGeometry {
+        self.chrome.geometry(viewport)
     }
 
-    fn prepare_window_metrics(&mut self, window: &Window) {
-        self.chrome.apply_pending(window);
+    fn prepare_window_metrics(&mut self) {
+        self.chrome.apply_pending();
     }
 
-    fn set_window_geometry(&mut self, window: &Window, geometry: WindowGeometryRequest) {
-        self.chrome.set_geometry(window, geometry);
+    fn set_window_geometry(&mut self, geometry: WindowGeometryRequest) {
+        self.chrome.set_geometry(geometry);
     }
 
-    fn toggle_maximize(&mut self, window: &Window) {
-        self.chrome.toggle_maximize(window);
+    fn toggle_maximize(&mut self) {
+        self.chrome.toggle_maximize();
     }
 
-    fn minimize_window(&mut self, _window: &Window) {
+    fn minimize(&mut self) {
         self.chrome.minimize();
     }
 
-    fn start_window_drag(&mut self, window: &Window) {
-        self.chrome.start_drag(window);
+    fn start_window_drag(&mut self) {
+        self.chrome.start_drag();
+    }
+
+    fn focus(&mut self) {
+        if self.window.isMiniaturized() {
+            self.window.deminiaturize(None);
+        }
+        self.window.makeKeyAndOrderFront(None);
     }
 
     fn asks(&mut self) -> Option<&mut dyn WindowAsks> {
@@ -336,8 +381,7 @@ impl OsWindow for MacWindow {
     }
 
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup> {
-        let (proxy, window) = (self.proxy.clone(), self.id);
-        let send = move |outcome| reply(&proxy, window, HostReply::ServiceReply { id, outcome });
+        let send = |outcome| reply(&self.sender, self.id, HostReply::ServiceReply { id, outcome });
         match request {
             ServiceRequest::ReadClipboard { accept } => send(ServiceOutcome::Clipboard(services::read_clipboard(accept))),
             ServiceRequest::WriteClipboard { items } => {
@@ -347,27 +391,31 @@ impl OsWindow for MacWindow {
         Some(Box::new(|| {}))
     }
 
-    fn show(&mut self, window: &Window) {
-        window.set_visible(true);
-        window.focus_window();
-        self.chrome.did_show(window);
+    fn show(&mut self) {
+        self.focus();
+        self.chrome.did_show();
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.did_show();
+        }
         if let Some(clock) = &mut self.clock {
             clock.did_show();
         }
     }
 
-    fn file_drop_position(&self) -> Option<Point> {
-        let window = self.view.window()?;
-        let point = self.view.convertPoint_fromView(window.mouseLocationOutsideOfEventStream(), None);
-        let y = if self.view.isFlipped() { point.y } else { self.view.bounds().size.height - point.y };
-        Some(Point::new(point.x as f32, y as f32))
+    fn close(&mut self) {
+        self.editor.focused(false);
+        self.asks.close();
+        self.set_frame_clock_activity(FrameClockActivity::Paused);
+        if !self.closed.replace(true) {
+            self.window.close();
+        }
     }
 }
 
 impl WindowAsks for MacWindow {
     fn show_ask(&mut self, id: AskId, ask: Ask) -> Option<Ask> {
-        let (proxy, window) = (self.proxy.clone(), self.id);
-        self.asks.show(&self.view, id, ask, Rc::new(move |id, answer| reply(&proxy, window, HostReply::AskAnswer { id, answer })));
+        let (sender, window) = (self.sender.clone(), self.id);
+        self.asks.show(&self.view, id, ask, Rc::new(move |id, answer| reply(&sender, window, HostReply::AskAnswer { id, answer })));
         None
     }
 
@@ -391,7 +439,7 @@ impl WindowNativeViews for MacWindow {
 
     fn snapshot_native(&mut self, request: NativeSnapshotRequest) {
         if let Err(error) = self.native.snapshot(request) {
-            reply(&self.proxy, self.id, HostReply::NativeSnapshot { request, snapshot: Err(error) });
+            reply(&self.sender, self.id, HostReply::NativeSnapshot { request, snapshot: Err(error) });
         }
     }
 
@@ -412,7 +460,7 @@ impl WindowNativeViews for MacWindow {
                 .map(|(request, snapshot)| Input::Host(HostReply::NativeSnapshot { request, snapshot })),
         );
         for (id, event) in self.native.inbox().take() {
-            let _ = self.proxy.send_event(ShellEvent::Native { window: self.id, id, event });
+            self.sender.send_event(PlatformEvent::Native { window: self.id, id, event });
         }
     }
 
@@ -433,7 +481,6 @@ impl WindowPresentation for MacWindow {
     }
 
     fn surface_will_reconfigure(&mut self) -> bool {
-        self.native.set_layer(None);
         self.acquisition.as_mut().is_none_or(acquisition::Acquisition::reset)
     }
 
@@ -452,7 +499,6 @@ impl WindowPresentation for MacWindow {
         }
         let Some(acquisition) = &mut self.acquisition else { return surface_drawable(surface, color) };
         let acquired = acquisition.acquire(surface, color, externally_paced, self.transactional);
-        self.native.set_layer(acquisition.layer());
         retry_on_clock(acquired, externally_paced)
     }
 
@@ -482,13 +528,8 @@ impl WindowPresentation for MacWindow {
 
 impl Drop for MacWindow {
     fn drop(&mut self) {
-        self.asks.close();
-        self.routing.borrow_mut().windows.remove(&self.number);
-    }
-}
-
-fn wake(proxy: EventLoopProxy<ShellEvent>) -> impl Fn() {
-    move || {
-        let _ = proxy.send_event(ShellEvent::Wake);
+        self.window.setDelegate(None);
+        self.close();
+        self.routing.borrow_mut().remove(&NonNull::from(&*self.window));
     }
 }

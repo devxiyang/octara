@@ -1,10 +1,9 @@
-use crate::ShellEvent;
+use super::{PlatformEvent, PlatformSender};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2_foundation::{NSLocale, NSNotificationCenter, NSNotificationName};
 use std::sync::Arc;
-use winit::event_loop::EventLoopProxy;
 
 pub(super) fn locale() -> Option<Arc<str>> {
     NSLocale::preferredLanguages().firstObject().map(|language| Arc::from(language.to_string()))
@@ -16,9 +15,9 @@ pub(super) struct Observer {
 }
 
 impl Observer {
-    pub(super) fn new(center: Retained<NSNotificationCenter>, names: &[&NSNotificationName], proxy: EventLoopProxy<ShellEvent>) -> Self {
+    pub(super) fn new(center: Retained<NSNotificationCenter>, names: &[&NSNotificationName], proxy: PlatformSender) -> Self {
         let callback = RcBlock::new(move |_| {
-            let _ = proxy.send_event(ShellEvent::RefreshSystemPreferences);
+            proxy.send_event(PlatformEvent::RefreshSystemPreferences);
         });
         let tokens = names
             .iter()

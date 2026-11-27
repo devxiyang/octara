@@ -1,8 +1,7 @@
 //! The UIKit navigation controller settles its own interactive pop. Only the settled
 //! result can retire the Octara page that was visible when the transition started.
 
-use super::scene;
-use crate::ShellEvent;
+use crate::os::{PlatformEvent, PlatformSender};
 use block2::RcBlock;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
@@ -21,8 +20,6 @@ use std::cell::{Cell, RefCell};
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use winit::event_loop::EventLoopProxy;
-use winit::window::Window;
 
 #[derive(Clone, Copy)]
 struct Pop {
@@ -33,7 +30,7 @@ struct Pop {
 }
 
 struct PopEvents {
-    proxy: EventLoopProxy<ShellEvent>,
+    proxy: PlatformSender,
     pending_events: RefCell<Vec<(u64, TargetGuard, BackPhase)>>,
     drawn_owner: Cell<Option<TargetGuard>>,
     pop: Cell<Option<Pop>>,
@@ -44,7 +41,7 @@ impl PopEvents {
         if let Some(owner) = pop.owner {
             self.pending_events.borrow_mut().push((pop.id, owner, phase));
         }
-        let _ = self.proxy.send_event(ShellEvent::Wake);
+        self.proxy.send_event(PlatformEvent::UserWake);
     }
 
     fn pending(&self, id: u64) -> Option<Pop> {
@@ -182,8 +179,29 @@ impl Stack {
     }
 }
 
-/// The only live rendering view and its controller come from winit. A snapshot of
-/// the previously drawn page is the other controller's view during the transition.
+define_class!(
+    #[unsafe(super(UINavigationController))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OctaraNavigationController"]
+    struct NavigationController;
+
+    unsafe impl NSObjectProtocol for NavigationController {}
+
+    impl NavigationController {
+        #[unsafe(method_id(childViewControllerForStatusBarStyle))]
+        fn status_bar_style_child(&self) -> Option<Retained<UIViewController>> {
+            self.topViewController()
+        }
+
+        #[unsafe(method_id(childViewControllerForStatusBarHidden))]
+        fn status_bar_visibility_child(&self) -> Option<Retained<UIViewController>> {
+            self.topViewController()
+        }
+    }
+);
+
+/// The native transition displays a snapshot of the previously drawn page
+/// alongside the live rendering view.
 pub(super) struct BackNavigation {
     window: Retained<UIWindow>,
     content: Retained<UIViewController>,
@@ -196,12 +214,14 @@ pub(super) struct BackNavigation {
 }
 
 impl BackNavigation {
-    pub(super) fn new(window: &Window, proxy: EventLoopProxy<ShellEvent>) -> Result<Self, String> {
-        let view = scene::view(window)?;
-        let content = scene::controller(window)?;
-        let native = view.window().ok_or("the UIKit view has no window")?;
+    pub(super) fn new(
+        window: Retained<UIWindow>,
+        content: Retained<UIViewController>,
+        view: Retained<UIView>,
+        proxy: PlatformSender,
+    ) -> Self {
         let events = Rc::new(PopEvents { proxy, pending_events: RefCell::default(), drawn_owner: Cell::new(None), pop: Cell::new(None) });
-        Ok(Self { window: native, content, view, events, stack: None, previewable: false, owner: None, active: true })
+        Self { window, content, view, events, stack: None, previewable: false, owner: None, active: true }
     }
 
     fn arm(&mut self) -> Result<(), String> {
@@ -217,7 +237,10 @@ impl BackNavigation {
         snapshot.setAccessibilityElementsHidden(true, mtm);
         let preview = UIViewController::new(mtm);
         preview.setView(Some(&snapshot));
-        let navigation = UINavigationController::initWithRootViewController(mtm.alloc(), &preview);
+        // SAFETY: Install the native transition's root while creating its navigation controller.
+        let navigation: Retained<NavigationController> =
+            unsafe { msg_send![super(mtm.alloc::<NavigationController>().set_ivars(())), initWithRootViewController: &*preview] };
+        let navigation = Retained::into_super(navigation);
         navigation.setNavigationBarHidden(true);
         // Install the full stack before the navigation controller enters the window.
         // UIKit must release the previous root before the same controller can be parented.

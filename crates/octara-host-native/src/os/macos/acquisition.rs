@@ -84,12 +84,20 @@ pub(super) struct Acquisition {
     layer: Option<Retained<CAMetalLayer>>,
     worker: Option<Worker>,
     delay: Duration,
+    shown: bool,
     init_attempted: bool,
 }
 
 impl Acquisition {
     pub(super) fn new(delay: Duration, wake: impl Fn(Instant) + Send + Sync + 'static) -> Self {
-        Self { wake: Arc::new(wake), layer: None, worker: None, delay, init_attempted: false }
+        Self { wake: Arc::new(wake), layer: None, worker: None, delay, shown: false, init_attempted: false }
+    }
+
+    pub(super) fn did_show(&mut self) {
+        self.shown = true;
+        if self.delay.is_zero() {
+            self.worker = None;
+        }
     }
 
     pub(super) fn reset(&mut self) -> bool {
@@ -102,10 +110,6 @@ impl Acquisition {
         self.layer = None;
         self.init_attempted = false;
         true
-    }
-
-    pub(super) fn layer(&self) -> Option<&CAMetalLayer> {
-        self.layer.as_deref()
     }
 
     pub(super) fn acquire(
@@ -122,7 +126,9 @@ impl Acquisition {
                 if !layer.allowsNextDrawableTimeout() {
                     layer.setAllowsNextDrawableTimeout(true);
                 }
-                if !externally_paced && self.worker.is_none() && direct_target(layer) {
+                // wgpu treats a hidden AppKit window as occluded. Acquire the first drawable
+                // directly so we can present it before ordering the window onscreen.
+                if (!self.shown || !self.delay.is_zero()) && self.worker.is_none() && direct_target(layer) {
                     self.worker = Worker::spawn(self.delay, self.wake.clone()).ok();
                 }
             }

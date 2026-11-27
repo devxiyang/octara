@@ -2,7 +2,7 @@
 
 use crate::os::{ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, OsWindow, surface_drawable};
 use crate::presentation::{PendingNativeViews, Presentation};
-use octara::module::{HostSurfaceKind, ModuleDispatcher, NativeViewInstance, NativeViewMounts};
+use octara::module::{ModuleDispatcher, NativeViewInstance, NativeViewMounts};
 use octara::runtime::engine::AccessibilityConsumer;
 use octara::runtime::{AppRuntime, WindowId, WindowRuntime};
 use octara::tree::editor::EditorSession;
@@ -18,7 +18,6 @@ use octara_pipeline::{NativeFrame, NativePublication};
 use octara_render::{gpu::OutputColor, wgpu};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::window::{CursorIcon, Window};
 
 pub(crate) struct Device {
     pub adapter: wgpu::Adapter,
@@ -75,36 +74,28 @@ pub(crate) struct FileDrop {
     pub files: Vec<DroppedFile>,
 }
 
-#[derive(Clone, Copy)]
-enum AccessibilityDelivery {
-    Inactive,
-    Requested,
-    Published(u64),
-}
-
 pub(crate) struct HostWindow {
     pub id: WindowId,
     pub native_mounts: NativeViewMounts,
     pending_module_views: PendingNativeViews<Box<dyn NativeViewInstance>>,
-    pub window: Arc<Window>,
+    // Drop the surface before releasing the native handles it borrows.
+    surface: Arc<wgpu::Surface<'static>>,
     pub os: Box<dyn OsWindow>,
-    pub a11y: Option<accesskit_winit::Adapter>,
-    accessibility: AccessibilityDelivery,
+    accessibility_active: bool,
     pub publication: NativePublication,
     pub synchronized: Option<u64>,
     pub presented: Option<FrameProgress>,
     pub pointer: Option<Point>,
+    pub pointer_modifiers: Modifiers,
     pub file_drop: Option<FileDrop>,
-    pub modifiers: Modifiers,
     pub chrome: WindowChrome,
     pub initial_fullscreen: bool,
     pub service_cleanup: std::collections::HashMap<octara_model::ask::ServiceId, crate::os::ServiceCleanup>,
-    surface: Arc<wgpu::Surface<'static>>,
     presentation: Presentation,
     surface_info: Option<SurfaceInfo>,
     transparent: bool,
     draw: Option<GpuTask<DrawnFrame<Box<dyn Drawable>>>>,
-    cursor: Option<CursorIcon>,
+    cursor: CursorStyle,
     redraw_at: Option<Instant>,
     suspended: bool,
 }
@@ -112,9 +103,7 @@ pub(crate) struct HostWindow {
 impl HostWindow {
     pub fn new(
         id: WindowId,
-        window: Arc<Window>,
         os: Box<dyn OsWindow>,
-        a11y: Option<accesskit_winit::Adapter>,
         surface: Arc<wgpu::Surface<'static>>,
         publication: NativePublication,
         transparent: bool,
@@ -123,16 +112,14 @@ impl HostWindow {
             id,
             native_mounts: NativeViewMounts::default(),
             pending_module_views: PendingNativeViews::default(),
-            window,
             os,
-            a11y,
-            accessibility: AccessibilityDelivery::Inactive,
+            accessibility_active: false,
             publication,
             synchronized: None,
             presented: None,
             pointer: None,
+            pointer_modifiers: Modifiers::empty(),
             file_drop: None,
-            modifiers: Modifiers::empty(),
             chrome: WindowChrome::default(),
             initial_fullscreen: false,
             service_cleanup: std::collections::HashMap::new(),
@@ -141,21 +128,17 @@ impl HostWindow {
             surface_info: None,
             transparent,
             draw: None,
-            cursor: Some(CursorIcon::Default),
+            cursor: CursorStyle::Arrow,
             redraw_at: None,
             suspended: false,
         }
     }
 
     pub fn viewport(&mut self) -> WindowViewport {
-        let size = self.os.surface_size(&self.window);
-        let scale = self.window.scale_factor().max(f64::EPSILON) as f32;
-        let viewport = WindowViewport {
-            size: Size::new(size.width as f32 / scale, size.height as f32 / scale),
-            scale,
-            safe_area: None,
-            keyboard_inset: 0.0,
-        };
+        let [width, height] = self.os.physical_size();
+        let scale = self.os.scale_factor().max(f32::EPSILON);
+        let viewport =
+            WindowViewport { size: Size::new(width as f32 / scale, height as f32 / scale), scale, safe_area: None, keyboard_inset: 0.0 };
         self.os.scene().map_or(viewport, |scene| scene.viewport(viewport))
     }
 
@@ -200,7 +183,7 @@ impl HostWindow {
 
     pub fn request_frame(&mut self) {
         if !self.suspended && !self.activate_frame_clock() {
-            self.window.request_redraw();
+            self.os.request_redraw();
         }
     }
 
@@ -216,8 +199,7 @@ impl HostWindow {
     }
 
     fn size(&self) -> [u32; 2] {
-        let extent = self.os.surface_size(&self.window);
-        [extent.width, extent.height]
+        self.os.physical_size()
     }
 
     pub fn invalidate_surface(&mut self, rebuild: bool) {
@@ -256,7 +238,7 @@ impl HostWindow {
             return Ok(false);
         }
         if self.presentation.rebuild() {
-            self.surface = Arc::new(instance.create_surface(self.window.clone()).map_err(|error| error.to_string())?);
+            self.surface = create_surface(instance, self.os.as_ref())?;
         }
         let [width, height] = self.size();
         let mut config = self.surface.get_default_config(adapter, width, height).ok_or("no compatible surface format")?;
@@ -281,12 +263,12 @@ impl HostWindow {
         Ok(true)
     }
 
-    pub fn synchronize_native(&mut self, kind: HostSurfaceKind, runtime: &mut AppRuntime, dispatcher: &ModuleDispatcher) {
+    pub fn synchronize_native(&mut self, runtime: &mut AppRuntime, dispatcher: &ModuleDispatcher) {
         let changes = self.publication.take_native_changes();
         if changes.is_empty() {
             return;
         }
-        let surface = self.os.module_surface(&self.window, kind, self.id);
+        let surface = self.os.host_surface();
         let mut built_in = Vec::new();
         for change in changes {
             match &change {
@@ -328,7 +310,7 @@ impl HostWindow {
         let transparent = transparent_background(&runtime.presentation().theme) || has_underlay || self.os.window_is_vibrant();
         if transparent != self.transparent {
             self.transparent = transparent;
-            self.window.set_transparent(transparent);
+            self.os.set_transparent(transparent);
             self.invalidate_surface(false);
         }
         self.synchronize_editor(runtime);
@@ -341,12 +323,11 @@ impl HostWindow {
     }
 
     pub fn set_accessibility_active(&mut self, runtime: &WindowRuntime, active: bool) {
-        let was_active = !matches!(self.accessibility, AccessibilityDelivery::Inactive);
-        if active == was_active {
+        if active == self.accessibility_active {
             return;
         }
         runtime.set_accessibility_active(AccessibilityConsumer::Platform, active);
-        self.accessibility = if active { AccessibilityDelivery::Requested } else { AccessibilityDelivery::Inactive };
+        self.accessibility_active = active;
         if active {
             self.synchronize_accessibility();
         } else if let Some(accessibility) = self.os.accessibility() {
@@ -355,37 +336,10 @@ impl HostWindow {
     }
 
     fn synchronize_accessibility(&mut self) {
-        if matches!(self.accessibility, AccessibilityDelivery::Inactive) {
-            return;
-        }
-        if let Some(accessibility) = self.os.accessibility() {
+        if self.accessibility_active
+            && let Some(accessibility) = self.os.accessibility()
+        {
             accessibility.synchronize(&self.publication);
-            return;
-        }
-        let Some(a11y) = &mut self.a11y else { return };
-        match self.accessibility {
-            AccessibilityDelivery::Inactive => {}
-            AccessibilityDelivery::Requested => {
-                if let Some(frame) = self.publication.latest()
-                    && let Some(snapshot) = self.publication.snapshot_full()
-                {
-                    a11y.update_if_active(|| {
-                        // The snapshot already includes these committed revisions.
-                        self.publication.take_accessibility_updates();
-                        self.accessibility = AccessibilityDelivery::Published(frame.number);
-                        snapshot
-                    });
-                }
-            }
-            AccessibilityDelivery::Published(previous) => {
-                // Accessibility consumes each delta even when presentation skips a frame.
-                for (version, update) in self.publication.take_accessibility_updates() {
-                    if version > previous {
-                        a11y.update_if_active(|| update.as_ref().clone());
-                        self.accessibility = AccessibilityDelivery::Published(version);
-                    }
-                }
-            }
         }
     }
 
@@ -412,17 +366,11 @@ impl HostWindow {
 
     pub fn synchronize_cursor(&mut self, runtime: &WindowRuntime) {
         let hit = self.pointer.and_then(|pos| runtime.hit_test(pos)).and_then(|target| target.hit.node());
-        let cursor = cursor_icon(resolve_cursor(runtime.tree(), hit));
-        if cursor == self.cursor {
-            return;
+        let cursor = resolve_cursor(runtime.tree(), hit);
+        if cursor != self.cursor {
+            self.os.set_cursor(cursor);
+            self.cursor = cursor;
         }
-        if let Some(icon) = cursor {
-            self.window.set_cursor(icon);
-        }
-        if cursor.is_some() != self.cursor.is_some() {
-            self.window.set_cursor_visible(cursor.is_some());
-        }
-        self.cursor = cursor;
     }
 
     pub fn draw(
@@ -502,7 +450,7 @@ impl HostWindow {
         }
         let suboptimal = frame.target.suboptimal();
         let progress = frame.progress();
-        self.window.pre_present_notify();
+        self.os.pre_present_notify();
         let mut commit_native_views = || {
             self.pending_module_views.commit(frame.stamp.native_rev, |placement, retired| {
                 if let Some(view) = retired {
@@ -532,9 +480,9 @@ impl HostWindow {
         let first = self.presentation.did_present(frame.stamp);
         self.presented = Some(progress);
         if first {
-            self.os.show(&self.window);
+            self.os.show();
             if std::mem::take(&mut self.initial_fullscreen) {
-                self.os.set_window_geometry(&self.window, WindowGeometryRequest { fullscreen: Some(true), ..Default::default() });
+                self.os.set_window_geometry(WindowGeometryRequest { fullscreen: Some(true), ..Default::default() });
             }
         }
         if suboptimal {
@@ -562,6 +510,15 @@ impl HostWindow {
             return true;
         }
         false
+    }
+
+    pub fn retire(&mut self) {
+        self.set_suspended(true);
+        self.os.close();
+        for (_, cancel) in self.service_cleanup.drain() {
+            cancel();
+        }
+        self.native_mounts.clear();
     }
 
     pub fn deadline(&self) -> Option<Instant> {
@@ -593,44 +550,15 @@ fn preferred_alpha_mode(transparent: bool, modes: &[wgpu::CompositeAlphaMode]) -
     preference.iter().copied().find(|mode| modes.contains(mode))
 }
 
-fn cursor_icon(style: CursorStyle) -> Option<CursorIcon> {
-    Some(match style {
-        CursorStyle::Arrow | CursorStyle::Auto => CursorIcon::Default,
-        CursorStyle::IBeam => CursorIcon::Text,
-        CursorStyle::PointingHand => CursorIcon::Pointer,
-        CursorStyle::Crosshair => CursorIcon::Crosshair,
-        CursorStyle::OpenHand => CursorIcon::Grab,
-        CursorStyle::ClosedHand => CursorIcon::Grabbing,
-        CursorStyle::ResizeLeftRight => CursorIcon::EwResize,
-        CursorStyle::ResizeUpDown => CursorIcon::NsResize,
-        CursorStyle::ResizeColumn => CursorIcon::ColResize,
-        CursorStyle::ResizeRow => CursorIcon::RowResize,
-        CursorStyle::OperationNotAllowed => CursorIcon::NotAllowed,
-        CursorStyle::Wait => CursorIcon::Wait,
-        CursorStyle::Move => CursorIcon::Move,
-        CursorStyle::Help => CursorIcon::Help,
-        CursorStyle::None => return None,
-        CursorStyle::ContextMenu => CursorIcon::ContextMenu,
-        CursorStyle::Progress => CursorIcon::Progress,
-        CursorStyle::Cell => CursorIcon::Cell,
-        CursorStyle::VerticalText => CursorIcon::VerticalText,
-        CursorStyle::Alias => CursorIcon::Alias,
-        CursorStyle::Copy => CursorIcon::Copy,
-        CursorStyle::NoDrop => CursorIcon::NoDrop,
-        CursorStyle::AllScroll => CursorIcon::AllScroll,
-        CursorStyle::ResizeNorth => CursorIcon::NResize,
-        CursorStyle::ResizeEast => CursorIcon::EResize,
-        CursorStyle::ResizeSouth => CursorIcon::SResize,
-        CursorStyle::ResizeWest => CursorIcon::WResize,
-        CursorStyle::ResizeNorthEast => CursorIcon::NeResize,
-        CursorStyle::ResizeNorthWest => CursorIcon::NwResize,
-        CursorStyle::ResizeSouthEast => CursorIcon::SeResize,
-        CursorStyle::ResizeSouthWest => CursorIcon::SwResize,
-        CursorStyle::ResizeNorthEastSouthWest => CursorIcon::NeswResize,
-        CursorStyle::ResizeNorthWestSouthEast => CursorIcon::NwseResize,
-        CursorStyle::ZoomIn => CursorIcon::ZoomIn,
-        CursorStyle::ZoomOut => CursorIcon::ZoomOut,
-    })
+pub(crate) fn create_surface(instance: &wgpu::Instance, window: &dyn OsWindow) -> Result<Arc<wgpu::Surface<'static>>, String> {
+    let (raw_display_handle, raw_window_handle) = window.raw_handles()?;
+    // SAFETY: The OsWindow contract guarantees valid handles. The shell keeps the owner
+    // alive until the surface and all GPU jobs referencing it are gone, even on close.
+    let surface = unsafe {
+        instance
+            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle { raw_display_handle: Some(raw_display_handle), raw_window_handle })
+    };
+    surface.map(Arc::new).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -676,17 +604,6 @@ mod tests {
         let now = Instant::now();
         assert_eq!(acquisition_retry_deadline(&DrawableAcquisition::Retry, now, false), Some(now + Duration::from_millis(16)));
         assert_eq!(acquisition_retry_deadline(&DrawableAcquisition::WaitingForClock, now, false), None);
-    }
-
-    #[test]
-    fn maps_visible_and_hidden_cursors_for_winit() {
-        assert_eq!(cursor_icon(CursorStyle::Auto), Some(CursorIcon::Default));
-        assert_eq!(cursor_icon(CursorStyle::Arrow), Some(CursorIcon::Default));
-        assert_eq!(cursor_icon(CursorStyle::IBeam), Some(CursorIcon::Text));
-        assert_eq!(cursor_icon(CursorStyle::PointingHand), Some(CursorIcon::Pointer));
-        assert_eq!(cursor_icon(CursorStyle::OperationNotAllowed), Some(CursorIcon::NotAllowed));
-        assert_eq!(cursor_icon(CursorStyle::ResizeLeftRight), Some(CursorIcon::EwResize));
-        assert_eq!(cursor_icon(CursorStyle::None), None);
     }
 
     #[test]

@@ -1,22 +1,24 @@
-use crate::ShellEvent;
+use super::view::keyboard_modifiers;
+use crate::os::{PlatformEvent, PlatformSender};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2_foundation::{NSArray, NSPoint};
 use objc2_ui_kit::{
-    UIEvent, UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState, UIKeyModifierFlags, UIPinchGestureRecognizer,
-    UIRotationGestureRecognizer, UIView,
+    UIEvent, UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState, UIHoverGestureRecognizer, UIPanGestureRecognizer,
+    UIPinchGestureRecognizer, UIRotationGestureRecognizer, UIScrollTypeMask, UIView,
 };
-use octara::runtime::{Input, WindowId};
-use octara_model::geometry::Point;
-use octara_model::input::{GestureEvent, GesturePhase, InteractionEvent, Modifiers};
+use octara::runtime::WindowId;
+use octara_model::geometry::{Point, Vec2};
+use octara_model::input::{GestureEvent, GesturePhase, InteractionEvent, Modifiers, WheelPhase, WheelStage};
 use std::cell::Cell;
-use winit::event_loop::EventLoopProxy;
 
 struct State {
-    proxy: EventLoopProxy<ShellEvent>,
+    proxy: PlatformSender,
     window: WindowId,
     pinch: Cell<Option<Sample>>,
     rotation: Cell<Option<Sample>>,
+    pointer: Cell<Option<Point>>,
     modifiers: Cell<Modifiers>,
 }
 
@@ -38,13 +40,7 @@ define_class!(
     unsafe impl UIGestureRecognizerDelegate for GestureTarget {
         #[unsafe(method(gestureRecognizer:shouldReceiveEvent:))]
         fn receive_event(&self, _: &UIGestureRecognizer, event: &UIEvent) -> bool {
-            let flags = event.modifierFlags();
-            let mut modifiers = Modifiers::empty();
-            modifiers.set(Modifiers::SHIFT, flags.contains(UIKeyModifierFlags::Shift));
-            modifiers.set(Modifiers::CTRL, flags.contains(UIKeyModifierFlags::Control));
-            modifiers.set(Modifiers::ALT, flags.contains(UIKeyModifierFlags::Alternate));
-            modifiers.set(Modifiers::META, flags.contains(UIKeyModifierFlags::Command));
-            self.ivars().modifiers.set(modifiers);
+            self.ivars().modifiers.set(keyboard_modifiers(event.modifierFlags()));
             true
         }
 
@@ -55,6 +51,44 @@ define_class!(
     }
 
     impl GestureTarget {
+        #[unsafe(method(hover:))]
+        fn hover(&self, recognizer: &UIHoverGestureRecognizer) {
+            let state = self.ivars();
+            let position = match recognizer.state() {
+                UIGestureRecognizerState::Began | UIGestureRecognizerState::Changed => {
+                    let point = recognizer.locationInView(recognizer.view().as_deref());
+                    Some(Point::new(point.x as f32, point.y as f32))
+                }
+                UIGestureRecognizerState::Ended | UIGestureRecognizerState::Cancelled | UIGestureRecognizerState::Failed => None,
+                _ => return,
+            };
+            state.pointer.set(position);
+            state.proxy.send_event(position.map_or(PlatformEvent::CursorLeft(state.window), |position| PlatformEvent::CursorMoved {
+                window: state.window, position, modifiers: state.modifiers.get(),
+            }));
+        }
+
+        #[unsafe(method(scroll:))]
+        fn scroll(&self, recognizer: &UIPanGestureRecognizer) {
+            let stage = match recognizer.state() {
+                UIGestureRecognizerState::Began => WheelStage::Start,
+                UIGestureRecognizerState::Changed => WheelStage::Move,
+                UIGestureRecognizerState::Ended => WheelStage::End,
+                UIGestureRecognizerState::Cancelled | UIGestureRecognizerState::Failed => WheelStage::Cancel,
+                _ => return,
+            };
+            let view = recognizer.view();
+            let offset = recognizer.translationInView(view.as_deref());
+            recognizer.setTranslation_inView(NSPoint::ZERO, view.as_deref());
+            let pos = self.ivars().pointer.get().unwrap_or_else(|| {
+                let point = recognizer.locationInView(view.as_deref());
+                Point::new(point.x as f32, point.y as f32)
+            });
+            let delta = Vec2::new(-offset.x as f32, -offset.y as f32);
+            let state = self.ivars();
+            self.interaction(InteractionEvent::Wheel { pos, delta, phase: WheelPhase::Direct(stage), mods: state.modifiers.get() });
+        }
+
         #[unsafe(method(pinch:))]
         fn pinch(&self, recognizer: &UIPinchGestureRecognizer) {
             let scale = recognizer.scale() as f32;
@@ -70,7 +104,7 @@ define_class!(
 
         #[unsafe(method(rotate:))]
         fn rotate(&self, recognizer: &UIRotationGestureRecognizer) {
-            // UIKit measures clockwise; Octara uses winit's counterclockwise convention.
+            // UIKit measures clockwise; Octara uses counterclockwise-positive rotation.
             let Some((phase, sample, previous)) = sample(&self.ivars().rotation, recognizer, 0.0, -recognizer.rotation() as f32, true)
             else { return };
             self.send(GestureEvent::Rotate {
@@ -86,8 +120,12 @@ define_class!(
 
 impl GestureTarget {
     fn send(&self, event: GestureEvent) {
+        self.interaction(InteractionEvent::Gesture(event));
+    }
+
+    fn interaction(&self, event: InteractionEvent) {
         let State { proxy, window, .. } = self.ivars();
-        let _ = proxy.send_event(ShellEvent::Input { window: *window, input: Input::Interaction(InteractionEvent::Gesture(event)) });
+        proxy.send_event(PlatformEvent::Interaction { window: *window, event });
     }
 }
 
@@ -124,35 +162,48 @@ fn sample(
 
 pub(super) struct Recognizers {
     view: Retained<UIView>,
-    pinch: Retained<UIPinchGestureRecognizer>,
-    rotation: Retained<UIRotationGestureRecognizer>,
+    recognizers: [Retained<UIGestureRecognizer>; 4],
     _target: Retained<GestureTarget>,
 }
 
 impl Recognizers {
-    pub(super) fn new(view: &UIView, proxy: EventLoopProxy<ShellEvent>, window: WindowId) -> Self {
+    pub(super) fn new(view: &UIView, proxy: PlatformSender, window: WindowId) -> Self {
         let mtm = MainThreadMarker::from(view);
-        let state = State { proxy, window, pinch: Cell::default(), rotation: Cell::default(), modifiers: Cell::default() };
+        let state = State {
+            proxy,
+            window,
+            pinch: Cell::default(),
+            rotation: Cell::default(),
+            pointer: Cell::default(),
+            modifiers: Cell::default(),
+        };
         // SAFETY: Initialize the NSObject superclass on the UIKit thread.
         let target: Retained<GestureTarget> = unsafe { msg_send![super(mtm.alloc::<GestureTarget>().set_ivars(state)), init] };
-        // SAFETY: The target stays alive while the view has the recognizers and defines both selectors.
-        let (pinch, rotation) = unsafe {
+        // SAFETY: The target stays alive while the recognizers are installed and defines their selectors.
+        let (pinch, rotation, hover, scroll) = unsafe {
             (
                 UIPinchGestureRecognizer::initWithTarget_action(mtm.alloc(), Some(&target), Some(sel!(pinch:))),
                 UIRotationGestureRecognizer::initWithTarget_action(mtm.alloc(), Some(&target), Some(sel!(rotate:))),
+                UIHoverGestureRecognizer::initWithTarget_action(mtm.alloc(), Some(&target), Some(sel!(hover:))),
+                UIPanGestureRecognizer::initWithTarget_action(mtm.alloc(), Some(&target), Some(sel!(scroll:))),
             )
         };
-        for recognizer in [&*pinch as &UIGestureRecognizer, &*rotation] {
+        scroll.setAllowedTouchTypes(&NSArray::new());
+        scroll.setAllowedScrollTypesMask(UIScrollTypeMask::All);
+        let recognizers =
+            [Retained::into_super(pinch), Retained::into_super(rotation), Retained::into_super(hover), Retained::into_super(scroll)];
+        for recognizer in &recognizers {
             recognizer.setDelegate(Some(ProtocolObject::from_ref(&*target)));
             view.addGestureRecognizer(recognizer);
         }
-        Self { view: view.retain(), pinch, rotation, _target: target }
+        Self { view: view.retain(), recognizers, _target: target }
     }
 }
 
 impl Drop for Recognizers {
     fn drop(&mut self) {
-        self.view.removeGestureRecognizer(&self.pinch);
-        self.view.removeGestureRecognizer(&self.rotation);
+        for recognizer in &self.recognizers {
+            self.view.removeGestureRecognizer(recognizer);
+        }
     }
 }

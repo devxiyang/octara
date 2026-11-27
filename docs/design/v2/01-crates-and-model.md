@@ -35,7 +35,7 @@ crates/
                        #              custom shaders, CPU Reference Oracle (-> octara-model)
   octara-gpu/          # Layer 3a: Native-only event-driven DeviceExecutor, surface/readback leases,
                        #           async background PNG encoder (-> octara-model, octara-render)
-  octara-host-native/  # Layer 3a: Pure-Rust winit orchestrator + OsHost/OsWindow traits
+  octara-host-native/  # Layer 3a: Platform-neutral shell + OsHost/OsWindow SPI
                        #           (backends/{macos, ios, desktop}) (-> octara, octara-pipeline, octara-gpu)
 
   octara-host-web/     # Layer 3b: DomEngine (HostEngine): Delta DOM, UndoLog, JS batch measure,

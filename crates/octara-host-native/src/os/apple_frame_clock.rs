@@ -1,7 +1,7 @@
 //! Display-link timing and refresh-rate policy shared by AppKit and UIKit.
 
 use super::{DrawableAcquisition, FrameClockActivity, FrameTick};
-use crate::ShellEvent;
+use super::{PlatformEvent, PlatformSender};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
@@ -14,7 +14,6 @@ use objc2_ui_kit::UIView as DisplayView;
 use octara::runtime::WindowId;
 use std::cell::Cell;
 use std::time::{Duration, Instant};
-use winit::event_loop::EventLoopProxy;
 
 const IDLE_GRACE: Duration = Duration::from_millis(120);
 
@@ -29,7 +28,7 @@ enum ClockState {
 struct ClockIvars {
     view: Retained<DisplayView>,
     window: WindowId,
-    proxy: EventLoopProxy<ShellEvent>,
+    proxy: PlatformSender,
     state: Cell<ClockState>,
     range: Cell<Option<CAFrameRateRange>>,
 }
@@ -68,7 +67,7 @@ define_class!(
             // AppKit's view link follows the screen. Read its current capability in
             // the callback so a move between displays updates the requested range.
             clock.update_rate(link);
-            let _ = clock.proxy.send_event(ShellEvent::DisplayTick { window: clock.window, tick: FrameTick { target, interval } });
+            clock.proxy.send_event(PlatformEvent::FrameClockTick { window: clock.window, tick: FrameTick { target, interval } });
         }
     }
 );
@@ -108,7 +107,7 @@ pub(super) struct DisplayClock {
 }
 
 impl DisplayClock {
-    pub(super) fn new(view: &Retained<DisplayView>, window: WindowId, proxy: EventLoopProxy<ShellEvent>) -> Self {
+    pub(super) fn new(view: &Retained<DisplayView>, window: WindowId, proxy: PlatformSender) -> Self {
         let this = Target::alloc(view.mtm()).set_ivars(ClockIvars {
             view: view.clone(),
             window,

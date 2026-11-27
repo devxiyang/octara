@@ -1,10 +1,9 @@
-use crate::ShellEvent;
+use crate::os::{PlatformEvent, PlatformSender};
 use futures_lite::{StreamExt, future};
 use octara_model::theme::ColorScheme;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use winit::event_loop::EventLoopProxy;
 use zbus::zvariant::OwnedValue;
 
 const APPEARANCE: &str = "org.freedesktop.appearance";
@@ -35,7 +34,7 @@ pub(super) struct Observer {
 }
 
 impl Observer {
-    pub(super) fn start(proxy: EventLoopProxy<ShellEvent>) -> std::io::Result<Self> {
+    pub(super) fn start(sender: PlatformSender) -> std::io::Result<Self> {
         // The portal may need D-Bus activation. Publish its first snapshot without blocking window startup.
         let (cancel, stopped) = async_channel::bounded(1);
         let thread = thread::Builder::new().name("octara-system-preferences".into()).spawn(move || {
@@ -44,7 +43,7 @@ impl Observer {
                     let _ = stopped.recv().await;
                 },
                 async {
-                    let _ = watch(&proxy).await;
+                    let _ = watch(&sender).await;
                 },
             ));
         })?;
@@ -61,7 +60,7 @@ impl Drop for Observer {
     }
 }
 
-async fn watch(proxy: &EventLoopProxy<ShellEvent>) -> zbus::Result<()> {
+async fn watch(sender: &PlatformSender) -> zbus::Result<()> {
     let connection = zbus::Connection::session().await?;
     let portal = zbus::Proxy::new(
         &connection,
@@ -73,19 +72,19 @@ async fn watch(proxy: &EventLoopProxy<ShellEvent>) -> zbus::Result<()> {
     let mut changes = portal.receive_signal("SettingChanged").await?;
     let namespaces = [APPEARANCE, GNOME_INTERFACE];
     let mut settings: Settings = portal.call("ReadAll", &(namespaces.as_slice(),)).await?;
-    publish(proxy, &settings);
+    publish(sender, &settings);
     while let Some(change) = changes.next().await {
         if let Ok((namespace, key, value)) = change.body().deserialize::<(String, String, OwnedValue)>()
             && matches!(namespace.as_str(), APPEARANCE | GNOME_INTERFACE)
         {
             settings.entry(namespace).or_default().insert(key, value);
-            publish(proxy, &settings);
+            publish(sender, &settings);
         }
     }
     Ok(())
 }
 
-fn publish(proxy: &EventLoopProxy<ShellEvent>, settings: &Settings) {
+fn publish(sender: &PlatformSender, settings: &Settings) {
     let appearance = settings.get(APPEARANCE);
     let color_scheme = appearance
         .and_then(|values| values.get("color-scheme"))
@@ -107,5 +106,5 @@ fn publish(proxy: &EventLoopProxy<ShellEvent>, settings: &Settings) {
         .and_then(|value| f64::try_from(value).ok())
         .map(|value| value as f32)
         .filter(|scale| scale.is_finite() && *scale > 0.0);
-    let _ = proxy.send_event(ShellEvent::SystemPreferencesChanged { color_scheme, reduced_motion, text_scale, high_contrast });
+    sender.send_event(PlatformEvent::SystemPreferencesChanged { color_scheme, reduced_motion, text_scale, high_contrast });
 }

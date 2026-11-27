@@ -1,73 +1,69 @@
-//! UIKit scene, native text editing, navigation, and platform services.
+//! UIKit application, window, and platform services.
 
 mod a11y;
+mod app;
 mod back;
 mod draft;
 mod editor;
 mod gestures;
 mod scene;
+mod view;
 
 use super::apple_frame_clock::{DisplayClock, retry_on_clock};
-use super::apple_metal::{metal_layer, set_transactional};
-use crate::ShellEvent;
+use super::apple_metal::set_transactional;
 use crate::os::{
-    ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, KeyDispatch, OsHost, OsWindow, OsWindowContext, ServiceCleanup,
-    WindowAccessibility, WindowHostEvent, WindowPresentation, WindowScene, WindowTextInput, reply, surface_drawable,
+    ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowInit, PlatformEvent,
+    PlatformKey, PlatformSender, ServiceCleanup, ShellDriver, WindowAccessibility, WindowHostEvent, WindowPresentation, WindowScene,
+    WindowTextInput, reply, surface_drawable,
 };
 use back::BackNavigation;
-use editor::TextInput;
-use objc2::MainThreadMarker;
-use objc2::rc::Retained;
-use objc2_foundation::{NSArray, NSCurrentLocaleDidChangeNotification, NSData, NSDictionary, NSNotificationCenter, NSString, NSURL};
+use editor::{ContentView, TextInput};
+use objc2::rc::{Retained, Weak};
+use objc2::{ClassType, MainThreadMarker};
+use objc2_foundation::{
+    NSArray, NSCurrentLocaleDidChangeNotification, NSData, NSDictionary, NSNotificationCenter, NSRect, NSString, NSURL,
+};
 use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use objc2_ui_kit::{
     UIAccessibilityDarkerSystemColorsEnabled, UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
     UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification,
     UIAccessibilitySpeakScreenStatusDidChangeNotification, UIAccessibilitySwitchControlStatusDidChangeNotification,
-    UIAccessibilityVoiceOverStatusDidChangeNotification, UIApplication, UIContentSizeCategoryDidChangeNotification, UIFont,
-    UIFontTextStyleBody, UIPasteboard, UIUserInterfaceStyle, UIView,
+    UIAccessibilityVoiceOverStatusDidChangeNotification, UIApplication, UIColor, UIContentSizeCategoryDidChangeNotification,
+    UICoordinateSpace, UIFont, UIFontTextStyleBody, UIPasteboard, UIScreen, UIStatusBarStyle, UIUserInterfaceStyle, UIView,
 };
-use octara::module::{HostSurfaceKind, RawNativeSurface};
-use octara::runtime::{Input, WindowId};
+use octara::WindowOptions;
+use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
+use octara::runtime::WindowId;
 use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::WindowViewport;
 use octara_model::identity::TargetGuard;
-use octara_model::input::{HostReply, InteractionEvent};
+use octara_model::input::{HostReply, Key, Modifiers};
 use octara_model::theme::ColorScheme;
-use octara_model::window::{StatusBarStyle, WindowGeometry, WindowGeometryRequest, WindowMaterial};
+use octara_model::window::{StatusBarStyle, WindowGeometry, WindowMaterial};
 use octara_render::{gpu::OutputColor, wgpu};
-use scene::SceneConnection;
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
+use scene::AreaConnection;
 use std::cell::Cell;
 use std::path::PathBuf;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
-use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::KeyEvent;
-use winit::event_loop::EventLoopProxy;
-use winit::keyboard::PhysicalKey;
-use winit::platform::ios::{StatusBarStyle as UIKitStatusBarStyle, WindowAttributesExtIOS, WindowExtIOS};
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::{Window, WindowAttributes};
+use view::{Controller, NativeWindow};
 
 pub(super) const SURFACE_KIND: HostSurfaceKind = HostSurfaceKind::Ios;
 
-pub(super) fn raw_module_surface(window: &Window) -> Option<RawNativeSurface> {
-    let RawWindowHandle::UiKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
-    Some(RawNativeSurface::UiKit { ui_view: handle.ui_view, ui_view_controller: handle.ui_view_controller? })
-}
-
 pub(super) fn create() -> Box<dyn OsHost> {
-    Box::new(IosHost { preferences: None })
+    Box::new(IosHost { events: Arc::new(app::Queue::default()), preferences: None })
 }
 
 struct IosHost {
+    events: Arc<app::Queue>,
     preferences: Option<super::apple_preferences::Observer>,
 }
 
-impl OsHost for IosHost {
-    fn initialize(&mut self, proxy: EventLoopProxy<ShellEvent>) {
+impl IosHost {
+    fn observe_preferences(&mut self) {
         super::scheduling::interactive();
-        scene::register(proxy.clone());
         // SAFETY: Foundation and UIKit expose these as static notification names.
         let names = unsafe {
             [
@@ -80,7 +76,18 @@ impl OsHost for IosHost {
                 UIAccessibilitySpeakScreenStatusDidChangeNotification,
             ]
         };
-        self.preferences = Some(super::apple_preferences::Observer::new(NSNotificationCenter::defaultCenter(), &names, proxy));
+        self.preferences =
+            Some(super::apple_preferences::Observer::new(NSNotificationCenter::defaultCenter(), &names, self.events.sender()));
+    }
+}
+
+impl OsHost for IosHost {
+    fn run(self: Box<Self>, driver: Box<dyn ShellDriver>) -> Result<(), String> {
+        app::run(self, driver)
+    }
+
+    fn wake(&self) -> HostWake {
+        self.events.wake()
     }
 
     fn reduced_motion(&self) -> Option<bool> {
@@ -89,6 +96,17 @@ impl OsHost for IosHost {
 
     fn locale(&self) -> Option<Arc<str>> {
         super::apple_preferences::locale()
+    }
+
+    fn color_scheme(&self) -> Option<ColorScheme> {
+        let traits = scene::current()?.traitCollection();
+        // SAFETY: The collection belongs to the current UIKit scene.
+        let style = unsafe { traits.userInterfaceStyle() };
+        match style {
+            UIUserInterfaceStyle::Dark => Some(ColorScheme::Dark),
+            UIUserInterfaceStyle::Light => Some(ColorScheme::Light),
+            _ => None,
+        }
     }
 
     fn text_scale(&self) -> Option<f32> {
@@ -110,7 +128,7 @@ impl OsHost for IosHost {
     }
 
     fn application_active(&self) -> Option<bool> {
-        scene::foreground()
+        Some(scene::foreground())
     }
 
     fn frame_thread_setup(&self) -> Option<fn()> {
@@ -129,81 +147,79 @@ impl OsHost for IosHost {
         scene::ready()
     }
 
-    fn window_attributes(&self, mut attributes: WindowAttributes, options: &octara::WindowOptions) -> WindowAttributes {
-        // UIKit sizes the window to its scene.
-        attributes.inner_size = None;
-        let presentation = &options.presentation;
-        let (style, hidden) = status_bar_appearance(presentation.status_bar, presentation.theme.scheme);
-        attributes.with_preferred_status_bar_style(style).with_prefers_status_bar_hidden(hidden)
-    }
-
-    fn prepare_window(&self, window: &Window) -> Result<(), String> {
-        scene::prepare_window(window)
-    }
-
     fn report_error(&self, error: &str) {
         unsafe extern "C" {
             fn NSLog(format: *const NSString, ...);
         }
         let message = NSString::from_str(error);
         let format = NSString::from_str("Octara: %@");
-        // The Objective-C string operands are retained for the duration of the call.
-        unsafe {
-            NSLog(&*format, &*message as *const NSString);
-        }
+        // SAFETY: The Objective-C string operands are retained through the call.
+        unsafe { NSLog(&*format, &*message as *const NSString) };
     }
 
-    fn create_window(&mut self, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String> {
-        let OsWindowContext { window, id, backend, config, proxy } = context;
-        let content = scene::view(window)?;
-        let scene_active = Rc::new(Cell::new(true));
-        let refresh: Rc<dyn Fn()> = Rc::new({
-            let proxy = proxy.clone();
-            move || {
-                let _ = proxy.send_event(ShellEvent::RefreshViewport { window: id });
-            }
-        });
-        let scene = SceneConnection::new(&content, refresh.clone(), {
-            let proxy = proxy.clone();
-            let scene_active = scene_active.clone();
-            move |active| {
-                scene_active.set(active);
-                let _ =
-                    proxy.send_event(ShellEvent::Input { window: id, input: Input::Interaction(InteractionEvent::WindowActive(active)) });
-            }
-        })?;
-        let editor = TextInput::new(
-            content.clone(),
-            {
-                let proxy = proxy.clone();
-                move || {
-                    let _ = proxy.send_event(ShellEvent::Wake);
+    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowInit<'_>) -> Result<Box<dyn OsWindow>, String> {
+        let main = MainThreadMarker::new().ok_or("UIKit requires the application main thread")?;
+        let OsWindowInit { config, backend, sender, transparent } = context;
+        let scene = scene::current();
+        if !scene::ready() {
+            return Err("The UIKit scene is disconnected".into());
+        }
+        // UIScreen.mainScreen and the scene coordinate space remain available at the iOS 18.4 floor.
+        #[allow(deprecated)]
+        let screen = scene.as_deref().map_or_else(|| UIScreen::mainScreen(main), objc2_ui_kit::UIWindowScene::screen);
+        #[allow(deprecated)]
+        let bounds = scene.as_deref().map_or_else(|| screen.bounds(), |scene| scene.coordinateSpace().bounds());
+        let window = NativeWindow::new(main, id, sender.clone(), scene.as_deref(), bounds);
+        let content = ContentView::new(main, NSRect::new(Default::default(), bounds.size), id, sender.clone());
+        content.setContentScaleFactor(screen.scale());
+        let (style, hidden) = status_bar_appearance(options.presentation.status_bar, options.presentation.theme.scheme);
+        let controller = Controller::new(content.clone(), style, hidden);
+        window.setRootViewController(Some(&controller));
+        window.setHidden(true);
+        window.layoutIfNeeded();
+        scene::register(&window);
+
+        let plain_content: Retained<UIView> = Retained::into_super(content.clone());
+        let weak_view = Weak::new(&*content);
+        let area = AreaConnection::new(
+            &content,
+            Rc::new(move || {
+                if let Some(view) = weak_view.load() {
+                    view.refresh_viewport();
                 }
-            },
-            move || refresh(),
+            }),
         );
-        let back = BackNavigation::new(window, proxy.clone())?;
-        let gestures = gestures::Recognizers::new(&content, proxy.clone(), id);
-        let clock = (backend == wgpu::Backend::Metal && !config.manual_clock).then(|| DisplayClock::new(&content, id, proxy.clone()));
-        let accessibility = a11y::Bridge::new(content.clone(), id, proxy.clone());
-        Ok(Box::new(IosWindow {
+        let editor = TextInput::new(content.clone());
+        let back = BackNavigation::new(
+            Retained::into_super(window.clone()),
+            Retained::into_super(controller.clone()),
+            plain_content.clone(),
+            sender.clone(),
+        );
+        let gestures = gestures::Recognizers::new(&plain_content, sender.clone(), id);
+        let clock = (backend.contains(wgpu::Backends::METAL) && !config.manual_clock)
+            .then(|| DisplayClock::new(&plain_content, id, sender.clone()));
+        let accessibility = a11y::Bridge::new(plain_content, id, sender.clone());
+        let layer = content.layer().downcast::<CAMetalLayer>().map_err(|_| "UIKit content view has no CAMetalLayer")?;
+        let mut host = IosWindow {
             accessibility,
-            content,
-            scene,
             editor,
             back,
             _gestures: gestures,
-            proxy,
-            id,
-            scene_active,
-            active: true,
-            focused: true,
+            _area: area,
             clock,
-            layer: None,
+            sender,
+            id,
+            content,
+            controller,
+            window,
+            suspended: !scene::active(),
+            layer,
             transactional: false,
-            status_bar: None,
             last_viewport: Cell::new(None),
-        }))
+        };
+        host.set_transparent(transparent);
+        Ok(Box::new(host))
     }
 
     fn open_url(&mut self, url: &str) {
@@ -224,84 +240,107 @@ impl OsHost for IosHost {
 
 struct IosWindow {
     accessibility: a11y::Bridge,
-    content: Retained<UIView>,
-    scene: SceneConnection,
     editor: TextInput,
     back: BackNavigation,
     _gestures: gestures::Recognizers,
-    proxy: EventLoopProxy<ShellEvent>,
-    id: WindowId,
-    scene_active: Rc<Cell<bool>>,
-    active: bool,
-    focused: bool,
+    _area: AreaConnection,
     clock: Option<DisplayClock>,
-    layer: Option<Retained<CAMetalLayer>>,
+    sender: PlatformSender,
+    id: WindowId,
+    content: Retained<ContentView>,
+    controller: Retained<Controller>,
+    window: Retained<NativeWindow>,
+    suspended: bool,
+    layer: Retained<CAMetalLayer>,
     transactional: bool,
-    status_bar: Option<(UIKitStatusBarStyle, bool)>,
     last_viewport: Cell<Option<WindowViewport>>,
 }
 
 impl IosWindow {
     fn refresh_activity(&mut self) {
-        let active = self.active && self.focused && self.scene_active.get();
+        let active = !self.suspended && self.window.focused();
         self.editor.set_active(active);
         self.back.set_active(active);
     }
+
+    fn view_handle(&self) -> NonNull<std::ffi::c_void> {
+        NonNull::from(self.content.as_super()).cast()
+    }
+
+    fn controller_handle(&self) -> NonNull<std::ffi::c_void> {
+        NonNull::from(self.controller.as_super()).cast()
+    }
 }
 
-impl OsWindow for IosWindow {
+// SAFETY: The content view, controller, and window are retained for the entire
+// host window lifetime. Hiding the window leaves the native objects alive.
+unsafe impl OsWindow for IosWindow {
+    fn raw_handles(&self) -> Result<(RawDisplayHandle, RawWindowHandle), String> {
+        let mut handle = UiKitWindowHandle::new(self.view_handle());
+        handle.ui_view_controller = Some(self.controller_handle());
+        Ok((UiKitDisplayHandle::new().into(), handle.into()))
+    }
+
+    fn host_surface(&self) -> HostSurface<'_> {
+        let raw = RawNativeSurface::UiKit { ui_view: self.view_handle(), ui_view_controller: self.controller_handle() };
+        // SAFETY: These retained UIKit objects outlive the borrowed surface.
+        unsafe { HostSurface::new(SURFACE_KIND, Some(self.id)).with_raw_native(raw) }
+    }
+
+    fn physical_size(&self) -> [u32; 2] {
+        self.content.physical_size()
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.content.contentScaleFactor() as f32
+    }
+
     fn accessibility(&mut self) -> Option<&mut dyn WindowAccessibility> {
         Some(&mut self.accessibility)
     }
 
-    fn surface_size(&self, _: &Window) -> PhysicalSize<u32> {
-        // winit's inner size on iOS already excludes the system safe area.
-        let bounds = self.content.bounds().size;
-        LogicalSize::new(bounds.width, bounds.height).to_physical(self.content.contentScaleFactor())
+    fn window_geometry(&mut self, viewport: WindowViewport) -> WindowGeometry {
+        WindowGeometry { size: viewport.size, scale: viewport.scale, fullscreen: true, ..Default::default() }
     }
 
-    fn window_geometry(&mut self, window: &Window, viewport: WindowViewport) -> WindowGeometry {
-        WindowGeometry { size: viewport.size, scale: viewport.scale, fullscreen: window.fullscreen().is_some(), ..Default::default() }
-    }
-
-    fn set_window_geometry(&mut self, _window: &Window, _geometry: WindowGeometryRequest) {}
-
-    fn apply_presentation(
-        &mut self,
-        window: &Window,
-        title: &str,
-        color_scheme: ColorScheme,
-        _material: WindowMaterial,
-        status_bar: StatusBarStyle,
-    ) {
-        self.content.setOverrideUserInterfaceStyle(match color_scheme {
+    fn apply_presentation(&mut self, title: &str, color_scheme: ColorScheme, _material: WindowMaterial, status_bar: StatusBarStyle) {
+        self.window.setOverrideUserInterfaceStyle(match color_scheme {
             ColorScheme::Light => UIUserInterfaceStyle::Light,
             ColorScheme::Dark => UIUserInterfaceStyle::Dark,
         });
-        if let Some(scene) = self.content.window().and_then(|window| window.windowScene()) {
+        if let Some(scene) = self.window.windowScene() {
             scene.setTitle(Some(&NSString::from_str(title)));
         }
-        let appearance = status_bar_appearance(status_bar, color_scheme);
-        let previous = self.status_bar.replace(appearance);
-        if previous.map(|(style, _)| style) != Some(appearance.0) {
-            window.set_preferred_status_bar_style(appearance.0);
-        }
-        if previous.map(|(_, hidden)| hidden) != Some(appearance.1) {
-            window.set_prefers_status_bar_hidden(appearance.1);
+        let (style, hidden) = status_bar_appearance(status_bar, color_scheme);
+        self.controller.set_status(style, hidden);
+    }
+
+    fn focus(&mut self) {
+        self.window.makeKeyWindow();
+    }
+
+    fn is_focused(&self) -> bool {
+        self.window.focused()
+    }
+
+    fn request_redraw(&mut self) {
+        self.sender.send_event(PlatformEvent::WindowRedrawRequested(self.id));
+    }
+
+    fn set_transparent(&mut self, transparent: bool) {
+        self.content.setOpaque(!transparent);
+        self.window.setOpaque(!transparent);
+        if transparent {
+            self.content.setBackgroundColor(Some(&UIColor::clearColor()));
+            self.window.setBackgroundColor(Some(&UIColor::clearColor()));
         }
     }
 
-    fn focus_window(&mut self, _window: &Window) {
-        if let Some(window) = self.content.window() {
-            window.makeKeyWindow();
-        }
+    fn close(&mut self) {
+        self.window.hide();
+        self.set_suspended(true);
+        self.set_frame_clock_activity(FrameClockActivity::Paused);
     }
-
-    fn minimize_window(&mut self, _window: &Window) {}
-
-    fn toggle_maximize(&mut self, _window: &Window) {}
-
-    fn start_window_drag(&mut self, _window: &Window) {}
 
     fn text_input(&mut self) -> &mut dyn WindowTextInput {
         self
@@ -315,8 +354,9 @@ impl OsWindow for IosWindow {
         Some(self)
     }
 
-    fn show(&mut self, _: &Window) {
-        self.scene.show();
+    fn show(&mut self) {
+        self.window.show();
+        self.refresh_activity();
         self.editor.focus();
         if let Some(clock) = &mut self.clock {
             clock.did_show();
@@ -330,7 +370,7 @@ impl OsWindow for IosWindow {
                 write_clipboard(&items).map_or_else(ServiceOutcome::Error, |()| ServiceOutcome::ClipboardWritten)
             }
         };
-        reply(&self.proxy, self.id, HostReply::ServiceReply { id, outcome });
+        reply(&self.sender, self.id, HostReply::ServiceReply { id, outcome });
         Some(Box::new(|| {}))
     }
 }
@@ -347,9 +387,7 @@ impl WindowPresentation for IosWindow {
     }
 
     fn surface_will_reconfigure(&mut self) -> bool {
-        if let Some(layer) = self.layer.take() {
-            set_transactional(&layer, false);
-        }
+        set_transactional(&self.layer, false);
         true
     }
 
@@ -362,12 +400,7 @@ impl WindowPresentation for IosWindow {
         if externally_paced && !from_clock {
             return DrawableAcquisition::WaitingForClock;
         }
-        if self.transactional && self.layer.is_none() {
-            self.layer = metal_layer(surface);
-        }
-        if let Some(layer) = &self.layer {
-            set_transactional(layer, self.transactional);
-        }
+        set_transactional(&self.layer, self.transactional);
         retry_on_clock(surface_drawable(surface, color), externally_paced)
     }
 
@@ -401,21 +434,23 @@ impl WindowTextInput for IosWindow {
     }
 
     fn focused(&mut self, focused: bool) {
-        self.focused = focused;
-        self.refresh_activity();
+        self.editor.set_active(focused && !self.suspended);
+        self.back.set_active(focused && !self.suspended);
     }
 
-    fn on_winit_key(&mut self, event: &KeyEvent) -> KeyDispatch {
-        if matches!(event.physical_key, PhysicalKey::Unidentified(_)) {
-            // UIKit delivers soft keyboard content through the active native responder.
-            KeyDispatch::Consumed
-        } else {
-            KeyDispatch::Forward
+    fn on_unhandled_key(&mut self, key: &PlatformKey) -> bool {
+        if !self.editor.is_focused() {
+            return false;
         }
-    }
-
-    fn on_unhandled_winit_key(&mut self, _: &KeyEvent) -> bool {
-        true
+        let native = self.editor.is_composing()
+            || key.event.is_some_and(|event| {
+                !event.modifiers.intersects(Modifiers::META | Modifiers::CTRL)
+                    && matches!(event.key, Key::Char(_) | Key::Space | Key::Backspace)
+            });
+        if native {
+            self.window.forward_key_to_uikit();
+        }
+        native
     }
 
     fn drain_text_input(&mut self, out: &mut Vec<WindowHostEvent>) {
@@ -452,7 +487,7 @@ impl WindowScene for IosWindow {
     }
 
     fn set_suspended(&mut self, suspended: bool) {
-        self.active = !suspended;
+        self.suspended = suspended;
         self.refresh_activity();
     }
 
@@ -462,11 +497,11 @@ impl WindowScene for IosWindow {
     }
 }
 
-fn status_bar_appearance(style: StatusBarStyle, scheme: ColorScheme) -> (UIKitStatusBarStyle, bool) {
+fn status_bar_appearance(style: StatusBarStyle, scheme: ColorScheme) -> (UIStatusBarStyle, bool) {
     let foreground = match (style, scheme) {
-        (StatusBarStyle::Auto, ColorScheme::Dark) | (StatusBarStyle::Light, _) => UIKitStatusBarStyle::LightContent,
-        (StatusBarStyle::Auto, ColorScheme::Light) | (StatusBarStyle::Dark, _) => UIKitStatusBarStyle::DarkContent,
-        (StatusBarStyle::Hidden, _) => UIKitStatusBarStyle::Default,
+        (StatusBarStyle::Auto, ColorScheme::Dark) | (StatusBarStyle::Light, _) => UIStatusBarStyle::LightContent,
+        (StatusBarStyle::Auto, ColorScheme::Light) | (StatusBarStyle::Dark, _) => UIStatusBarStyle::DarkContent,
+        (StatusBarStyle::Hidden, _) => UIStatusBarStyle::Default,
     };
     (foreground, style == StatusBarStyle::Hidden)
 }

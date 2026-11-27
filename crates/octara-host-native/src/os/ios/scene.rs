@@ -1,49 +1,61 @@
-//! Attach winit's UIKit window to the application scene and observe its usable area.
+//! Scene lifecycle and viewport geometry from UIKit.
 
-use crate::ShellEvent;
-use objc2::rc::{Retained, Weak as ObjcWeak};
-use objc2::runtime::{NSObject, NSObjectProtocol};
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_foundation::{NSSet, NSURL, NSUserActivity, NSUserActivityTypeBrowsingWeb};
+use super::{app, view::NativeWindow};
+use crate::os::PlatformEvent;
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2_foundation::{NSArray, NSSet, NSURL, NSUserActivity, NSUserActivityTypeBrowsingWeb};
 use objc2_ui_kit::{
-    UIApplication, UIOpenURLContext, UIScene, UISceneActivationState, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIView,
-    UIViewController, UIWindow, UIWindowScene,
+    UIOpenURLContext, UIScene, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UITraitUserInterfaceStyle, UIView, UIWindowScene,
+    UIWindowSceneDelegate,
 };
 use octara::module::HostLifecycleEvent;
 use octara_model::geometry::{Rect, Size, WindowViewport};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::rc::{Rc, Weak};
-use winit::event_loop::EventLoopProxy;
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::Window;
+use std::rc::Rc;
 
 #[derive(Default)]
-struct SceneBridge {
-    proxy: Option<EventLoopProxy<ShellEvent>>,
+struct State {
     scene: Option<Retained<UIWindowScene>>,
-    windows: Vec<Weak<SceneWindow>>,
+    windows: Vec<Weak<NativeWindow>>,
     launch_items: Option<OpenedItems>,
+    launched: bool,
+    legacy: bool,
+    active: bool,
+    foreground: bool,
 }
 
 thread_local! {
-    static BRIDGE: RefCell<SceneBridge> = RefCell::new(SceneBridge::default());
+    static STATE: RefCell<State> = RefCell::new(State { launch_items: Some(OpenedItems::default()), ..State::default() });
 }
 
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "OctaraWindowSceneDelegate"]
-    struct SceneDelegate;
+    pub(super) struct SceneDelegate;
 
     unsafe impl NSObjectProtocol for SceneDelegate {}
+
+    unsafe impl UIWindowSceneDelegate for SceneDelegate {}
+
+    impl SceneDelegate {
+        #[unsafe(method(colorSchemeChanged))]
+        fn color_scheme_changed(&self) {
+            app::send(PlatformEvent::RefreshSystemPreferences);
+        }
+    }
 
     unsafe impl UISceneDelegate for SceneDelegate {
         #[unsafe(method(scene:willConnectToSession:options:))]
         fn connect(&self, scene: &UIScene, _: &UISceneSession, options: &UISceneConnectionOptions) {
             let Ok(scene) = scene.retain().downcast::<UIWindowScene>() else { return };
-            // SAFETY: Read UIKit's connection properties as nullable because a launch
-            // without URLs or activities can supply nil instead of an empty set.
+            if current().is_some() {
+                return;
+            }
+            // SAFETY: UIKit connection properties may be nil on an ordinary launch.
             let contexts: Option<Retained<NSSet<UIOpenURLContext>>> = unsafe { msg_send![options, URLContexts] };
             let activities: Option<Retained<NSSet<NSUserActivity>>> = unsafe { msg_send![options, userActivities] };
             let mut items = contexts.as_deref().map_or_else(OpenedItems::default, OpenedItems::from_contexts);
@@ -52,67 +64,72 @@ define_class!(
                     items.push(&url);
                 }
             }
-            let proxy = BRIDGE.with_borrow_mut(|bridge| {
-                bridge.scene = Some(scene.clone());
-                if let Some(launch) = &mut bridge.launch_items {
-                    launch.urls.append(&mut items.urls);
-                    launch.files.append(&mut items.files);
-                }
-                bridge.proxy.clone()
-            });
-            if let Some(proxy) = proxy {
-                let _ = proxy.send_event(ShellEvent::PlatformReady);
-                items.forward(&proxy);
-            }
-            for window in scene_windows() {
+            let traits = NSArray::from_slice(&[UITraitUserInterfaceStyle::class()]);
+            // SAFETY: Observe the scene trait with a delegate method of the supported zero-argument form.
+            let _: Retained<AnyObject> = unsafe {
+                msg_send![&*scene, registerForTraitChanges: &*traits, withTarget: self, action: sel!(colorSchemeChanged)]
+            };
+            STATE.with_borrow_mut(|state| state.scene = Some(scene.clone()));
+            deliver(items);
+            for window in windows() {
                 window.attach(&scene);
             }
+            launch();
         }
 
         #[unsafe(method(sceneDidDisconnect:))]
         fn disconnect(&self, scene: &UIScene) {
-            BRIDGE.with_borrow_mut(|bridge| {
-                if bridge.scene.as_ref().is_some_and(|current| std::ptr::eq(current.as_super(), scene)) {
-                    bridge.scene = None;
+            if owns(scene) {
+                activate(false);
+                foreground_changed(false);
+                STATE.with_borrow_mut(|state| state.scene = None);
+                for window in windows() {
+                    window.setWindowScene(None);
                 }
-            });
+            }
         }
 
         #[unsafe(method(sceneDidBecomeActive:))]
-        fn activate(&self, scene: &UIScene) {
-            scene_activity(scene, true);
+        fn did_become_active(&self, scene: &UIScene) {
+            if owns(scene) {
+                activate(true);
+            }
         }
 
         #[unsafe(method(sceneWillResignActive:))]
-        fn deactivate(&self, scene: &UIScene) {
-            scene_activity(scene, false);
+        fn will_resign_active(&self, scene: &UIScene) {
+            if owns(scene) {
+                activate(false);
+            }
         }
 
         #[unsafe(method(sceneWillEnterForeground:))]
         fn enter_foreground(&self, scene: &UIScene) {
-            forward_activity(scene, HostLifecycleEvent::AppForeground);
+            if owns(scene) {
+                foreground_changed(true);
+            }
         }
 
         #[unsafe(method(sceneDidEnterBackground:))]
         fn enter_background(&self, scene: &UIScene) {
-            forward_activity(scene, HostLifecycleEvent::AppBackground);
+            if owns(scene) {
+                foreground_changed(false);
+            }
         }
 
         #[unsafe(method(scene:openURLContexts:))]
-        fn open_urls(&self, _: &UIScene, contexts: &NSSet<UIOpenURLContext>) {
-            if let Some(proxy) = BRIDGE.with_borrow(|bridge| bridge.proxy.clone()) {
-                OpenedItems::from_contexts(contexts).forward(&proxy);
+        fn open_urls(&self, scene: &UIScene, contexts: &NSSet<UIOpenURLContext>) {
+            if owns(scene) {
+                deliver(OpenedItems::from_contexts(contexts));
             }
         }
 
         #[unsafe(method(scene:continueUserActivity:))]
-        fn continue_activity(&self, _: &UIScene, activity: &NSUserActivity) {
-            if let Some(url) = browsing_url(activity)
-                && let Some(proxy) = BRIDGE.with_borrow(|bridge| bridge.proxy.clone())
+        fn continue_activity(&self, scene: &UIScene, activity: &NSUserActivity) {
+            if owns(scene)
+                && let Some(url) = browsing_url(activity)
             {
-                let mut items = OpenedItems::default();
-                items.push(&url);
-                items.forward(&proxy);
+                open_url(&url);
             }
         }
     }
@@ -135,103 +152,107 @@ impl OpenedItems {
 
     fn push(&mut self, url: &NSURL) {
         if url.isFileURL() {
-            self.files.extend(url.path().map(|path| PathBuf::from(path.to_string())));
+            self.files.extend(url.to_file_path());
         } else {
             self.urls.extend(url.absoluteString().map(|url| url.to_string()));
         }
     }
 
-    fn forward(self, proxy: &EventLoopProxy<ShellEvent>) {
+    fn forward(self) {
         if !self.urls.is_empty() {
-            let _ = proxy.send_event(ShellEvent::Lifecycle(HostLifecycleEvent::OpenUrls(self.urls)));
+            app::send(PlatformEvent::Lifecycle(HostLifecycleEvent::OpenUrls(self.urls)));
         }
         if !self.files.is_empty() {
-            let _ = proxy.send_event(ShellEvent::Lifecycle(HostLifecycleEvent::OpenFiles(self.files)));
+            app::send(PlatformEvent::Lifecycle(HostLifecycleEvent::OpenFiles(self.files)));
         }
     }
+}
+
+fn deliver(mut items: OpenedItems) {
+    STATE.with_borrow_mut(|state| {
+        if let Some(launch) = &mut state.launch_items {
+            launch.urls.append(&mut items.urls);
+            launch.files.append(&mut items.files);
+        }
+    });
+    items.forward();
+}
+
+pub(super) fn open_url(url: &NSURL) {
+    let mut items = OpenedItems::default();
+    items.push(url);
+    deliver(items);
 }
 
 fn browsing_url(activity: &NSUserActivity) -> Option<Retained<NSURL>> {
-    // SAFETY: This is Foundation's static universal-link activity type.
+    // SAFETY: Foundation supplies the universal-link activity type as a static NSString.
     if &*activity.activityType() == unsafe { NSUserActivityTypeBrowsingWeb } { activity.webpageURL() } else { None }
 }
 
-fn forward_activity(scene: &UIScene, event: HostLifecycleEvent) {
-    let proxy = BRIDGE.with_borrow(|bridge| {
-        if bridge.scene.as_ref().is_some_and(|current| std::ptr::eq(current.as_super(), scene)) { bridge.proxy.clone() } else { None }
+fn owns(scene: &UIScene) -> bool {
+    STATE.with_borrow(|state| state.scene.as_ref().is_some_and(|current| std::ptr::eq(current.as_super(), scene)))
+}
+
+pub(super) fn current() -> Option<Retained<UIWindowScene>> {
+    STATE.with_borrow(|state| state.scene.clone())
+}
+
+pub(super) fn register(window: &NativeWindow) {
+    STATE.with_borrow_mut(|state| {
+        state.windows.retain(|window| window.load().is_some());
+        state.windows.push(Weak::new(window));
     });
-    if let Some(proxy) = proxy {
-        let _ = proxy.send_event(ShellEvent::Lifecycle(event));
-    }
 }
 
-pub(super) fn foreground() -> Option<bool> {
-    let scene = BRIDGE.with_borrow(|bridge| bridge.scene.clone())?;
-    Some(matches!(scene.activationState(), UISceneActivationState::ForegroundActive | UISceneActivationState::ForegroundInactive))
+fn windows() -> Vec<Retained<NativeWindow>> {
+    STATE.with_borrow(|state| state.windows.iter().filter_map(Weak::load).collect())
 }
 
-pub(super) fn take_launch_items() -> (Vec<String>, Vec<PathBuf>) {
-    let items = BRIDGE.with_borrow_mut(|bridge| bridge.launch_items.take()).unwrap_or_default();
-    (items.urls, items.files)
+fn launch() {
+    let first = STATE.with_borrow_mut(|state| !std::mem::replace(&mut state.launched, true));
+    app::send(if first { PlatformEvent::Launched } else { PlatformEvent::PlatformReady });
 }
 
-fn scene_windows() -> Vec<Rc<SceneWindow>> {
-    BRIDGE.with_borrow_mut(|bridge| {
-        bridge.windows.retain(|window| window.strong_count() > 0);
-        bridge.windows.iter().filter_map(Weak::upgrade).collect()
-    })
-}
-
-fn scene_activity(scene: &UIScene, active: bool) {
-    for window in scene_windows() {
-        if window.window.load().and_then(|window| window.windowScene()).is_some_and(|current| std::ptr::eq(current.as_super(), scene)) {
-            (window.activity)(active);
-            (window.refresh)();
-        }
-    }
+pub(super) fn launch_legacy() {
+    STATE.with_borrow_mut(|state| state.legacy = true);
+    launch();
 }
 
 pub(super) fn ready() -> bool {
-    BRIDGE.with_borrow(|bridge| bridge.scene.is_some()) || MainThreadMarker::new().and_then(application_scene).is_some()
+    STATE.with_borrow(|state| state.legacy || state.scene.is_some())
 }
 
-/// Attach the hidden window to the active scene before Metal asks for its surface.
-pub(super) fn prepare_window(window: &Window) -> Result<(), String> {
-    let view = view(window)?;
-    let native = view.window().ok_or("the UIKit view has no window")?;
-    let main = MainThreadMarker::from(&*view);
-    if let Some(scene) = BRIDGE.with_borrow(|bridge| bridge.scene.clone()).or_else(|| application_scene(main)) {
-        native.setWindowScene(Some(&scene));
+pub(super) fn foreground() -> bool {
+    STATE.with_borrow(|state| state.foreground)
+}
+
+pub(super) fn active() -> bool {
+    STATE.with_borrow(|state| state.active)
+}
+
+pub(super) fn take_launch_items() -> (Vec<String>, Vec<PathBuf>) {
+    let items = STATE.with_borrow_mut(|state| state.launch_items.take()).unwrap_or_default();
+    (items.urls, items.files)
+}
+
+pub(super) fn foreground_changed(foreground: bool) {
+    let previous = STATE.with_borrow_mut(|state| std::mem::replace(&mut state.foreground, foreground));
+    if previous != foreground {
+        let lifecycle = if foreground { HostLifecycleEvent::AppForeground } else { HostLifecycleEvent::AppBackground };
+        app::send(PlatformEvent::Lifecycle(lifecycle));
     }
-    native.setHidden(true);
-    Ok(())
 }
 
-pub(super) fn register(proxy: EventLoopProxy<ShellEvent>) {
-    let _ = SceneDelegate::class();
-    BRIDGE.with_borrow_mut(|bridge| {
-        bridge.proxy = Some(proxy);
-        bridge.launch_items = Some(OpenedItems::default());
-    });
-}
-
-struct SceneWindow {
-    window: ObjcWeak<UIWindow>,
-    presented: Cell<bool>,
-    refresh: Rc<dyn Fn()>,
-    activity: Rc<dyn Fn(bool)>,
-}
-
-impl SceneWindow {
-    fn attach(&self, scene: &UIWindowScene) {
-        let Some(window) = self.window.load() else { return };
-        if !window.windowScene().is_some_and(|current| std::ptr::eq(&*current, scene)) {
-            window.setWindowScene(Some(scene));
-        }
-        if self.presented.get() {
-            window.makeKeyAndVisible();
-        }
-        (self.refresh)();
+pub(super) fn activate(active: bool) {
+    let previous = STATE.with_borrow_mut(|state| std::mem::replace(&mut state.active, active));
+    if previous != active {
+        app::send(if active { PlatformEvent::Resumed } else { PlatformEvent::Suspended });
+    }
+    if active {
+        foreground_changed(true);
+    }
+    for window in windows() {
+        window.update_focus();
     }
 }
 
@@ -276,25 +297,11 @@ impl AreaObserver {
     }
 }
 
-pub(super) struct SceneConnection {
-    window: Rc<SceneWindow>,
-    observer: Retained<AreaObserver>,
-}
+pub(super) struct AreaConnection(Retained<AreaObserver>);
 
-impl SceneConnection {
-    pub(super) fn new(content: &UIView, refresh: Rc<dyn Fn()>, activity: impl Fn(bool) + 'static) -> Result<Self, String> {
-        let window = content.window().ok_or("the UIKit view has no window")?;
+impl AreaConnection {
+    pub(super) fn new(content: &UIView, refresh: Rc<dyn Fn()>) -> Self {
         let mtm = MainThreadMarker::from(content);
-        let window = Rc::new(SceneWindow {
-            window: ObjcWeak::new(&*window),
-            presented: Cell::new(false),
-            refresh: refresh.clone(),
-            activity: Rc::new(activity),
-        });
-        BRIDGE.with_borrow_mut(|bridge| bridge.windows.push(Rc::downgrade(&window)));
-        if let Some(scene) = BRIDGE.with_borrow(|bridge| bridge.scene.clone()).or_else(|| application_scene(mtm)) {
-            window.attach(&scene);
-        }
         let state = AreaState { geometry: Cell::new(None), refresh: Some(refresh) };
         let frame = content.bounds();
         // SAFETY: Initialize the UIView superclass on the UIKit thread.
@@ -305,34 +312,18 @@ impl SceneConnection {
         content.addSubview(&observer);
         let keyboard = content.keyboardLayoutGuide();
         keyboard.setUsesBottomSafeArea(false);
-        // The observer lays out whenever the keyboard guide's top edge moves.
         observer.leadingAnchor().constraintEqualToAnchor(&content.leadingAnchor()).setActive(true);
         observer.trailingAnchor().constraintEqualToAnchor(&content.trailingAnchor()).setActive(true);
         observer.topAnchor().constraintEqualToAnchor(&content.topAnchor()).setActive(true);
         observer.bottomAnchor().constraintEqualToAnchor(&keyboard.topAnchor()).setActive(true);
-        Ok(Self { window, observer })
-    }
-
-    pub(super) fn show(&self) {
-        self.window.presented.set(true);
-        if let Some(window) = self.window.window.load() {
-            window.makeKeyAndVisible();
-        }
+        Self(observer)
     }
 }
 
-impl Drop for SceneConnection {
+impl Drop for AreaConnection {
     fn drop(&mut self) {
-        self.observer.removeFromSuperview();
+        self.0.removeFromSuperview();
     }
-}
-
-fn application_scene(mtm: MainThreadMarker) -> Option<Retained<UIWindowScene>> {
-    let app = UIApplication::sharedApplication(mtm);
-    app.connectedScenes()
-        .iter()
-        .filter_map(|scene| scene.downcast::<UIWindowScene>().ok())
-        .max_by_key(|scene| scene.activationState() == UISceneActivationState::ForegroundActive)
 }
 
 pub(super) fn view_metrics(content: &UIView) -> Option<WindowViewport> {
@@ -361,21 +352,4 @@ pub(super) fn keyboard_inset(content: &UIView) -> f32 {
     // The guide and the view bounds share coordinates through scene transitions.
     let height = content.bounds().size.height.max(0.0);
     content.keyboardLayoutGuide().layoutFrame().size.height.clamp(0.0, height) as f32
-}
-
-pub(super) fn view(window: &Window) -> Result<Retained<UIView>, String> {
-    let _mtm = MainThreadMarker::new().ok_or("UIKit windows require the main thread")?;
-    let handle = window.window_handle().map_err(|why| why.to_string())?;
-    let RawWindowHandle::UiKit(handle) = handle.as_raw() else { return Err("the window has no UIKit view".into()) };
-    // SAFETY: The main thread owns the winit window and its view throughout the call.
-    unsafe { Retained::retain(handle.ui_view.cast().as_ptr()) }.ok_or_else(|| "the UIKit view is missing".into())
-}
-
-pub(super) fn controller(window: &Window) -> Result<Retained<UIViewController>, String> {
-    let _mtm = MainThreadMarker::new().ok_or("UIKit windows require the main thread")?;
-    let handle = window.window_handle().map_err(|why| why.to_string())?;
-    let RawWindowHandle::UiKit(handle) = handle.as_raw() else { return Err("the window has no UIKit controller".into()) };
-    let controller = handle.ui_view_controller.ok_or("the UIKit controller is missing")?;
-    // SAFETY: The main thread owns the winit window and its controller throughout the call.
-    unsafe { Retained::retain(controller.cast().as_ptr()) }.ok_or_else(|| "the UIKit controller is missing".into())
 }

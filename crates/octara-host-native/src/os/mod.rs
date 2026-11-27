@@ -1,15 +1,15 @@
 //! Platform services and window capabilities used by the shared event loop.
 
-use crate::{ShellConfig, ShellEvent};
+use crate::ShellConfig;
 use octara::WindowOptions;
 use octara::module::{HostSurface, HostSurfaceKind};
 use octara::runtime::{Input, WindowId};
 use octara::tree::editor::{Composition, EditorSlot};
 use octara_gpu::DrawTarget;
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceRequest};
-use octara_model::geometry::{Point, Rect, Size, WindowViewport};
+use octara_model::geometry::{Rect, Size, WindowViewport};
 use octara_model::identity::{EditorSessionId, NativeId, TargetGuard};
-use octara_model::input::{EditorEvent, GestureEvent, HostReply, Modifiers, WheelPhase};
+use octara_model::input::{CursorStyle, HostReply};
 use octara_model::native::{NativeChange, NativeCommand, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::semantics::A11yAction;
@@ -18,13 +18,13 @@ use octara_model::theme::ColorScheme;
 use octara_model::window::{StatusBarStyle, UserAttention, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial};
 use octara_pipeline::NativePublication;
 use octara_render::{gpu::OutputColor, wgpu};
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
-use winit::event::{Ime, KeyEvent, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::event_loop::EventLoopProxy;
-use winit::window::{Fullscreen, Theme, UserAttentionType, Window, WindowAttributes};
+
+mod events;
+pub use events::{FileDropPhase, HostWake, LoopState, PlatformEvent, PlatformKey, PlatformSender, PointerPhase, ShellDriver};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_frame_clock;
@@ -38,8 +38,6 @@ mod apple_preferences;
 mod corners;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod desktop;
-#[cfg(not(target_os = "ios"))]
-mod gestures;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(target_os = "macos")]
@@ -68,12 +66,11 @@ pub(crate) fn decode_avif(_: &[u8]) -> Result<Image, &'static str> {
     Err("The built-in decoder on this platform does not support AVIF")
 }
 
-pub struct OsWindowContext<'a> {
-    pub window: &'a Arc<Window>,
-    pub id: WindowId,
-    pub backend: wgpu::Backend,
+pub struct OsWindowInit<'a> {
+    pub backend: wgpu::Backends,
     pub config: &'a ShellConfig,
-    pub proxy: EventLoopProxy<ShellEvent>,
+    pub sender: PlatformSender,
+    pub transparent: bool,
 }
 
 pub struct HostEvent {
@@ -98,14 +95,10 @@ pub struct ActiveEditorView<'a> {
     pub geometry: Option<&'a TextGeometry>,
 }
 
-pub enum KeyDispatch {
-    Forward,
-    Consumed,
-    Input(Input),
-}
-
 pub trait OsHost {
-    fn initialize(&mut self, _proxy: EventLoopProxy<ShellEvent>) {}
+    fn run(self: Box<Self>, driver: Box<dyn ShellDriver>) -> Result<(), String>;
+    fn wake(&self) -> HostWake;
+
     fn module_surface_kind(&self) -> HostSurfaceKind {
         platform::SURFACE_KIND
     }
@@ -118,8 +111,12 @@ pub trait OsHost {
     fn follows_window_focus(&self) -> bool {
         false
     }
+    /// Whether the platform can attach new windows, such as when a mobile scene is connected.
     fn is_ready(&self) -> bool {
         true
+    }
+    fn color_scheme(&self) -> Option<ColorScheme> {
+        None
     }
     fn reduced_motion(&self) -> Option<bool> {
         None
@@ -140,25 +137,15 @@ pub trait OsHost {
     fn supports_window_vibrancy(&self) -> bool {
         false
     }
-    fn window_attributes(&self, attributes: WindowAttributes, _options: &WindowOptions) -> WindowAttributes {
-        attributes
-    }
-    fn prepare_window(&self, _window: &Window) -> Result<(), String> {
-        Ok(())
-    }
     fn report_error(&self, error: &str) {
         eprintln!("Octara: {error}");
     }
-    fn create_window(&mut self, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String>;
+    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowInit<'_>) -> Result<Box<dyn OsWindow>, String>;
     fn set_menus(&mut self, _menus: &[Menu]) {}
     fn set_app_badge(&mut self, _badge: Option<&str>) {}
-    fn request_user_attention(&mut self, window: Option<&Window>, attention: UserAttention) {
+    fn request_user_attention(&mut self, window: Option<&mut dyn OsWindow>, attention: UserAttention) {
         if let Some(window) = window {
-            let attention = match attention {
-                UserAttention::Informational => UserAttentionType::Informational,
-                UserAttention::Critical => UserAttentionType::Critical,
-            };
-            window.request_user_attention(Some(attention));
+            window.request_user_attention(attention);
         }
     }
     fn open_url(&mut self, _url: &str) {}
@@ -183,32 +170,30 @@ pub trait OsHost {
     }
 }
 
-pub trait OsWindow {
+/// A native window owned by the host on the UI thread.
+///
+/// # Safety
+///
+/// The display and window handles must stay valid until the owner is dropped, including after
+/// `close`. GPU work may still hold a surface made from these handles after the window is closed.
+pub unsafe trait OsWindow {
+    fn raw_handles(&self) -> Result<(RawDisplayHandle, RawWindowHandle), String>;
+    fn host_surface(&self) -> HostSurface<'_>;
+    fn physical_size(&self) -> [u32; 2];
+    fn scale_factor(&self) -> f32;
+    fn request_redraw(&mut self) {}
+    fn pre_present_notify(&mut self) {}
+    fn set_cursor(&mut self, _style: CursorStyle) {}
+    fn set_transparent(&mut self, _transparent: bool) {}
+    fn is_focused(&self) -> bool {
+        false
+    }
+    fn request_user_attention(&mut self, _attention: UserAttention) {}
     fn text_input(&mut self) -> &mut dyn WindowTextInput;
     fn accessibility(&mut self) -> Option<&mut dyn WindowAccessibility> {
         None
     }
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup>;
-    fn on_winit_gesture(&mut self, _event: &WindowEvent, _anchor: Option<Point>, _modifiers: Modifiers) -> Option<GestureEvent> {
-        None
-    }
-
-    /// Supplies the native phase for the matching winit wheel event when available.
-    fn on_winit_wheel(&mut self, _delta: MouseScrollDelta, _phase: TouchPhase) -> Option<WheelPhase> {
-        None
-    }
-
-    /// Supplies handles valid while the host borrows the live window.
-    fn module_surface<'a>(&'a self, window: &'a Window, kind: HostSurfaceKind, id: WindowId) -> HostSurface<'a> {
-        let surface = HostSurface::new(kind, Some(id));
-        match platform::raw_module_surface(window) {
-            // SAFETY: The platform backend obtains the live native handles
-            // from the borrowed winit window on the UI thread.
-            Some(raw) => unsafe { surface.with_raw_native(raw) },
-            None => surface,
-        }
-    }
-
     fn asks(&mut self) -> Option<&mut dyn WindowAsks> {
         None
     }
@@ -221,69 +206,25 @@ pub trait OsWindow {
     fn scene(&mut self) -> Option<&mut dyn WindowScene> {
         None
     }
-
-    fn configure_chrome(&mut self, _window: &Window, _options: &WindowOptions) {}
-
+    fn configure_chrome(&mut self, _options: &WindowOptions) {}
     fn window_is_vibrant(&self) -> bool {
         false
     }
-
     fn window_chrome(&mut self) -> WindowChrome {
         WindowChrome::default()
     }
-
-    fn prepare_window_metrics(&mut self, _window: &Window) {}
-
-    fn surface_size(&self, window: &Window) -> PhysicalSize<u32> {
-        window.inner_size()
+    fn prepare_window_metrics(&mut self) {}
+    fn window_geometry(&mut self, viewport: WindowViewport) -> WindowGeometry {
+        WindowGeometry { size: viewport.size, scale: viewport.scale, ..WindowGeometry::default() }
     }
-
-    fn window_geometry(&mut self, window: &Window, viewport: WindowViewport) -> WindowGeometry {
-        read_window_geometry(window, viewport, window.is_maximized(), window.fullscreen().is_some())
-    }
-
-    fn set_window_geometry(&mut self, window: &Window, geometry: WindowGeometryRequest) {
-        apply_window_geometry(window, geometry);
-    }
-
-    fn apply_presentation(
-        &mut self,
-        window: &Window,
-        title: &str,
-        color_scheme: ColorScheme,
-        _material: WindowMaterial,
-        _status_bar: StatusBarStyle,
-    ) {
-        window.set_title(title);
-        window.set_theme(Some(match color_scheme {
-            ColorScheme::Light => Theme::Light,
-            ColorScheme::Dark => Theme::Dark,
-        }));
-    }
-
-    fn focus_window(&mut self, window: &Window) {
-        window.focus_window();
-    }
-
-    fn minimize_window(&mut self, window: &Window) {
-        window.set_minimized(true);
-    }
-
-    fn toggle_maximize(&mut self, window: &Window) {
-        window.set_maximized(!window.is_maximized());
-    }
-
-    fn start_window_drag(&mut self, window: &Window) {
-        let _ = window.drag_window();
-    }
-
-    fn file_drop_position(&self) -> Option<Point> {
-        None
-    }
-
-    fn show(&mut self, window: &Window) {
-        window.set_visible(true);
-    }
+    fn set_window_geometry(&mut self, _geometry: WindowGeometryRequest) {}
+    fn apply_presentation(&mut self, _title: &str, _color_scheme: ColorScheme, _material: WindowMaterial, _status_bar: StatusBarStyle) {}
+    fn focus(&mut self) {}
+    fn minimize(&mut self) {}
+    fn toggle_maximize(&mut self) {}
+    fn start_window_drag(&mut self) {}
+    fn show(&mut self) {}
+    fn close(&mut self) {}
 }
 
 /// Direct delivery for platform accessibility consumers.
@@ -293,47 +234,11 @@ pub trait WindowAccessibility {
     fn accepts_action(&self, publication: &NativePublication, target: TargetGuard, action: &A11yAction) -> bool;
 }
 
-fn read_window_geometry(window: &Window, viewport: WindowViewport, maximized: bool, fullscreen: bool) -> WindowGeometry {
-    let position = window.outer_position().ok().map(|position| {
-        let position = position.to_logical::<f32>(window.scale_factor());
-        Point::new(position.x, position.y)
-    });
-    WindowGeometry { position, size: viewport.size, scale: viewport.scale, maximized, fullscreen }
-}
-
-fn apply_window_geometry(window: &Window, geometry: WindowGeometryRequest) {
-    if geometry.fullscreen == Some(false) {
-        window.set_fullscreen(None);
-    }
-    if geometry.maximized == Some(false) {
-        window.set_maximized(false);
-    }
-    if let Some(size) =
-        geometry.size.filter(|size| size.width.is_finite() && size.height.is_finite() && size.width > 0.0 && size.height > 0.0)
-    {
-        let _ = window.request_inner_size(LogicalSize::new(f64::from(size.width), f64::from(size.height)));
-    }
-    if let Some(position) = geometry.position.filter(|position| position.x.is_finite() && position.y.is_finite()) {
-        window.set_outer_position(LogicalPosition::new(f64::from(position.x), f64::from(position.y)));
-    }
-    if geometry.maximized == Some(true) {
-        window.set_maximized(true);
-    }
-    if geometry.fullscreen == Some(true) {
-        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-    }
-}
-
 pub trait WindowTextInput {
     fn sync_text_input(&mut self, session: Option<&ActiveEditorView<'_>>);
-    fn on_winit_key(&mut self, _event: &KeyEvent) -> KeyDispatch {
-        KeyDispatch::Forward
-    }
-    fn on_unhandled_winit_key(&mut self, _event: &KeyEvent) -> bool {
+    /// Give the native text system a key that Octara has not consumed.
+    fn on_unhandled_key(&mut self, _event: &PlatformKey) -> bool {
         false
-    }
-    fn on_winit_ime(&mut self, _event: &Ime) -> Option<EditorEvent> {
-        None
     }
     fn focused(&mut self, _active: bool) {}
     fn drain_text_input(&mut self, _out: &mut Vec<WindowHostEvent>) {}
@@ -468,6 +373,6 @@ pub fn surface_drawable(surface: &Arc<wgpu::Surface<'static>>, color: OutputColo
     DrawableAcquisition::Ready(Box::new(SurfaceDrawable { frame, _surface: surface.clone(), color, suboptimal }))
 }
 
-pub fn reply(proxy: &EventLoopProxy<ShellEvent>, window: WindowId, reply: HostReply) {
-    let _ = proxy.send_event(ShellEvent::Input { window, input: Input::Host(reply) });
+pub fn reply(sender: &PlatformSender, window: WindowId, reply: HostReply) {
+    sender.send_event(PlatformEvent::HostReply { window, reply });
 }
