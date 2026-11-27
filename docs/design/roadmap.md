@@ -50,15 +50,16 @@
 
 ---
 
-### `0.0.10` — Zero-`winit` Direct Native Hosts + Tier-1 Core & Airspace Closure *(In Progress)*
-- **Specs**: [15 — Tier-1 Core Closure](v2/15-four-platform-core-polish.md) (C3–C6) & [17 — Direct Native Platform Hosts (Zero `winit` Architecture)](v2/17-native-platform-hosts-without-winit.md)
+### `0.0.10` — Zero-`winit` Direct Native Hosts, Zero-`TaffyTree` ECS Layout Kernel & Tier-1 Core Closure *(In Progress)*
+- **Specs**: [15 — Tier-1 Core Closure](v2/15-four-platform-core-polish.md) (C3–C6), [17 — Direct Native Platform Hosts (Zero `winit` Architecture)](v2/17-native-platform-hosts-without-winit.md) & [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture)](v2/18-native-layout-and-spatial-kernel.md)
 - **Scope**:
-  1. **iOS & Web Production Closure (C3 + C4)**: iOS `UIAccessibility` VoiceOver bridge + `StatusBarStyle` + scene-local keyboard layout; Web `visualViewport`, `document.title`/`theme-color`, `beforeunload`, unified multimodal `WriteClipboard`, and modal ARIA focus trap + `inert`.
-  2. **100% `winit` & `accesskit_winit` Removal**: Pure platform-neutral `OsHost` / `OsWindow` / `PlatformEvent` SPI in `octara-host-native`; direct macOS `15.4+` AppKit host (`NSApplication` / `NSWindow` / `NSPanel` / `NSTextInputClient` / `accesskit_macos`), direct iOS `18.4+` UIKit host (`UIApplicationMain` / `UIWindowSceneDelegate` / `UIViewController`), and direct Linux Wayland (`smithay-client-toolkit`, `zwp_text_input_v3`, `zwp_pointer_gestures_v1`, `wp_fractional_scale_v1`, `wl_data_device`, XDG Portal) + X11 (`x11rb`) host.
-  3. **Desktop Drag-Out, Window Levels/Panels & Airspace Closure (C5 + C6)**: `DragItem` / `el.on_drag_start` (`NSDraggingSession`, Web `DataTransfer`, Linux `wl_data_device`), `WindowLevel` + native macOS `NSPanel`, and `AirspacePolicy::SnapshotOnOcclude`.
-  4. **Layout Isolation & Hybrid Fast-Path (Planned Core Optimization)**:
-     - **`RelayoutBoundary` & CSS-Standard `Contain` (`Contain::LAYOUT | Contain::SIZE`)**: Automatic tight-constraint relayout boundaries + explicit `.contain(...)` (projects to CSS `contain` on Web) so localized edits/hovers inside a fixed-size row or scroll container relayout only the 5–10 nodes inside the boundary without dirtying ancestors or sibling rows.
-     - **Text Intrinsic-Probe Cache & `LayoutPartialTree` Hybrid Dispatch**: Small multi-slot measure probe cache (`MinContent` / `MaxContent` / `Definite(w)`) per text node to eliminate redundant Parley shaping during nested Flex mounting, plus O(1) single-pass fast-path for simple leaves / fixed-size boxes while delegating true Flex/Grid to `taffy::compute_flexbox_layout` / `compute_grid_layout`.
+  1. **iOS & Web Production Closure (C3 + C4, Wave B2 — Done)**: iOS `UIAccessibility` VoiceOver bridge + `StatusBarStyle` + scene-local keyboard layout; Web `visualViewport`, `document.title`/`theme-color`, `beforeunload`, unified multimodal `WriteClipboard`, and modal ARIA focus trap + `inert`.
+  2. **100% `winit` & `accesskit_winit` Removal (Waves D1–D2)**: Pure platform-neutral `OsHost` / `OsWindow` / `PlatformEvent` SPI in `octara-host-native`; direct macOS `15.4+` AppKit host (`NSApplication` / `NSWindow` / `NSPanel` / `NSTextInputClient` / `accesskit_macos`), direct iOS `18.4+` UIKit host (`UIApplicationMain` / `UIWindowSceneDelegate` / `UIViewController`), and direct Linux Wayland (`smithay-client-toolkit`, `zwp_text_input_v3`, `zwp_pointer_gestures_v1`, `wp_fractional_scale_v1`, `wl_data_device`, XDG Portal) + X11 (`x11rb`) host.
+  3. **Desktop Drag-Out, Window Levels/Panels & Airspace Closure (C5 + C6, Wave D2)**: `DragItem` / `el.on_drag_start` (`NSDraggingSession`, Web `DataTransfer`, Linux `wl_data_device`), `WindowLevel` + native macOS `NSPanel`, and `AirspacePolicy::SnapshotOnOcclude`.
+  4. **Zero-`TaffyTree` Native ECS Layout & Spatial Kernel (Wave D3)**:
+     - **Delete `TaffyTree` completely** (`taffy_tree` feature removed); build Octara's dense `SecondaryMap`-backed `LayoutKernel` implementing Taffy's zero-copy `LayoutPartialTree` / `LayoutContainingBlock` / `LayoutFlexboxContainer` / `LayoutGridContainer` traits directly over `octara-tree` and interned `Arc<ResolvedStyle>`, with O(1) leaf/hidden fast paths and zero `FxHashMap` fragmentation.
+     - **Mathematically Sound Dual-Layer `RelayoutBoundary` + Cross-Platform `Contain`**: Zero-config automatic tight-box+clipped boundaries + first-class W3C `Contain::LAYOUT | SIZE | PAINT` (projected to native containment and Web CSS `contain`), plus isolated anchored overlay layout roots and automatic escalation.
+     - **Epoch-Pruned Local Frame Projection + Incremental `FlatTree` Cell Patching + Non-Thrashing `TextEngine` Probe Cache + `check_layout_cache` Oracle**: Eliminate full-window `collect_frames` and full-window spatial grid rebuilds on localized edits/hovers (`1,832 → <= 16` geometry visits on 160-row hover), and verify bit-for-bit parity against cold full-tree layout in DST.
 
 ---
 
@@ -75,8 +76,8 @@
 
 ---
 
-### `0.0.11` — Complex Components, Modern Graphics, `WebKitGTK` & Advanced Hardware Modules
-- **Planned Spec**: `v2/17-components-graphics-and-hardware-modules.md`
+### `0.0.12` — Complex Components, Modern Graphics, `WebKitGTK` & Advanced Hardware Modules
+- **Planned Spec**: `v2/19-components-graphics-and-hardware-modules.md`
 - **Scope**:
   1. **Complex Components (`octara-headless` + `octara-kit`)**:
      - Virtualized `DataTable` (sticky headers/columns, resizable columns, sorting, multi-select), `TreeView`, `SplitPane` (draggable & collapsible).
@@ -96,7 +97,7 @@
 ---
 
 ### `0.1.0` — Production Beta: Packaging, Fast Restart, DevTools & Core API Freeze
-- **Planned Spec**: `v2/18-packaging-devtools-and-v01-freeze.md`
+- **Planned Spec**: `v2/20-packaging-devtools-and-v01-freeze.md`
 - **Scope**:
   1. **`octara dev` State-Preserving Fast Restart**: File watcher + automatic `RestartState` snapshot → incremental rebuild → instant relaunch restoring window geometry and reactive state.
   2. **`octara bundle` One-Command Packaging**:
