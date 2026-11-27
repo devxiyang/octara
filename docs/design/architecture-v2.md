@@ -19,6 +19,7 @@ This document is the architectural overview. Exact crate layouts, naming convent
 10. [10 — Core Architecture Review, Unified Media / Inline Primitives & `octara-markdown` (`0.0.5`)](v2/10-ai-document-media-and-markdown.md)
 11. [11 — Core Performance Architecture: CPU Cache, Algorithms, Modern GPU Micro-Pipelines & Inspect SPI (`0.0.6`)](v2/11-extreme-engine-cpu-gpu-and-ai-dx.md)
 12. [12 — Pluggable SPI Architecture: Modular Extension Boundaries](v2/12-pluggable-spi-architecture.md)
+13. [13 — Window Presentation, Dual-Parent Inheritance, Multimodal Input & Real-Metric Inline Primitives (`0.0.7`)](v2/13-window-presentation-multimodal-input-and-inline-primitives.md)
 
 ---
 
