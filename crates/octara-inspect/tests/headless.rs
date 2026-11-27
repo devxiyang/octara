@@ -445,10 +445,10 @@ fn virtual_reveal_and_offscreen_copy_preserve_exact_utf8_and_document_order() {
     assert_eq!(line(&driver, 42), anchor.node);
     accessible(&mut driver, id, document, A11yAction::CopyTextSelection);
     let clipboard = driver.take_host_commands().into_iter().find_map(|command| match command {
-        HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. } => Some(text),
+        HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. } => Some(items),
         _ => None,
     });
-    assert_eq!(clipboard.as_deref(), Some("40\n文41\n文"));
+    assert_eq!(clipboard.unwrap(), [ClipboardItem::Text("40\n文41\n文".into())]);
 }
 
 fn editor_window(driver: &mut HeadlessDriver, secure: bool) -> WindowId {
@@ -528,6 +528,7 @@ fn replay_redacts_password_keys_and_edits_and_private_platform_data() {
         id,
         &Input::Host(HostReply::ServiceReply { id: ServiceId(1), outcome: ServiceOutcome::Clipboard(items.clone()) }),
     );
+    let command = HostCommand::Service { window: id, id: ServiceId(1), request: ServiceRequest::WriteClipboard { items: items.clone() } };
     let paste = HostReply::Paste(PasteEvent { items });
     recording.record_input(driver.app(), id, &Input::Host(paste.clone()));
     recording.record_input(
@@ -565,7 +566,7 @@ fn replay_redacts_password_keys_and_edits_and_private_platform_data() {
         [Channel::Editor, Channel::Interaction, Channel::Host, Channel::Host, Channel::Host, Channel::Host, Channel::Agent]
     );
     let serialized = serde_json::to_string(&recording).unwrap();
-    let debug = format!("{paste:?}").replace(' ', "");
+    let debug = format!("{paste:?}\n{command:?}").replace(' ', "");
     for token in [
         "secure-recording-token",
         "🦑",

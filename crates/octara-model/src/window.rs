@@ -59,17 +59,30 @@ pub enum WindowMaterial {
     Vibrancy(VibrancyMaterial),
 }
 
+/// Appearance of the iOS status bar's foreground content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusBarStyle {
+    /// Choose a contrasting foreground from the window theme's color scheme.
+    #[default]
+    Auto,
+    Light,
+    Dark,
+    Hidden,
+}
+
 /// The presentation shared by the retained tree, renderer and host window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowPresentation {
     pub title: Arc<str>,
     pub theme: Theme,
     pub material: WindowMaterial,
+    pub status_bar: StatusBarStyle,
 }
 
 impl Default for WindowPresentation {
     fn default() -> Self {
-        Self { title: "Octara".into(), theme: Theme::default(), material: WindowMaterial::default() }
+        Self { title: "Octara".into(), theme: Theme::default(), material: WindowMaterial::default(), status_bar: StatusBarStyle::default() }
     }
 }
 

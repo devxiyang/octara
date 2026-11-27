@@ -6,20 +6,22 @@ use octara::module::{HostSurface, HostSurfaceKind};
 use octara::runtime::{Input, WindowId};
 use octara::tree::editor::{Composition, EditorSlot};
 use octara_gpu::DrawTarget;
-use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceId, ServiceRequest};
+use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceRequest};
 use octara_model::geometry::{Point, Rect, Size, WindowViewport};
 use octara_model::identity::{EditorSessionId, NativeId, TargetGuard};
 use octara_model::input::{EditorEvent, GestureEvent, HostReply, Modifiers, WheelPhase};
 use octara_model::native::{NativeChange, NativeCommand, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
+use octara_model::semantics::A11yAction;
 use octara_model::text::TextGeometry;
 use octara_model::theme::ColorScheme;
-use octara_model::window::{UserAttention, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial};
+use octara_model::window::{StatusBarStyle, UserAttention, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial};
+use octara_pipeline::NativePublication;
 use octara_render::{gpu::OutputColor, wgpu};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::dpi::{LogicalPosition, LogicalSize};
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::event::{Ime, KeyEvent, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::window::{Fullscreen, Theme, UserAttentionType, Window, WindowAttributes};
@@ -131,6 +133,10 @@ pub trait OsHost {
     fn high_contrast(&self) -> Option<bool> {
         None
     }
+    /// Demand reported directly by the OS. Other platforms use AccessKit's demand events.
+    fn platform_accessibility_active(&self) -> Option<bool> {
+        None
+    }
     fn supports_window_vibrancy(&self) -> bool {
         false
     }
@@ -159,7 +165,9 @@ pub trait OsHost {
     fn read_clipboard(&mut self, _accept: ClipboardKinds) -> Option<Vec<ClipboardItem>> {
         None
     }
-    fn write_clipboard_text(&mut self, _text: &str) {}
+    fn write_clipboard(&mut self, _items: &[ClipboardItem]) -> Result<(), ServiceError> {
+        Err(ServiceError::Unavailable)
+    }
     fn write_clipboard_image(&mut self, _image: &Image) {}
     fn drain_platform_events(&mut self, _out: &mut Vec<HostEvent>) {}
     /// Configure the thread that encodes and submits interactive frames.
@@ -177,6 +185,9 @@ pub trait OsHost {
 
 pub trait OsWindow {
     fn text_input(&mut self) -> &mut dyn WindowTextInput;
+    fn accessibility(&mut self) -> Option<&mut dyn WindowAccessibility> {
+        None
+    }
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup>;
     fn on_winit_gesture(&mut self, _event: &WindowEvent, _anchor: Option<Point>, _modifiers: Modifiers) -> Option<GestureEvent> {
         None
@@ -223,6 +234,10 @@ pub trait OsWindow {
 
     fn prepare_window_metrics(&mut self, _window: &Window) {}
 
+    fn surface_size(&self, window: &Window) -> PhysicalSize<u32> {
+        window.inner_size()
+    }
+
     fn window_geometry(&mut self, window: &Window, viewport: WindowViewport) -> WindowGeometry {
         read_window_geometry(window, viewport, window.is_maximized(), window.fullscreen().is_some())
     }
@@ -231,7 +246,14 @@ pub trait OsWindow {
         apply_window_geometry(window, geometry);
     }
 
-    fn apply_presentation(&mut self, window: &Window, title: &str, color_scheme: ColorScheme, _material: WindowMaterial) {
+    fn apply_presentation(
+        &mut self,
+        window: &Window,
+        title: &str,
+        color_scheme: ColorScheme,
+        _material: WindowMaterial,
+        _status_bar: StatusBarStyle,
+    ) {
         window.set_title(title);
         window.set_theme(Some(match color_scheme {
             ColorScheme::Light => Theme::Light,
@@ -262,6 +284,13 @@ pub trait OsWindow {
     fn show(&mut self, window: &Window) {
         window.set_visible(true);
     }
+}
+
+/// Direct delivery for platform accessibility consumers.
+pub trait WindowAccessibility {
+    fn synchronize(&mut self, publication: &NativePublication);
+    fn clear(&mut self);
+    fn accepts_action(&self, publication: &NativePublication, target: TargetGuard, action: &A11yAction) -> bool;
 }
 
 fn read_window_geometry(window: &Window, viewport: WindowViewport, maximized: bool, fullscreen: bool) -> WindowGeometry {

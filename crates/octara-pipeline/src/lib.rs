@@ -31,7 +31,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use text::TextEngine;
 
-pub use a11y::AccessibilityWork;
+pub use a11y::{AccessibilityCommit, AccessibilityContext, AccessibilityWork};
 pub use flat_tree::FlatNode;
 pub use layout::LayoutWork;
 pub use text::TextWork;
@@ -96,6 +96,26 @@ impl NativePublication {
     /// Drain active platform updates in committed frame order.
     pub fn take_accessibility_updates(&self) -> Vec<(u64, Arc<accesskit::TreeUpdate>)> {
         self.accessibility.take_platform_updates()
+    }
+
+    /// Drain the same platform queue with each update's committed scope and scale.
+    pub fn take_accessibility_commits(&self) -> Vec<AccessibilityCommit> {
+        self.accessibility.take_platform_commits()
+    }
+
+    /// Scope and scale of the tree returned by `snapshot_full`.
+    pub fn accessibility_context(&self) -> Option<AccessibilityContext> {
+        self.accessibility.context()
+    }
+
+    /// Resolve an exposed, committed platform node to a guarded runtime target.
+    pub fn accessibility_target(&self, id: accesskit::NodeId) -> Option<octara_model::identity::TargetGuard> {
+        self.accessibility.target(id)
+    }
+
+    /// Check whether the current committed target still exposes a platform action.
+    pub fn accessibility_supports_action(&self, target: octara_model::identity::TargetGuard, action: accesskit::Action) -> bool {
+        self.accessibility.supports_action(target, action)
     }
 
     pub fn accessibility_node(&self, id: accesskit::NodeId) -> Option<NodeId> {

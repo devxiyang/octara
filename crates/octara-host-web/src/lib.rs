@@ -13,6 +13,7 @@ mod measure;
 mod media;
 mod native;
 mod navigation;
+mod page;
 mod rich;
 mod services;
 mod undo;
@@ -39,8 +40,9 @@ use octara_model::geometry::{LayoutBox, Point, Size, WindowViewport};
 use octara_model::identity::{NodeId, TargetGuard};
 use octara_model::input::{Button, ContactTarget, DroppedFile, HostReply, InteractionEvent, Modifiers, PointerId, PointerKind};
 use octara_model::semantics::A11yAction;
-use octara_model::theme::ColorScheme;
+use octara_model::theme::{ColorScheme, ColorToken};
 use octara_model::window::{SystemPreferences, WindowGeometry};
+use page::Page;
 use services::Services;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -152,6 +154,7 @@ impl WebApp {
             });
             Driver {
                 services: RefCell::new(Services::new(browser.clone(), document.clone(), mount.clone(), owner.clone())),
+                page: Page::new(browser.clone(), owner.clone()),
                 browser,
                 document,
                 mount,
@@ -233,7 +236,14 @@ impl WebApp {
     }
 
     pub fn with_app<R>(&self, read: impl FnOnce(&App) -> R) -> Option<R> {
-        Some(read(self.0.app.try_borrow().ok()?.as_ref()?))
+        let slot = self.0.app.try_borrow().ok()?;
+        let app = slot.as_ref()?;
+        let value = read(app);
+        // A Window handle can register a new close guard without running a cycle.
+        let watching = self.0.window.get().is_some_and(|id| app.runtime().has_window_close_request(id));
+        drop(slot);
+        self.0.watch_page_close(watching);
+        Some(value)
     }
 
     pub fn update<R>(&self, write: impl FnOnce(&mut WriteCx<'_>) -> R) -> Result<R, AppError> {
@@ -290,6 +300,7 @@ struct Driver {
     mount: HtmlElement,
     dom: DomHandle,
     services: RefCell<Services>,
+    page: Page,
     clock: Performance,
     clock_start: f64,
     app: RefCell<Option<App>>,
@@ -331,6 +342,11 @@ impl Driver {
                 driver.refresh_preferences.set(true);
                 driver.schedule_frame();
             })?;
+        }
+        if let Some(viewport) = self.browser.visual_viewport() {
+            for name in ["resize", "scroll"] {
+                self.listen(viewport.as_ref(), name, false, |driver, _| driver.schedule_frame())?;
+            }
         }
         for name in ["pointerdown", "pointermove", "pointerup", "pointercancel", "pointerleave"] {
             // Track release outside the mount and use the physical hit for captured touch pointers.
@@ -658,11 +674,20 @@ impl Driver {
     }
 
     fn viewport(&self) -> WindowViewport {
+        let keyboard_inset = self
+            .browser
+            .visual_viewport()
+            .and_then(|viewport| {
+                let inner_height = self.browser.inner_height().ok()?.as_f64()?;
+                let inset = (inner_height - viewport.height() - viewport.offset_top()) as f32;
+                inset.is_finite().then_some(inset.max(0.0))
+            })
+            .unwrap_or_default();
         WindowViewport {
             size: Size::new(self.mount.client_width() as f32, self.mount.client_height() as f32),
             scale: self.browser.device_pixel_ratio() as f32,
             safe_area: None,
-            keyboard_inset: 0.0,
+            keyboard_inset,
         }
     }
 
@@ -703,6 +728,23 @@ impl Driver {
             && let Err(error) = self.cycle(|app, _| self.set_visibility(app, visible))
         {
             self.report_error(error);
+        }
+    }
+
+    fn check_page_close(&self) -> Result<bool, AppError> {
+        let id = self.window.get().ok_or(AppError::AppFailed)?;
+        let mut slot = self.app.try_borrow_mut().map_err(|_| AppError::AppFailed)?;
+        let app = slot.as_mut().ok_or(AppError::AppFailed)?;
+        let decision = app.runtime_mut().check_window_close(id);
+        drop(slot);
+        // Deliver effects on a regular frame if the page stays open.
+        self.schedule_frame();
+        decision
+    }
+
+    fn watch_page_close(&self, watching: bool) {
+        if let Err(error) = self.page.watch_close(watching) {
+            web_sys::console::error_1(&error);
         }
     }
 
@@ -768,9 +810,18 @@ impl Driver {
         let commands = app.runtime_mut().take_host_commands();
         let deadline = app.runtime().next_deadline().into_iter().chain(self.wheel_pinch_deadline()).min();
         let closed = app.runtime().window(id).is_none() || app.runtime().is_failed();
+        let background = app.runtime().window(id).map(|window| window.presentation().theme.get(ColorToken::Background));
+        let close_guard = app.runtime().has_window_close_request(id);
         drop(slot);
         if !closed {
+            self.watch_page_close(close_guard);
             for command in commands {
+                if matches!(command, HostCommand::UpdateWindowPresentation { window, .. } if window == id)
+                    && let Some(background) = background
+                    && let Err(error) = self.page.set_theme_color(&self.document, background)
+                {
+                    web_sys::console::error_1(&error);
+                }
                 match command {
                     HostCommand::TypedNativeCommand { window, command } => {
                         if window == id {
@@ -846,6 +897,7 @@ impl Driver {
             return;
         }
         self.listeners.borrow_mut().clear();
+        self.page.stop();
         self.history.take();
         self.resize.take();
         self.arm(None);

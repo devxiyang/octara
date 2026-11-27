@@ -8,7 +8,6 @@ use crate::window::{Device, FileDrop, HostWindow, transparent_background};
 use crate::{NativeAppOptions, ShellConfig, ShellError, ShellHook, trace};
 use octara::module::HostLifecycleEvent;
 use octara::runtime::cycle::AppError;
-use octara::runtime::engine::AccessibilityConsumer;
 use octara::runtime::{HostCommand, Input, RestartState, WindowId};
 use octara::tree::editor::EditorSession;
 use octara::{App, AppDefinition, WindowOptions};
@@ -78,6 +77,11 @@ pub enum ShellEvent {
         high_contrast: Option<bool>,
     },
     Accessibility(accesskit_winit::Event),
+    PlatformAccessibilityAction {
+        window: WindowId,
+        target: TargetGuard,
+        action: octara_model::semantics::A11yAction,
+    },
 }
 
 impl From<accesskit_winit::Event> for ShellEvent {
@@ -227,7 +231,10 @@ impl Shell {
         }
         let attributes = self.os.window_attributes(attributes, &options);
         let window = Arc::new(event_loop.create_window(attributes).map_err(|error| error.to_string())?);
-        let a11y = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
+        let platform_accessibility = self.os.platform_accessibility_active();
+        let a11y = platform_accessibility
+            .is_none()
+            .then(|| accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone()));
         self.os.prepare_window(&window)?;
         let surface = Arc::new(self.instance.create_surface(window.clone()).map_err(|error| error.to_string())?);
         if self.device.is_none() {
@@ -239,6 +246,11 @@ impl Shell {
         os.configure_chrome(&window, &options);
         let publication = self.frame_sources.borrow().get(&id).cloned().ok_or("missing native publication")?;
         let mut host = HostWindow::new(id, window.clone(), os, a11y, surface, publication, transparent);
+        if let Some(active) = platform_accessibility
+            && let Some(runtime) = self.app.runtime().window(id)
+        {
+            host.set_accessibility_active(runtime, active);
+        }
         host.initial_fullscreen = initial_fullscreen;
         let raw = host.os.module_surface(&host.window, self.os.module_surface_kind(), id).raw_native();
         self.ids.insert(window.id(), id);
@@ -305,9 +317,9 @@ impl Shell {
                 HostCommand::Opened(id) => self.create_window(event_loop, id)?,
                 HostCommand::Closed(id) => self.detach_window(id)?,
                 HostCommand::Menus(menus) => self.os.set_menus(&menus),
-                HostCommand::UpdateWindowPresentation { window, title, color_scheme, material } => {
+                HostCommand::UpdateWindowPresentation { window, title, color_scheme, material, status_bar } => {
                     if let Some(host) = self.windows.get_mut(&window) {
-                        host.os.apply_presentation(&host.window, &title, color_scheme, material);
+                        host.os.apply_presentation(&host.window, &title, color_scheme, material, status_bar);
                     }
                 }
                 HostCommand::SetAppBadge { badge } => self.os.set_app_badge(badge.as_deref()),
@@ -380,9 +392,8 @@ impl Shell {
                             .os
                             .read_clipboard(accept)
                             .map_or(ServiceOutcome::Error(ServiceError::Unavailable), ServiceOutcome::Clipboard),
-                        ServiceRequest::WriteClipboardText { text } => {
-                            self.os.write_clipboard_text(&text);
-                            ServiceOutcome::ClipboardWritten
+                        ServiceRequest::WriteClipboard { items } => {
+                            self.os.write_clipboard(&items).map_or_else(ServiceOutcome::Error, |()| ServiceOutcome::ClipboardWritten)
                         }
                     };
                     os::reply(&self.proxy, window, HostReply::ServiceReply { id, outcome });
@@ -439,6 +450,7 @@ impl Shell {
     }
 
     fn refresh_system_preferences(&mut self, color_scheme: Option<ColorScheme>) -> Result<(), String> {
+        self.refresh_platform_accessibility();
         let mut next = self.app.runtime().system_preferences();
         next.color_scheme = color_scheme.unwrap_or(next.color_scheme);
         next.reduced_motion = self.os.reduced_motion().unwrap_or(next.reduced_motion);
@@ -994,14 +1006,23 @@ impl Shell {
         }
     }
 
+    fn refresh_platform_accessibility(&mut self) {
+        let Some(active) = self.os.platform_accessibility_active() else { return };
+        let runtime = self.app.runtime();
+        for host in self.windows.values_mut() {
+            if let Some(window) = runtime.window(host.id) {
+                host.set_accessibility_active(window, active);
+            }
+        }
+    }
+
     fn accessibility(&mut self, event: accesskit_winit::Event) -> Result<(), String> {
         let Some(&id) = self.ids.get(&event.window_id) else { return Ok(()) };
         let Some(host) = self.windows.get_mut(&id) else { return Ok(()) };
         match event.window_event {
             accesskit_winit::WindowEvent::InitialTreeRequested => {
                 if let Some(runtime) = self.app.runtime().window(id) {
-                    runtime.set_accessibility_active(AccessibilityConsumer::Platform, true);
-                    host.set_accessibility_active(true);
+                    host.set_accessibility_active(runtime, true);
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(request) => {
@@ -1012,9 +1033,8 @@ impl Shell {
                 }
             }
             accesskit_winit::WindowEvent::AccessibilityDeactivated => {
-                host.set_accessibility_active(false);
                 if let Some(runtime) = self.app.runtime().window(id) {
-                    runtime.set_accessibility_active(AccessibilityConsumer::Platform, false);
+                    host.set_accessibility_active(runtime, false);
                 }
             }
         }
@@ -1080,6 +1100,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
             for host in shell.windows.values_mut() {
                 host.set_suspended(false);
             }
+            shell.refresh_platform_accessibility();
             if shell.os.application_active().unwrap_or(true) {
                 shell.lifecycle(HostLifecycleEvent::AppForeground)?;
             }
@@ -1111,8 +1132,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, raw: HostId, event: WindowEvent) {
         let Some(&id) = self.ids.get(&raw) else { return };
-        if let Some(host) = self.windows.get_mut(&id) {
-            host.a11y.process_event(&host.window, &event);
+        if let Some(host) = self.windows.get_mut(&id)
+            && let Some(a11y) = &mut host.a11y
+        {
+            a11y.process_event(&host.window, &event);
         }
         let can_drag = matches!(
             event,
@@ -1178,6 +1201,14 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     shell.apply_system_preferences(next)?;
                 }
                 ShellEvent::Accessibility(event) => shell.accessibility(event)?,
+                ShellEvent::PlatformAccessibilityAction { window, target, action } => {
+                    if let Some(host) = shell.windows.get_mut(&window)
+                        && let Some(accessibility) = host.os.accessibility()
+                        && accessibility.accepts_action(&host.publication, target, &action)
+                    {
+                        shell.dispatch(window, Input::Host(HostReply::AccessibilityAction { target, action }))?;
+                    }
+                }
                 ShellEvent::Device { generation, notice: DeviceNotice::Failed(error) } if generation == shell.generation => {
                     return Err(error);
                 }

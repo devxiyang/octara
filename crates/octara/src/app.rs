@@ -4,7 +4,7 @@ use crate::view::{IntoView, WindowTooltipLayer};
 use octara_model::ask::Menu;
 use octara_model::input::Chord;
 use octara_model::theme::Theme;
-use octara_model::window::{WindowMaterial, WindowPresentation};
+use octara_model::window::{StatusBarStyle, WindowMaterial, WindowPresentation};
 use octara_runtime::cycle::{AppError, CycleReceipt};
 use octara_runtime::media::MediaCacheBackend;
 use octara_runtime::window::WindowRoot;
@@ -249,6 +249,12 @@ impl WindowDefinition {
     /// Bind the window material to reactive state.
     pub fn material_with(mut self, source: impl FnMut(&mut ReadCx<'_>) -> WindowMaterial + 'static) -> Self {
         self.declarations.push(Box::new(move |build| build.bind_window_material(source)));
+        self
+    }
+
+    /// Bind the iOS status bar style to reactive state.
+    pub fn status_bar_with(mut self, source: impl FnMut(&mut ReadCx<'_>) -> StatusBarStyle + 'static) -> Self {
+        self.declarations.push(Box::new(move |build| build.bind_window_status_bar(source)));
         self
     }
 

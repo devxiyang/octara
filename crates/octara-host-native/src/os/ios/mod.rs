@@ -1,5 +1,6 @@
 //! UIKit scene, native text editing, navigation, and platform services.
 
+mod a11y;
 mod back;
 mod draft;
 mod editor;
@@ -11,38 +12,42 @@ use super::apple_metal::{metal_layer, set_transactional};
 use crate::ShellEvent;
 use crate::os::{
     ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, KeyDispatch, OsHost, OsWindow, OsWindowContext, ServiceCleanup,
-    WindowHostEvent, WindowPresentation, WindowScene, WindowTextInput, reply, surface_drawable,
+    WindowAccessibility, WindowHostEvent, WindowPresentation, WindowScene, WindowTextInput, reply, surface_drawable,
 };
 use back::BackNavigation;
 use editor::TextInput;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_foundation::{NSCurrentLocaleDidChangeNotification, NSDictionary, NSNotificationCenter, NSString, NSURL};
+use objc2_foundation::{NSArray, NSCurrentLocaleDidChangeNotification, NSData, NSDictionary, NSNotificationCenter, NSString, NSURL};
 use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use objc2_ui_kit::{
     UIAccessibilityDarkerSystemColorsEnabled, UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
-    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification, UIApplication,
-    UIContentSizeCategoryDidChangeNotification, UIFont, UIFontTextStyleBody, UIPasteboard, UIUserInterfaceStyle, UIView,
+    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification,
+    UIAccessibilitySpeakScreenStatusDidChangeNotification, UIAccessibilitySwitchControlStatusDidChangeNotification,
+    UIAccessibilityVoiceOverStatusDidChangeNotification, UIApplication, UIContentSizeCategoryDidChangeNotification, UIFont,
+    UIFontTextStyleBody, UIPasteboard, UIUserInterfaceStyle, UIView,
 };
 use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::{Input, WindowId};
-use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceId, ServiceOutcome, ServiceRequest};
-use octara_model::geometry::{Size, WindowViewport};
+use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
+use octara_model::geometry::WindowViewport;
 use octara_model::identity::TargetGuard;
 use octara_model::input::{HostReply, InteractionEvent};
 use octara_model::theme::ColorScheme;
-use octara_model::window::{WindowGeometry, WindowGeometryRequest, WindowMaterial};
+use octara_model::window::{StatusBarStyle, WindowGeometry, WindowGeometryRequest, WindowMaterial};
 use octara_render::{gpu::OutputColor, wgpu};
 use scene::SceneConnection;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::KeyEvent;
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::PhysicalKey;
+use winit::platform::ios::{StatusBarStyle as UIKitStatusBarStyle, WindowAttributesExtIOS, WindowExtIOS};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::Window;
+use winit::window::{Window, WindowAttributes};
 
 pub(super) const SURFACE_KIND: HostSurfaceKind = HostSurfaceKind::Ios;
 
@@ -70,6 +75,9 @@ impl OsHost for IosHost {
                 UIContentSizeCategoryDidChangeNotification,
                 UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
                 UIAccessibilityReduceMotionStatusDidChangeNotification,
+                UIAccessibilityVoiceOverStatusDidChangeNotification,
+                UIAccessibilitySwitchControlStatusDidChangeNotification,
+                UIAccessibilitySpeakScreenStatusDidChangeNotification,
             ]
         };
         self.preferences = Some(super::apple_preferences::Observer::new(NSNotificationCenter::defaultCenter(), &names, proxy));
@@ -91,6 +99,10 @@ impl OsHost for IosHost {
 
     fn high_contrast(&self) -> Option<bool> {
         Some(UIAccessibilityDarkerSystemColorsEnabled())
+    }
+
+    fn platform_accessibility_active(&self) -> Option<bool> {
+        Some(a11y::platform_accessibility_active())
     }
 
     fn take_launch_items(&mut self) -> (Vec<String>, Vec<PathBuf>) {
@@ -115,6 +127,14 @@ impl OsHost for IosHost {
 
     fn is_ready(&self) -> bool {
         scene::ready()
+    }
+
+    fn window_attributes(&self, mut attributes: WindowAttributes, options: &octara::WindowOptions) -> WindowAttributes {
+        // UIKit sizes the window to its scene.
+        attributes.inner_size = None;
+        let presentation = &options.presentation;
+        let (style, hidden) = status_bar_appearance(presentation.status_bar, presentation.theme.scheme);
+        attributes.with_preferred_status_bar_style(style).with_prefers_status_bar_hidden(hidden)
     }
 
     fn prepare_window(&self, window: &Window) -> Result<(), String> {
@@ -165,7 +185,9 @@ impl OsHost for IosHost {
         let back = BackNavigation::new(window, proxy.clone())?;
         let gestures = gestures::Recognizers::new(&content, proxy.clone(), id);
         let clock = (backend == wgpu::Backend::Metal && !config.manual_clock).then(|| DisplayClock::new(&content, id, proxy.clone()));
+        let accessibility = a11y::Bridge::new(content.clone(), id, proxy.clone());
         Ok(Box::new(IosWindow {
+            accessibility,
             content,
             scene,
             editor,
@@ -179,6 +201,8 @@ impl OsHost for IosHost {
             clock,
             layer: None,
             transactional: false,
+            status_bar: None,
+            last_viewport: Cell::new(None),
         }))
     }
 
@@ -193,12 +217,13 @@ impl OsHost for IosHost {
         MainThreadMarker::new().map(|_| read_clipboard(accept))
     }
 
-    fn write_clipboard_text(&mut self, text: &str) {
-        write_clipboard_text(text);
+    fn write_clipboard(&mut self, items: &[ClipboardItem]) -> Result<(), ServiceError> {
+        write_clipboard(items)
     }
 }
 
 struct IosWindow {
+    accessibility: a11y::Bridge,
     content: Retained<UIView>,
     scene: SceneConnection,
     editor: TextInput,
@@ -212,6 +237,8 @@ struct IosWindow {
     clock: Option<DisplayClock>,
     layer: Option<Retained<CAMetalLayer>>,
     transactional: bool,
+    status_bar: Option<(UIKitStatusBarStyle, bool)>,
+    last_viewport: Cell<Option<WindowViewport>>,
 }
 
 impl IosWindow {
@@ -223,22 +250,44 @@ impl IosWindow {
 }
 
 impl OsWindow for IosWindow {
-    fn window_geometry(&mut self, window: &Window, viewport: WindowViewport) -> WindowGeometry {
+    fn accessibility(&mut self) -> Option<&mut dyn WindowAccessibility> {
+        Some(&mut self.accessibility)
+    }
+
+    fn surface_size(&self, _: &Window) -> PhysicalSize<u32> {
+        // winit's inner size on iOS already excludes the system safe area.
         let bounds = self.content.bounds().size;
-        let size =
-            if bounds.width > 0.0 && bounds.height > 0.0 { Size::new(bounds.width as f32, bounds.height as f32) } else { viewport.size };
-        WindowGeometry { size, scale: viewport.scale, fullscreen: window.fullscreen().is_some(), ..Default::default() }
+        LogicalSize::new(bounds.width, bounds.height).to_physical(self.content.contentScaleFactor())
+    }
+
+    fn window_geometry(&mut self, window: &Window, viewport: WindowViewport) -> WindowGeometry {
+        WindowGeometry { size: viewport.size, scale: viewport.scale, fullscreen: window.fullscreen().is_some(), ..Default::default() }
     }
 
     fn set_window_geometry(&mut self, _window: &Window, _geometry: WindowGeometryRequest) {}
 
-    fn apply_presentation(&mut self, _window: &Window, title: &str, color_scheme: ColorScheme, _material: WindowMaterial) {
+    fn apply_presentation(
+        &mut self,
+        window: &Window,
+        title: &str,
+        color_scheme: ColorScheme,
+        _material: WindowMaterial,
+        status_bar: StatusBarStyle,
+    ) {
         self.content.setOverrideUserInterfaceStyle(match color_scheme {
             ColorScheme::Light => UIUserInterfaceStyle::Light,
             ColorScheme::Dark => UIUserInterfaceStyle::Dark,
         });
         if let Some(scene) = self.content.window().and_then(|window| window.windowScene()) {
             scene.setTitle(Some(&NSString::from_str(title)));
+        }
+        let appearance = status_bar_appearance(status_bar, color_scheme);
+        let previous = self.status_bar.replace(appearance);
+        if previous.map(|(style, _)| style) != Some(appearance.0) {
+            window.set_preferred_status_bar_style(appearance.0);
+        }
+        if previous.map(|(_, hidden)| hidden) != Some(appearance.1) {
+            window.set_prefers_status_bar_hidden(appearance.1);
         }
     }
 
@@ -277,9 +326,8 @@ impl OsWindow for IosWindow {
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup> {
         let outcome = match request {
             ServiceRequest::ReadClipboard { accept } => ServiceOutcome::Clipboard(read_clipboard(accept)),
-            ServiceRequest::WriteClipboardText { text } => {
-                write_clipboard_text(&text);
-                ServiceOutcome::ClipboardWritten
+            ServiceRequest::WriteClipboard { items } => {
+                write_clipboard(&items).map_or_else(ServiceOutcome::Error, |()| ServiceOutcome::ClipboardWritten)
             }
         };
         reply(&self.proxy, self.id, HostReply::ServiceReply { id, outcome });
@@ -382,12 +430,17 @@ impl WindowTextInput for IosWindow {
 }
 
 impl WindowScene for IosWindow {
-    fn viewport(&self, viewport: WindowViewport) -> WindowViewport {
-        scene::viewport(&self.content, self.editor.keyboard_inset(), viewport)
+    fn viewport(&self, fallback: WindowViewport) -> WindowViewport {
+        let Some(viewport) = scene::view_metrics(&self.content) else {
+            // UIKit can briefly clear the root view's bounds while showing the window.
+            return self.last_viewport.get().unwrap_or(fallback);
+        };
+        self.last_viewport.set(Some(viewport));
+        viewport
     }
 
     fn keyboard_open(&self) -> bool {
-        self.editor.keyboard_inset() > 0.0
+        scene::keyboard_inset(&self.content) > 0.0
     }
 
     fn sync_back(&mut self, owner: Option<TargetGuard>) {
@@ -407,6 +460,15 @@ impl WindowScene for IosWindow {
         self.refresh_activity();
         self.back.drain(out);
     }
+}
+
+fn status_bar_appearance(style: StatusBarStyle, scheme: ColorScheme) -> (UIKitStatusBarStyle, bool) {
+    let foreground = match (style, scheme) {
+        (StatusBarStyle::Auto, ColorScheme::Dark) | (StatusBarStyle::Light, _) => UIKitStatusBarStyle::LightContent,
+        (StatusBarStyle::Auto, ColorScheme::Light) | (StatusBarStyle::Dark, _) => UIKitStatusBarStyle::DarkContent,
+        (StatusBarStyle::Hidden, _) => UIKitStatusBarStyle::Default,
+    };
+    (foreground, style == StatusBarStyle::Hidden)
 }
 
 fn read_clipboard(accept: ClipboardKinds) -> Vec<ClipboardItem> {
@@ -447,9 +509,30 @@ fn has_paste_items() -> bool {
     }
 }
 
-fn write_clipboard_text(text: &str) {
-    if MainThreadMarker::new().is_some() {
-        // SAFETY: UIKit pasteboard access is on the main thread with a valid NSString.
-        unsafe { UIPasteboard::generalPasteboard().setString(Some(&NSString::from_str(text))) };
+fn write_clipboard(items: &[ClipboardItem]) -> Result<(), ServiceError> {
+    let _mtm = MainThreadMarker::new().ok_or(ServiceError::Unavailable)?;
+    let mut entries = Vec::new();
+    for item in items {
+        match item {
+            ClipboardItem::Text(text) => entries
+                .push(NSDictionary::from_slices(&[&*NSString::from_str("public.utf8-plain-text")], &[NSString::from_str(text).as_ref()])),
+            ClipboardItem::Image { media_type, bytes } if media_type == "image/png" => {
+                entries.push(NSDictionary::from_slices(&[&*NSString::from_str("public.png")], &[NSData::with_bytes(bytes).as_ref()]));
+            }
+            ClipboardItem::Files(paths) if !paths.is_empty() => {
+                let kind = NSString::from_str("public.file-url");
+                for path in paths {
+                    let url = NSURL::from_file_path(path).ok_or(ServiceError::Failed)?;
+                    entries.push(NSDictionary::from_slices(&[&*kind], &[url.as_ref()]));
+                }
+            }
+            _ => return Err(ServiceError::Unavailable),
+        }
     }
+    if entries.is_empty() {
+        return Err(ServiceError::Unavailable);
+    }
+    // SAFETY: UIKit pasteboard access is on the main thread. Values match their declared pasteboard types.
+    unsafe { UIPasteboard::generalPasteboard().setItems(&NSArray::from_retained_slice(&entries)) };
+    Ok(())
 }

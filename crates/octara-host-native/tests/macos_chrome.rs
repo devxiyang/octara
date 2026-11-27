@@ -103,7 +103,20 @@ mod macos {
 
     impl ShellHook for Test {
         fn tick(&mut self, app: &mut App, presented: &dyn Fn(WindowId) -> Option<FrameReceipt>) -> Result<Option<Duration>, ShellError> {
-            assert!(self.started.elapsed() < Duration::from_secs(20), "stalled in {:?}", self.phase);
+            let mtm = MainThreadMarker::new().expect("AppKit test runs on the main thread");
+            let active = NSApplication::sharedApplication(mtm).isActive();
+            if self.started.elapsed() >= Duration::from_secs(20) {
+                let windows: Vec<_> = app
+                    .runtime()
+                    .windows()
+                    .map(|(_, window)| {
+                        let title = window.presentation().title.clone();
+                        let key = appkit_window(&title).map(|native| native.isKeyWindow());
+                        (title, key, window.window_geometry())
+                    })
+                    .collect();
+                panic!("stalled in {:?}, application active {active}, windows {windows:?}", self.phase);
+            }
             let Some(custom) =
                 app.runtime().windows().find(|(_, w)| [CUSTOM, NEW_TITLE].contains(&w.presentation().title.as_ref())).map(|(&id, _)| id)
             else {
@@ -144,7 +157,10 @@ mod macos {
                     self.phase = Phase::MoveResize;
                 }
                 Phase::MoveResize
-                    if native.title().to_string() == NEW_TITLE && geometry.size == Size::new(460.0, 330.0) && native.isKeyWindow() =>
+                    if native.title().to_string() == NEW_TITLE
+                        && geometry.size == Size::new(460.0, 330.0)
+                        // AppKit can decline activation when another app is in the foreground.
+                        && (!active || native.isKeyWindow()) =>
                 {
                     verify_chrome(&native, chrome);
                     verify_geometry(&native, geometry);

@@ -934,6 +934,130 @@ mod browser {
     }
 
     #[wasm_bindgen]
+    pub struct ModalFixture {
+        app: octara_host_web::WebApp,
+        open: octara::prelude::Signal<bool>,
+    }
+
+    #[wasm_bindgen]
+    impl ModalFixture {
+        pub fn open(&self) {
+            self.app.update(|write| write.set(self.open, true)).unwrap();
+        }
+    }
+
+    mod modal_native {
+        use octara::module::{
+            CallTicket, HostSurface, ModuleCallCx, ModuleDispatcher, ModuleError, ModuleId, ModuleInstallCx, NativeViewEmitter,
+            NativeViewFactory, NativeViewInstance, OctaraModule,
+        };
+        use octara_model::identity::NativeId;
+        use octara_model::native::{NativePlacement, NativeSlot, NativeSnapshotRequest};
+        use std::any::Any;
+        use web_sys::HtmlElement;
+
+        pub const KIND: &str = "test.modal-native";
+
+        pub struct Fields;
+
+        impl OctaraModule for Fields {
+            fn id(&self) -> ModuleId {
+                ModuleId(KIND)
+            }
+
+            fn install(&mut self, cx: &mut ModuleInstallCx<'_>) -> Result<(), ModuleError> {
+                cx.native_views().register(Fields)
+            }
+
+            fn call(&mut self, _: CallTicket, _: Box<dyn Any>, _: &mut ModuleCallCx<'_>) {
+                unreachable!()
+            }
+        }
+
+        impl NativeViewFactory for Fields {
+            fn kind(&self) -> &'static str {
+                KIND
+            }
+
+            fn create(
+                &mut self,
+                surface: HostSurface<'_>,
+                _: NativeId,
+                _: NativeSlot,
+                props: Box<dyn Any>,
+                _: NativeViewEmitter,
+            ) -> Result<Box<dyn NativeViewInstance>, ModuleError> {
+                let host = surface.downcast_ref::<HtmlElement>().unwrap();
+                let doc = host.owner_document().unwrap();
+                for id in *props.downcast::<Vec<&'static str>>().unwrap() {
+                    let field = doc.create_element("input").unwrap();
+                    field.set_id(id);
+                    host.append_child(&field).unwrap();
+                }
+                Ok(Box::new(Fields))
+            }
+        }
+
+        impl NativeViewInstance for Fields {
+            fn update(&mut self, _: Box<dyn Any>) {}
+            fn place(&mut self, _: &NativePlacement) {}
+            fn call(&mut self, _: CallTicket, _: Box<dyn Any>, _: ModuleDispatcher) {}
+            fn snapshot(&mut self, _: NativeSnapshotRequest, _: ModuleDispatcher) {}
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn mount_dom_modal() -> Result<ModalFixture, JsValue> {
+        use octara::prelude::*;
+
+        let document = web_sys::window().unwrap().document().unwrap();
+        let surface = document.create_element("div")?.dyn_into::<HtmlElement>()?;
+        surface.set_attribute("id", "modal-fixture")?;
+        surface.set_attribute("style", "width:400px;height:400px;")?;
+        document.body().unwrap().append_child(&surface)?;
+        let open = std::rc::Rc::new(std::cell::Cell::new(None));
+        let definition = AppDefinition::new().with_module(modal_native::Fields).window(WindowDefinition::new(WindowOptions::default(), {
+            let open = open.clone();
+            move |build| {
+                let outer = build.signal(false);
+                let inner = build.signal(false);
+                let value = build.signal(String::new());
+                open.set(Some(outer));
+                let button = |name| el().test_id(name).role(Role::Button).focusable().child(text(name));
+                let fields = |ids| typed_native_view(modal_native::KIND, octara::module::TypedNativeProps::new(ids, None)).w(120).h(32);
+                col()
+                    .child(col().test_id("background").child(button("background-child")))
+                    .child(fields(vec!["native-opener"]).test_id("outside-native"))
+                    .child(button("opener").on_press(move |write| write.set(outer, true)).portal_part(
+                        move |read| read.get(outer),
+                        move |_| {
+                            col()
+                                .test_id("outer-modal")
+                                .role(Role::Dialog)
+                                .layer(LayerPolicy::modal(), move |write| write.set(outer, false))
+                                .child(input().value(value).test_id("modal-first").w(120).h(32))
+                                .child(button("inner-opener").on_press(move |write| write.set(inner, true)).portal_part(
+                                    move |read| read.get(inner),
+                                    move |_| {
+                                        col()
+                                            .role(Role::Dialog)
+                                            .test_id("inner-modal")
+                                            .layer(LayerPolicy::modal(), move |write| write.set(inner, false))
+                                            .child(button("inner-first"))
+                                            .child(button("inner-last"))
+                                    },
+                                ))
+                                .child(fields(vec!["native-first", "native-second"]).test_id("inside-native"))
+                                .child(el().portal_part(|_| true, move |_| button("portalled-stop")))
+                        },
+                    ))
+            }
+        }));
+        let app = octara_host_web::WebApp::launch(surface, definition, None)?;
+        Ok(ModalFixture { app, open: open.get().expect("modal binding") })
+    }
+
+    #[wasm_bindgen]
     pub fn run_dom_pointer_styles() -> Result<(), JsValue> {
         use octara::tree::NodeFlags;
         use octara_model::input::CursorStyle;
@@ -1665,6 +1789,83 @@ mod browser {
         drop(engine);
         surface.remove();
         Ok(())
+    }
+
+    #[wasm_bindgen]
+    pub async fn run_clipboard_writes() -> Result<(), JsValue> {
+        use js_sys::Object;
+        use octara_host_web::WebApp;
+        use octara_model::ask::{ClipboardItem, ServiceError, ServiceOutcome, ServiceRequest};
+        use std::{cell::Cell, rc::Rc};
+
+        let browser = web_sys::window().unwrap();
+        let document = browser.document().unwrap();
+        let surface = document.create_element("div")?.dyn_into::<HtmlElement>()?;
+        document.body().unwrap().append_child(&surface)?;
+        let app = WebApp::mount(surface.clone(), |_| octara::prelude::col())?;
+        let navigator: Object = browser.navigator().unchecked_into();
+        let key = JsValue::from_str("clipboard");
+        let original = Object::get_own_property_descriptor(&navigator, &key);
+        let clipboard =
+            Function::new_no_args("return { calls: [], writeText(text) { this.calls.push(text); return Promise.resolve(); } };")
+                .call0(&JsValue::UNDEFINED)?;
+        let descriptor = Object::new();
+        Reflect::set(&descriptor, &"value".into(), &clipboard)?;
+        Reflect::set(&descriptor, &"configurable".into(), &true.into())?;
+        assert!(Reflect::define_property(&navigator, &key, &descriptor)?);
+
+        let write = async |items| {
+            let mut items = Some(items);
+            let outcome = Rc::new(Cell::new(None));
+            let promise = Promise::new(&mut |resolve, _| {
+                let outcome = outcome.clone();
+                app.update(|w| {
+                    w.request_service(ServiceRequest::WriteClipboard { items: items.take().unwrap() }, move |_, result| {
+                        outcome.set(Some(result));
+                        resolve.call0(&JsValue::UNDEFINED).unwrap();
+                    });
+                })
+                .unwrap();
+            });
+            JsFuture::from(promise).await.unwrap();
+            outcome.take().unwrap()
+        };
+        let result = async {
+            let text = ClipboardItem::Text("Clipboard example".into());
+            let bytes = vec![137, 80, 78, 71, 13, 10, 26, 10];
+            let png = ClipboardItem::Image { media_type: "image/png".into(), bytes: bytes.clone() };
+            let calls = Reflect::get(&clipboard, &"calls".into())?.dyn_into::<Array>()?;
+            assert_eq!(write(vec![text.clone()]).await, ServiceOutcome::ClipboardWritten);
+            assert_eq!(calls.get(0).as_string().as_deref(), Some("Clipboard example"));
+            assert_eq!(write(vec![png.clone()]).await, ServiceOutcome::Error(ServiceError::Unavailable));
+            assert_eq!(calls.length(), 1);
+
+            let method = Function::new_with_args("items", "this.calls.push(items); return Promise.resolve();");
+            Reflect::set(&clipboard, &"write".into(), method.as_ref())?;
+            let unsupported = ClipboardItem::Image { media_type: "image/gif".into(), bytes: Vec::new() };
+            assert_eq!(write(vec![text.clone(), unsupported]).await, ServiceOutcome::Error(ServiceError::Unavailable));
+            assert_eq!(calls.length(), 1);
+            assert_eq!(write(vec![text, png]).await, ServiceOutcome::ClipboardWritten);
+            let items = calls.get(1).dyn_into::<Array>()?;
+            assert_eq!(items.length(), 1);
+            let item = items.get(0).dyn_into::<web_sys::ClipboardItem>()?;
+            assert_eq!(item.types().length(), 2);
+            let text = JsFuture::from(item.get_type("text/plain")).await?.dyn_into::<web_sys::Blob>()?;
+            let png = JsFuture::from(item.get_type("image/png")).await?.dyn_into::<web_sys::Blob>()?;
+            assert_eq!(JsFuture::from(text.text()).await?.as_string().as_deref(), Some("Clipboard example"));
+            let data = JsFuture::from(png.array_buffer()).await?;
+            assert_eq!(js_sys::Uint8Array::new(&data).to_vec(), bytes);
+            Ok(())
+        }
+        .await;
+        if original.is_undefined() {
+            Reflect::delete_property(&navigator, &key)?;
+        } else {
+            Reflect::define_property(&navigator, &key, &original.unchecked_into())?;
+        }
+        drop(app);
+        surface.remove();
+        result
     }
 
     #[wasm_bindgen]

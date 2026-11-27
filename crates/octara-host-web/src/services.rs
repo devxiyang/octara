@@ -1,7 +1,7 @@
 //! Browser prompts and services. Start user-activation-sensitive requests in the initiating cycle.
 
 use crate::{Driver, Listener};
-use js_sys::Uint8Array;
+use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
 use octara::runtime::{HostCommand, WindowId};
 use octara_model::ask::{
     Answer, Ask, AskId, ClipboardItem, ClipboardKinds, Menu, MenuItem, ServiceError, ServiceId, ServiceOutcome, ServiceRequest,
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::rc::Weak;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{Blob, Clipboard, Document, DomException, Event, EventTarget, HtmlDialogElement, HtmlElement, Window};
+use web_sys::{Blob, BlobPropertyBag, Clipboard, Document, DomException, Event, EventTarget, HtmlDialogElement, HtmlElement, Window};
 
 pub(crate) struct Services {
     browser: Window,
@@ -220,12 +220,15 @@ impl Services {
                     deliver(&owner, window, HostReply::ServiceReply { id, outcome });
                 });
             }
-            ServiceRequest::WriteClipboardText { text } => {
-                let Some(clipboard) = self.clipboard() else {
-                    self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Error(ServiceError::Unavailable) });
-                    return;
-                };
-                let promise = clipboard.write_text(&text);
+            ServiceRequest::WriteClipboard { items } => {
+                let promise =
+                    match self.clipboard().ok_or(ServiceError::Unavailable).and_then(|clipboard| write_clipboard(&clipboard, &items)) {
+                        Ok(promise) => promise,
+                        Err(error) => {
+                            self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Error(error) });
+                            return;
+                        }
+                    };
                 let owner = self.owner.clone();
                 spawn_local(async move {
                     let outcome = match JsFuture::from(promise).await {
@@ -291,6 +294,39 @@ fn deliver(owner: &Weak<Driver>, window: WindowId, reply: HostReply) {
     if let Some(driver) = owner.upgrade().filter(|driver| driver.window.get() == Some(window)) {
         driver.send(octara::runtime::Input::Host(reply));
     }
+}
+
+fn write_clipboard(clipboard: &Clipboard, items: &[ClipboardItem]) -> Result<Promise, ServiceError> {
+    let has_method = |receiver: &JsValue, name: &str| Reflect::get(receiver, &name.into()).is_ok_and(|method| method.is_function());
+    if let [ClipboardItem::Text(text)] = items
+        && has_method(clipboard.as_ref(), "writeText")
+    {
+        return Ok(clipboard.write_text(text));
+    }
+    if items.is_empty() || !has_method(clipboard.as_ref(), "write") || !has_method(js_sys::global().as_ref(), "ClipboardItem") {
+        return Err(ServiceError::Unavailable);
+    }
+    // Some platforms write only the first browser item. Offer text and PNG as representations of one item.
+    let representations = Object::new();
+    for item in items {
+        let (media_type, part) = match item {
+            ClipboardItem::Text(text) => ("text/plain", JsValue::from_str(text)),
+            ClipboardItem::Image { media_type, bytes } if media_type == "image/png" => {
+                ("image/png", Uint8Array::from(bytes.as_slice()).into())
+            }
+            _ => return Err(ServiceError::Unavailable),
+        };
+        let key = JsValue::from_str(media_type);
+        if Reflect::has(&representations, &key).map_err(browser_error)? {
+            return Err(ServiceError::Unavailable);
+        }
+        let options = BlobPropertyBag::new();
+        options.set_type(media_type);
+        let blob = Blob::new_with_buffer_source_sequence_and_options(&Array::of1(&part), &options).map_err(browser_error)?;
+        Reflect::set(&representations, &key, Promise::resolve(&blob).as_ref()).map_err(browser_error)?;
+    }
+    let item = web_sys::ClipboardItem::new_with_record_from_str_to_blob_promise(&representations).map_err(browser_error)?;
+    Ok(clipboard.write(&Array::of1(&item)))
 }
 
 async fn clipboard_items(value: JsValue, accept: ClipboardKinds) -> Vec<ClipboardItem> {

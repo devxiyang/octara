@@ -11,7 +11,7 @@ use crate::engine::ProjectError;
 use crate::graph::FlushTier;
 use crate::module::{ModuleObservation, ModuleObservationKind};
 use crate::window::{FeedbackSignal, HandlerEvent, HandlerOutcome, MountCx, WindowRuntime};
-use octara_model::ask::{AskId, ServiceId, ServiceRequest};
+use octara_model::ask::{AskId, ClipboardItem, ServiceId, ServiceRequest};
 use octara_model::diagnostics::{Diagnostic, codes};
 use octara_model::geometry::{Point, Vec2};
 use octara_model::identity::{NativeId, WindowId};
@@ -82,6 +82,25 @@ enum Routed {
 }
 
 impl AppRuntime {
+    /// Whether the window has a close guard in a live scope.
+    pub fn has_window_close_request(&self, window: WindowId) -> bool {
+        self.windows.get(&window).is_some_and(|window| window.authoring.close_request(&self.world).is_some())
+    }
+
+    /// Run the close guard when the host owns the close decision. Apply its effects on the next cycle.
+    pub fn check_window_close(&mut self, window: WindowId) -> Result<bool, AppError> {
+        self.require_active()?;
+        if !self.windows.contains_key(&window) {
+            return Err(AppError::UnknownWindow(window));
+        }
+        Ok(self.guarded(|app| app.invoke_close_request(window)))
+    }
+
+    fn invoke_close_request(&mut self, window: WindowId) -> bool {
+        let callback = self.windows[&window].authoring.close_request(&self.world);
+        callback.is_none_or(|(scope, callback)| callback(&mut self.write(scope, window)))
+    }
+
     pub(crate) fn require_active(&self) -> Result<(), AppError> {
         if self.failed { Err(AppError::AppFailed) } else { Ok(()) }
     }
@@ -562,8 +581,7 @@ impl AppRuntime {
                 true
             }
             HostReply::CloseRequested => {
-                let callback = self.windows[&id].authoring.close_request(&self.world);
-                if callback.is_none_or(|(scope, callback)| callback(&mut self.write(scope, id))) {
+                if self.invoke_close_request(id) {
                     self.commands.queued.push_back(AppCommand::Close(id));
                 }
                 true
@@ -708,7 +726,8 @@ impl AppRuntime {
                         };
                         let Some(text) = text else { return false };
                         let scope = window.scope;
-                        self.write(scope, id).request_service(ServiceRequest::WriteClipboardText { text }, |_, _| {});
+                        self.write(scope, id)
+                            .request_service(ServiceRequest::WriteClipboard { items: vec![ClipboardItem::Text(text)] }, |_, _| {});
                         true
                     }
                     _ => self.invoke_node(id, node, HandlerKind::Accessibility, HandlerEvent::Accessibility(&action)).consumed,
@@ -1402,6 +1421,7 @@ impl AppRuntime {
                     title: presentation.title.clone(),
                     color_scheme: presentation.theme.scheme,
                     material: presentation.material,
+                    status_bar: presentation.status_bar,
                 });
                 window.presentation_published = true;
             }

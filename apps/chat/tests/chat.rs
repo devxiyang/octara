@@ -251,8 +251,8 @@ fn clipboard_feedback_follows_the_host_reply_and_expires() {
             .take_host_commands()
             .into_iter()
             .find_map(|command| match command {
-                HostCommand::Service { id, request: ServiceRequest::WriteClipboardText { text }, .. } => {
-                    assert_eq!(text, "Copy this message");
+                HostCommand::Service { id, request: ServiceRequest::WriteClipboard { items }, .. } => {
+                    assert_eq!(items, [ClipboardItem::Text("Copy this message".into())]);
                     Some(id)
                 }
                 _ => None,

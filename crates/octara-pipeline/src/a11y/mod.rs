@@ -21,6 +21,7 @@ mod publication;
 
 pub(crate) use publication::AccessPublication;
 use publication::Published;
+pub use publication::{AccessibilityCommit, AccessibilityContext};
 
 /// Cumulative accessibility projection work, including staged feedback rounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -4,10 +4,10 @@ use crate::ShellEvent;
 use objc2::rc::{Retained, Weak as ObjcWeak};
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_foundation::{NSRect, NSSet, NSURL, NSUserActivity, NSUserActivityTypeBrowsingWeb};
+use objc2_foundation::{NSSet, NSURL, NSUserActivity, NSUserActivityTypeBrowsingWeb};
 use objc2_ui_kit::{
     UIApplication, UIOpenURLContext, UIScene, UISceneActivationState, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIView,
-    UIViewAutoresizing, UIViewController, UIWindow, UIWindowScene,
+    UIViewController, UIWindow, UIWindowScene,
 };
 use octara::module::HostLifecycleEvent;
 use octara_model::geometry::{Rect, Size, WindowViewport};
@@ -42,9 +42,15 @@ define_class!(
         #[unsafe(method(scene:willConnectToSession:options:))]
         fn connect(&self, scene: &UIScene, _: &UISceneSession, options: &UISceneConnectionOptions) {
             let Ok(scene) = scene.retain().downcast::<UIWindowScene>() else { return };
-            let mut items = OpenedItems::from_contexts(&options.URLContexts());
-            for url in options.userActivities().iter().filter_map(|activity| browsing_url(&activity)) {
-                items.push(&url);
+            // SAFETY: Read UIKit's connection properties as nullable because a launch
+            // without URLs or activities can supply nil instead of an empty set.
+            let contexts: Option<Retained<NSSet<UIOpenURLContext>>> = unsafe { msg_send![options, URLContexts] };
+            let activities: Option<Retained<NSSet<NSUserActivity>>> = unsafe { msg_send![options, userActivities] };
+            let mut items = contexts.as_deref().map_or_else(OpenedItems::default, OpenedItems::from_contexts);
+            if let Some(activities) = activities {
+                for url in activities.iter().filter_map(|activity| browsing_url(&activity)) {
+                    items.push(&url);
+                }
             }
             let proxy = BRIDGE.with_borrow_mut(|bridge| {
                 bridge.scene = Some(scene.clone());
@@ -231,7 +237,7 @@ impl SceneWindow {
 
 #[derive(Default)]
 struct AreaState {
-    geometry: Cell<Option<(Size, Rect)>>,
+    geometry: Cell<Option<WindowViewport>>,
     refresh: Option<Rc<dyn Fn()>>,
 }
 
@@ -261,9 +267,8 @@ define_class!(
 
 impl AreaObserver {
     fn notify(&self) {
-        let bounds = self.bounds();
-        let next = (Size::new(bounds.size.width as f32, bounds.size.height as f32), safe_area(self));
-        if self.ivars().geometry.replace(Some(next)) != Some(next)
+        let next = self.superview().and_then(|content| view_metrics(&content));
+        if self.ivars().geometry.replace(next) != next
             && let Some(refresh) = &self.ivars().refresh
         {
             refresh();
@@ -296,8 +301,15 @@ impl SceneConnection {
         let observer: Retained<AreaObserver> =
             unsafe { msg_send![super(mtm.alloc::<AreaObserver>().set_ivars(state)), initWithFrame: frame] };
         observer.setUserInteractionEnabled(false);
-        observer.setAutoresizingMask(UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight);
+        observer.setTranslatesAutoresizingMaskIntoConstraints(false);
         content.addSubview(&observer);
+        let keyboard = content.keyboardLayoutGuide();
+        keyboard.setUsesBottomSafeArea(false);
+        // The observer lays out whenever the keyboard guide's top edge moves.
+        observer.leadingAnchor().constraintEqualToAnchor(&content.leadingAnchor()).setActive(true);
+        observer.trailingAnchor().constraintEqualToAnchor(&content.trailingAnchor()).setActive(true);
+        observer.topAnchor().constraintEqualToAnchor(&content.topAnchor()).setActive(true);
+        observer.bottomAnchor().constraintEqualToAnchor(&keyboard.topAnchor()).setActive(true);
         Ok(Self { window, observer })
     }
 
@@ -323,21 +335,32 @@ fn application_scene(mtm: MainThreadMarker) -> Option<Retained<UIWindowScene>> {
         .max_by_key(|scene| scene.activationState() == UISceneActivationState::ForegroundActive)
 }
 
-fn safe_area(view: &UIView) -> Rect {
-    let bounds = view.bounds();
-    let NSRect { origin, size } = view.safeAreaLayoutGuide().layoutFrame();
-    Rect::new((origin.x - bounds.origin.x) as f32, (origin.y - bounds.origin.y) as f32, size.width as f32, size.height as f32)
+pub(super) fn view_metrics(content: &UIView) -> Option<WindowViewport> {
+    let size = content.bounds().size;
+    (size.width > 0.0 && size.height > 0.0).then(|| {
+        let insets = content.safeAreaInsets();
+        let safe_area = Rect::new(
+            insets.left as f32,
+            insets.top as f32,
+            (size.width - insets.left - insets.right).max(0.0) as f32,
+            (size.height - insets.top - insets.bottom).max(0.0) as f32,
+        );
+        WindowViewport {
+            size: Size::new(size.width as f32, size.height as f32),
+            scale: content.contentScaleFactor() as f32,
+            safe_area: Some(safe_area),
+            keyboard_inset: keyboard_inset(content),
+        }
+    })
 }
 
-pub(super) fn viewport(content: &UIView, keyboard_inset: f32, mut viewport: WindowViewport) -> WindowViewport {
-    let bounds = content.bounds();
-    if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
-        viewport.size = Size::new(bounds.size.width as f32, bounds.size.height as f32);
-        viewport.scale = content.contentScaleFactor() as f32;
-        viewport.safe_area = Some(safe_area(content));
-        viewport.keyboard_inset = keyboard_inset;
+pub(super) fn keyboard_inset(content: &UIView) -> f32 {
+    if !content.window().is_some_and(|window| window.isKeyWindow()) {
+        return 0.0;
     }
-    viewport
+    // The guide and the view bounds share coordinates through scene transitions.
+    let height = content.bounds().size.height.max(0.0);
+    content.keyboardLayoutGuide().layoutFrame().size.height.clamp(0.0, height) as f32
 }
 
 pub(super) fn view(window: &Window) -> Result<Retained<UIView>, String> {

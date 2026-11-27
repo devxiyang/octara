@@ -26,7 +26,7 @@ use objc2_foundation::{NSString, NSURL};
 use objc2_quartz_core::CATransaction;
 use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::{Input, WindowId};
-use octara::{TitlebarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
+use octara::{StatusBarStyle, TitlebarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::{Point, Size, WindowViewport};
 use octara_model::identity::NativeId;
@@ -213,8 +213,8 @@ impl OsHost for MacHost {
         Some(services::read_clipboard(accept))
     }
 
-    fn write_clipboard_text(&mut self, text: &str) {
-        services::write_text(text);
+    fn write_clipboard(&mut self, items: &[ClipboardItem]) -> Result<(), ServiceError> {
+        services::write_clipboard(items)
     }
 
     fn write_clipboard_image(&mut self, image: &Image) {
@@ -272,7 +272,14 @@ impl OsWindow for MacWindow {
         self.chrome.configure(window, options);
     }
 
-    fn apply_presentation(&mut self, window: &Window, title: &str, color_scheme: ColorScheme, material: WindowMaterial) {
+    fn apply_presentation(
+        &mut self,
+        window: &Window,
+        title: &str,
+        color_scheme: ColorScheme,
+        material: WindowMaterial,
+        _status_bar: StatusBarStyle,
+    ) {
         window.set_title(title);
         window.set_theme(Some(match color_scheme {
             ColorScheme::Light => winit::window::Theme::Light,
@@ -333,11 +340,9 @@ impl OsWindow for MacWindow {
         let send = move |outcome| reply(&proxy, window, HostReply::ServiceReply { id, outcome });
         match request {
             ServiceRequest::ReadClipboard { accept } => send(ServiceOutcome::Clipboard(services::read_clipboard(accept))),
-            ServiceRequest::WriteClipboardText { text } => send(if services::write_text(&text) {
-                ServiceOutcome::ClipboardWritten
-            } else {
-                ServiceOutcome::Error(ServiceError::Failed)
-            }),
+            ServiceRequest::WriteClipboard { items } => {
+                send(services::write_clipboard(&items).map_or_else(ServiceOutcome::Error, |()| ServiceOutcome::ClipboardWritten));
+            }
         }
         Some(Box::new(|| {}))
     }

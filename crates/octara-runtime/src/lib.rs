@@ -27,6 +27,6 @@ pub use navigation::Navigator;
 pub use task::{TaskCx, VirtualClock};
 pub use tooltip::HoveredTooltip;
 pub use window::{
-    HandlerEvent, HandlerOutcome, MountCx, SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome, WindowGeometry,
-    WindowGeometryRequest, WindowId, WindowMaterial, WindowOptions, WindowPresentation, WindowRuntime,
+    HandlerEvent, HandlerOutcome, MountCx, StatusBarStyle, SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome,
+    WindowGeometry, WindowGeometryRequest, WindowId, WindowMaterial, WindowOptions, WindowPresentation, WindowRuntime,
 };

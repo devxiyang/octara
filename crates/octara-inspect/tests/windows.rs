@@ -29,14 +29,16 @@ fn initial_presentation_resolves_custom_tokens_during_mount() {
 fn reactive_and_imperative_presentation_share_the_published_frame() {
     let mut driver = HeadlessDriver::new(NativeEngineConfig { supports_window_vibrancy: true, ..Default::default() });
     let app = driver.app_mut();
-    let (title, dark, vibrant) = app.build(|build| (build.signal("Initial"), build.signal(false), build.signal(false))).unwrap();
+    let (title, dark, vibrant, status_bar) =
+        app.build(|build| (build.signal("Initial"), build.signal(false), build.signal(false), build.signal(StatusBarStyle::Auto))).unwrap();
     let material = WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar);
     let window = AppDefinition::new()
         .window(
             WindowDefinition::new(WindowOptions::default(), |_| el())
                 .title_with(move |read| read.get(title))
                 .theme_with(move |read| if read.get(dark) { Theme::dark() } else { Theme::light() })
-                .material_with(move |read| if read.get(vibrant) { material } else { WindowMaterial::Opaque }),
+                .material_with(move |read| if read.get(vibrant) { material } else { WindowMaterial::Opaque })
+                .status_bar_with(move |read| read.get(status_bar)),
         )
         .launch(app, None)
         .unwrap()[0];
@@ -45,7 +47,9 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
     assert_eq!(current.last_commit().unwrap().draw.as_ref().unwrap().background, current.tree().theme().get(ColorToken::Background));
     assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
         HostCommand::Opened(opened),
-        HostCommand::UpdateWindowPresentation { window: updated, title, color_scheme: ColorScheme::Light, material: WindowMaterial::Opaque },
+        HostCommand::UpdateWindowPresentation {
+            window: updated, title, color_scheme: ColorScheme::Light, material: WindowMaterial::Opaque, status_bar: StatusBarStyle::Auto,
+        },
     ] if *opened == window && *updated == window && title.as_ref() == "Initial"));
 
     app.update_window(window, |write| {
@@ -53,10 +57,13 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
         write.set(title, "Reactive");
         write.set(dark, true);
         write.set(vibrant, true);
+        write.set(status_bar, StatusBarStyle::Hidden);
     })
     .unwrap();
     assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
-        HostCommand::UpdateWindowPresentation { window: updated, title, color_scheme: ColorScheme::Dark, material: updated_material },
+        HostCommand::UpdateWindowPresentation {
+            window: updated, title, color_scheme: ColorScheme::Dark, material: updated_material, status_bar: StatusBarStyle::Hidden,
+        },
     ] if *updated == window && title.as_ref() == "Reactive" && *updated_material == material));
     let current = app.runtime().window(window).unwrap();
     assert_eq!(current.presentation().theme, Theme::dark());
@@ -76,7 +83,9 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
     assert_eq!(current.tree().theme(), &theme);
     assert_eq!(current.last_commit().unwrap().draw.as_ref().unwrap().background, background);
     assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
-        HostCommand::UpdateWindowPresentation { window: updated, title, color_scheme: ColorScheme::Dark, material: WindowMaterial::Opaque },
+        HostCommand::UpdateWindowPresentation {
+            window: updated, title, color_scheme: ColorScheme::Dark, material: WindowMaterial::Opaque, status_bar: StatusBarStyle::Hidden,
+        },
     ] if *updated == window && title.as_ref() == "Final"));
 
     app.update_window(window, |write| {
@@ -84,6 +93,14 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
         write.set_window_title("Final");
     })
     .unwrap();
+    assert!(app.runtime_mut().take_host_commands().is_empty());
+
+    app.update_window(window, |write| write.set_window_status_bar(StatusBarStyle::Light)).unwrap();
+    assert_eq!(app.window(window).unwrap().presentation().status_bar, StatusBarStyle::Light);
+    assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
+        HostCommand::UpdateWindowPresentation { window: updated, status_bar: StatusBarStyle::Light, .. },
+    ] if *updated == window));
+    app.update_window(window, |write| write.set_window_status_bar(StatusBarStyle::Light)).unwrap();
     assert!(app.runtime_mut().take_host_commands().is_empty());
 }
 

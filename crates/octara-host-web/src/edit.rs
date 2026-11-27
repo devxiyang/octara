@@ -1,6 +1,10 @@
 //! Delegates editing to native browser controls and admits proposals against the active session.
 
-use crate::{Driver, dom, event_element, modifiers, rich, services::clipboard_image, undo::DomUndoLog};
+use crate::{
+    Driver, dom, event_element, modifiers, rich,
+    services::clipboard_image,
+    undo::{self, DomUndoLog},
+};
 use octara::App;
 use octara::runtime::{Input, WindowId, cycle::AppError};
 use octara::tree::{
@@ -11,6 +15,7 @@ use octara::tree::{
 use octara_model::ask::ClipboardItem;
 use octara_model::identity::{EditorSessionId, NodeId};
 use octara_model::input::{EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, Modifiers, PasteEvent};
+use octara_model::overlay::FocusTrapFeatures;
 use octara_model::semantics::TextPosition;
 use octara_model::text::{CommitKind, InlineAttachment, TextEdit};
 use std::cell::Cell;
@@ -170,6 +175,13 @@ impl Driver {
     pub(crate) fn connect_editor(self: &Rc<Self>) -> Result<(), JsValue> {
         self.listen(self.mount.as_ref(), "focusin", false, |driver, _| driver.report_focus())?;
         self.listen(self.mount.as_ref(), "focusout", false, |driver, _| driver.defer(Self::report_focus))?;
+        self.listen(self.document.as_ref(), "focusin", false, |driver, event| {
+            if event_element(&event).is_some_and(|element| !driver.mount.contains(Some(&element)))
+                && driver.with_tree(|tree| tree.front_modal().is_some() && !tree.can_set_focus(None)).unwrap_or(false)
+            {
+                driver.report_focus();
+            }
+        })?;
         for target in [self.mount.as_ref(), self.document.as_ref()] {
             self.listen(target, "selectionchange", false, |driver, _| {
                 if let Some(field) = driver.active_field()
@@ -306,9 +318,13 @@ impl Driver {
         self.listen(self.mount.as_ref(), "keydown", false, |driver, event| driver.keydown(&event))?;
         self.listen(self.document.as_ref(), "keydown", false, |driver, event| {
             // An accepted editor command can replace its event target before this listener runs.
-            if !event.default_prevented()
-                && event_element(&event).is_none_or(|element| !driver.mount.contains(Some(&element)))
-                && driver
+            if event.default_prevented() || event.composed_path().includes(&driver.mount, 0) {
+                return;
+            }
+            let modal_navigation = event.dyn_ref::<KeyboardEvent>().is_some_and(|key| matches!(key.key().as_str(), "Tab" | "Escape"))
+                && driver.with_tree(|tree| tree.front_modal().is_some()).unwrap_or(false);
+            if modal_navigation
+                || driver
                     .document
                     .get_selection()
                     .ok()
@@ -479,8 +495,19 @@ impl Driver {
         if let Err(error) = self.cycle(|app, window| {
             let element = self.document.active_element();
             let visible = element.as_ref().is_some_and(|element| element.matches(":focus-visible").unwrap_or(false));
-            let node = element.and_then(|element| self.dom.node(element.as_ref()));
+            let node = element.as_ref().and_then(|element| self.dom.node(element));
             let Some(tree) = app.runtime().window(window).map(|window| window.tree()) else { return Ok(()) };
+            if node.is_none()
+                && let Some(modal) = tree.front_modal()
+                && element.as_ref().and_then(|element| self.dom.owner(element)).is_some_and(|owner| {
+                    tree.is_in_modal_scope(owner, modal)
+                        && tree
+                            .front_focus_layer(FocusTrapFeatures::FOCUS_LOCK)
+                            .is_none_or(|lock| tree.is_in_interaction_scope(owner, lock))
+                })
+            {
+                return Ok(());
+            }
             let target = node.filter(|&node| tree.is_live(node)).map(|node| tree.guard(node));
             if tree.focus() == target.and_then(|target| target.node())
                 && tree
@@ -498,11 +525,51 @@ impl Driver {
     }
 
     fn keydown(&self, event: &Event) {
-        if event_element(event).as_ref().and_then(dom::native_view_host).is_some() {
+        if event.default_prevented() {
             return;
         }
         let Some(key) = event.dyn_ref::<KeyboardEvent>().filter(|key| !key.is_composing()) else { return };
         let Some(key) = browser_key_event(key) else { return };
+        let element = event_element(event);
+        let native = element.as_ref().and_then(dom::native_view_host).is_some();
+        let plain_tab = key.key == Key::Tab && (key.modifiers - Modifiers::SHIFT).is_empty();
+        let modal_tab = plain_tab
+            && self
+                .with_tree(|tree| tree.front_modal().is_some() && tree.front_focus_layer(FocusTrapFeatures::TAB_LOCK).is_some())
+                .unwrap_or(false);
+        if native && !modal_tab {
+            return;
+        }
+        if modal_tab
+            && let Some(active) = element
+            && let Some(owner) = self.dom.owner(&active)
+        {
+            let foreign = native || self.dom.node(&active).is_none();
+            let forward = !key.modifiers.contains(Modifiers::SHIFT);
+            let can_enter_native = !self.editor.composing()
+                && self.mount.query_selector("[data-octara-native-view]").ok().flatten().is_some()
+                && !self.has_tab_handler(owner, key);
+            let next = if foreign || can_enter_native {
+                self.dom_tab_target(&active, forward, foreign).or_else(|| {
+                    if !foreign {
+                        return None;
+                    }
+                    self.with_tree(|tree| {
+                        tree.front_modal().filter(|&modal| tree.is_in_modal_scope(owner, modal))?;
+                        tree.tab_target_from(None, forward).and_then(|node| self.dom.element(node))
+                    })
+                    .flatten()
+                })
+            } else {
+                None
+            };
+            if let Some(next) = next {
+                // Stay in scope even when browser sequential focus would reach page chrome.
+                let _ = undo::focus(&next);
+                event.prevent_default();
+                return;
+            }
+        }
         let field = self.event_field(event);
         let shortcut_key = key.modifiers.intersects(Modifiers::META | Modifiers::CTRL | Modifiers::ALT);
         let shortcut = self.services.borrow().shortcut(key);
@@ -564,8 +631,77 @@ impl Driver {
         match handled {
             Ok(true) => event.prevent_default(),
             Err(error) => self.report_error(error),
+            Ok(false) if modal_tab => event.prevent_default(),
             Ok(false) => {}
         }
+    }
+
+    fn with_tree<R>(&self, read: impl FnOnce(&Tree) -> R) -> Option<R> {
+        let app = self.app.try_borrow().ok()?;
+        Some(read(app.as_ref()?.runtime().window(self.window.get()?)?.tree()))
+    }
+
+    fn has_tab_handler(&self, owner: NodeId, key: KeyEvent) -> bool {
+        let Ok(app) = self.app.try_borrow() else { return true };
+        let Some(window) = self.window.get().and_then(|id| app.as_ref()?.runtime().window(id)) else { return true };
+        window.has_shortcut(key) || window.tree().handler(owner, octara::HandlerKind::Key).is_some()
+    }
+
+    fn dom_tab_target(&self, active: &Element, forward: bool, foreign: bool) -> Option<HtmlElement> {
+        if self.document.active_element().as_ref() != Some(active) {
+            return None;
+        }
+        self.with_tree(|tree| {
+            let modal = tree.front_modal()?;
+            let lock = tree.front_focus_layer(FocusTrapFeatures::TAB_LOCK);
+            let focus_lock = tree.front_focus_layer(FocusTrapFeatures::FOCUS_LOCK);
+            let in_scope = |element: &Element| {
+                self.dom.owner(element).is_some_and(|owner| {
+                    tree.is_in_modal_scope(owner, modal)
+                        && lock.is_none_or(|lock| tree.is_in_interaction_scope(owner, lock))
+                        && focus_lock.is_none_or(|lock| tree.is_in_interaction_scope(owner, lock))
+                }) && element.closest("[inert]").ok().flatten().is_none()
+            };
+            if !in_scope(active) {
+                return None;
+            }
+            let elements =
+                self.mount.query_selector_all("a[href],button,input,select,textarea,iframe,summary,[tabindex],[contenteditable]").ok()?;
+            let mut stops = (0..elements.length())
+                .filter_map(|index| elements.item(index)?.dyn_into::<HtmlElement>().ok())
+                .filter(|element| {
+                    element.tab_index() >= 0
+                        && in_scope(element)
+                        && element.matches(":not(:disabled):not([type=hidden])").unwrap_or(false)
+                        && element.get_client_rects().length() > 0
+                        && self
+                            .browser
+                            .get_computed_style(element)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|style| style.get_property_value("visibility").as_deref() == Ok("visible"))
+                })
+                .collect::<Vec<_>>();
+            stops.sort_by_key(|element| (element.tab_index() == 0, element.tab_index()));
+            let position = stops.iter().position(|element| element.is_same_node(Some(active)))?;
+            let mut following = (1..=stops.len()).map_while(|offset| {
+                let next = if forward { position + offset } else { position.checked_sub(offset)? };
+                stops.get(next)
+            });
+            let next = following.next()?;
+            if !foreign {
+                if self.dom.node(next).is_some() {
+                    return None;
+                }
+                // Treat unregistered controls as stops between logical neighbors.
+                let logical = tree.tab_target(forward)?;
+                if following.find_map(|element| self.dom.node(element)).is_some_and(|node| node != logical) {
+                    return None;
+                }
+            }
+            Some(next.clone())
+        })
+        .flatten()
     }
 
     fn dom_selection_node(&self, node: Node) -> Option<NodeId> {

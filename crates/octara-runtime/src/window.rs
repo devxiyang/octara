@@ -18,8 +18,8 @@ use octara_model::native::{NativeEvent, TypedNativeEvent};
 use octara_model::semantics::{A11yAction, TextClip};
 use octara_model::theme::Breakpoint;
 pub use octara_model::window::{
-    SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial,
-    WindowPresentation,
+    StatusBarStyle, SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest,
+    WindowMaterial, WindowPresentation,
 };
 use octara_tree::arbiter::{InteractionArbiter, InteractionPayload, ScrollbarKey};
 use octara_tree::delta::RetiredNode;

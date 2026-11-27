@@ -2,7 +2,7 @@
 
 use super::{AccessibilityWork, Entry, ScopeInput, Staging, node_identity};
 use accesskit as ak;
-use octara_model::identity::TreeId;
+use octara_model::identity::{TargetGuard, TreeId};
 use octara_model::input::HostReply;
 use octara_model::semantics::{A11yAction, TextPosition};
 use octara_runtime::engine::AccessibilityConsumer;
@@ -13,6 +13,21 @@ use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// The metadata of a committed native accessibility tree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AccessibilityContext {
+    pub tree: TreeId,
+    pub modal: Option<ak::NodeId>,
+    pub scale: f32,
+}
+
+/// A platform delta with the scope and scale that were current at its commit.
+pub struct AccessibilityCommit {
+    pub version: u64,
+    pub context: AccessibilityContext,
+    pub update: Arc<ak::TreeUpdate>,
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct AccessPublication(pub(super) Rc<RefCell<Published>>);
@@ -51,7 +66,31 @@ impl AccessPublication {
     }
 
     pub(crate) fn take_platform_updates(&self) -> Vec<(u64, Arc<ak::TreeUpdate>)> {
+        self.take_platform_commits().into_iter().map(|commit| (commit.version, commit.update)).collect()
+    }
+
+    pub(crate) fn take_platform_commits(&self) -> Vec<AccessibilityCommit> {
         self.0.borrow_mut().platform_updates.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    pub(crate) fn context(&self) -> Option<AccessibilityContext> {
+        self.0.borrow().context()
+    }
+
+    pub(crate) fn target(&self, native: ak::NodeId) -> Option<TargetGuard> {
+        let published = self.0.borrow();
+        let node = *published.targets.get(&native)?;
+        let tree = published.tree_id?;
+        published.entries.get(&node)?.exposed.then(|| TargetGuard::for_node(tree, node))
+    }
+
+    pub(crate) fn supports_action(&self, target: TargetGuard, action: ak::Action) -> bool {
+        let published = self.0.borrow();
+        published.tree_id == Some(target.tree)
+            && target
+                .node()
+                .and_then(|node| published.entries.get(&node))
+                .is_some_and(|entry| entry.exposed && !entry.node.is_disabled() && entry.node.supports_action(action))
     }
 
     pub(crate) fn snapshot_full(&self) -> Option<ak::TreeUpdate> {
@@ -111,7 +150,7 @@ impl AccessPublication {
 pub(super) struct Published {
     platform_active: bool,
     inspector_active: bool,
-    platform_updates: Option<Vec<(u64, Arc<ak::TreeUpdate>)>>,
+    platform_updates: Option<Vec<AccessibilityCommit>>,
     pub work: AccessibilityWork,
     pub tree_id: Option<TreeId>,
     pub root: Option<NodeId>,
@@ -149,10 +188,19 @@ impl Published {
 
     pub(super) fn record_platform_update(&mut self, version: u64, update: &Arc<ak::TreeUpdate>) {
         if self.platform_active
+            && let Some(context) = self.context()
             && let Some(updates) = &mut self.platform_updates
         {
-            updates.push((version, update.clone()));
+            updates.push(AccessibilityCommit { version, context, update: update.clone() });
         }
+    }
+
+    fn context(&self) -> Option<AccessibilityContext> {
+        Some(AccessibilityContext {
+            tree: self.tree_id?,
+            modal: self.modal.as_ref().and_then(|scope| scope.modal).map(node_identity),
+            scale: self.scale,
+        })
     }
 
     fn node(&self, native: ak::NodeId) -> Option<NodeId> {
@@ -168,6 +216,7 @@ impl Published {
         let root = staged.root.expect("project before publish");
         let focus = staged.focus.expect("project focus before publish");
         let focus_changed = self.focus != Some(focus);
+        let modal_changed = self.modal.as_ref().and_then(|scope| scope.modal) != staged.modal.as_ref().and_then(|scope| scope.modal);
         let new_tree = self.tree_id != staged.tree_id;
         let tree = (new_tree || self.root != Some(root)).then(|| ak::TreeInfo::new(node_identity(root)));
         if new_tree {
@@ -228,7 +277,7 @@ impl Published {
             }
         }
         nodes.sort_unstable_by_key(|(id, _)| *id);
-        (emit && (!nodes.is_empty() || tree.is_some() || focus_changed)).then(|| ak::TreeUpdate {
+        (emit && (!nodes.is_empty() || tree.is_some() || focus_changed || modal_changed)).then(|| ak::TreeUpdate {
             nodes,
             tree,
             tree_id: ak::TreeId::ROOT,

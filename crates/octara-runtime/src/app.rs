@@ -15,7 +15,9 @@ use octara_model::identity::{NativeId, TreeId, WindowId};
 use octara_model::input::{EditorEvent, HostReply, InteractionEvent, PasteEvent, TextEdit};
 use octara_model::native::{NativeCommand, TypedNativeCommand};
 use octara_model::theme::{ColorScheme, Theme};
-use octara_model::window::{SystemPreferences, UserAttention, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowPresentation};
+use octara_model::window::{
+    StatusBarStyle, SystemPreferences, UserAttention, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowPresentation,
+};
 use octara_tree::NodeId;
 use octara_tree::editor::{EditorSession, EditorState};
 use octara_tree::selection::DocSelection;
@@ -50,20 +52,61 @@ pub enum HostCommand {
     Opened(WindowId),
     Closed(WindowId),
     Menus(Vec<Menu>),
-    Ask { window: WindowId, id: AskId, ask: Ask },
-    WithdrawAsk { window: WindowId, id: AskId },
-    Service { window: WindowId, id: ServiceId, request: ServiceRequest },
-    OpenUrl { url: String },
-    UpdateWindowPresentation { window: WindowId, title: Arc<str>, color_scheme: ColorScheme, material: WindowMaterial },
-    SetAppBadge { badge: Option<Arc<str>> },
-    RequestUserAttention { window: Option<WindowId>, attention: UserAttention },
-    SetWindowGeometry { window: WindowId, geometry: WindowGeometryRequest },
-    FocusWindow { window: WindowId },
-    MinimizeWindow { window: WindowId },
-    ToggleMaximizeWindow { window: WindowId },
-    StartWindowDrag { window: WindowId },
-    NativeCommand { window: WindowId, command: NativeCommand },
-    TypedNativeCommand { window: WindowId, command: TypedNativeCommand },
+    Ask {
+        window: WindowId,
+        id: AskId,
+        ask: Ask,
+    },
+    WithdrawAsk {
+        window: WindowId,
+        id: AskId,
+    },
+    Service {
+        window: WindowId,
+        id: ServiceId,
+        request: ServiceRequest,
+    },
+    OpenUrl {
+        url: String,
+    },
+    UpdateWindowPresentation {
+        window: WindowId,
+        title: Arc<str>,
+        color_scheme: ColorScheme,
+        material: WindowMaterial,
+        status_bar: StatusBarStyle,
+    },
+    SetAppBadge {
+        badge: Option<Arc<str>>,
+    },
+    RequestUserAttention {
+        window: Option<WindowId>,
+        attention: UserAttention,
+    },
+    SetWindowGeometry {
+        window: WindowId,
+        geometry: WindowGeometryRequest,
+    },
+    FocusWindow {
+        window: WindowId,
+    },
+    MinimizeWindow {
+        window: WindowId,
+    },
+    ToggleMaximizeWindow {
+        window: WindowId,
+    },
+    StartWindowDrag {
+        window: WindowId,
+    },
+    NativeCommand {
+        window: WindowId,
+        command: NativeCommand,
+    },
+    TypedNativeCommand {
+        window: WindowId,
+        command: TypedNativeCommand,
+    },
 }
 
 pub(crate) enum AppCommand {
@@ -90,6 +133,7 @@ pub(crate) enum PresentationUpdate {
     Title(Arc<str>),
     Theme(Box<Theme>),
     Material(WindowMaterial),
+    StatusBar(StatusBarStyle),
     All(Box<WindowPresentation>),
 }
 
@@ -99,6 +143,7 @@ impl PresentationUpdate {
             Self::Title(title) => presentation.title = title,
             Self::Theme(theme) => presentation.theme = *theme,
             Self::Material(material) => presentation.material = material,
+            Self::StatusBar(status_bar) => presentation.status_bar = status_bar,
             Self::All(next) => *presentation = *next,
         }
     }
@@ -525,6 +570,11 @@ impl WriteCx<'_> {
 
     pub fn set_window_material(&mut self, material: WindowMaterial) {
         self.update_window_presentation(PresentationUpdate::Material(material));
+    }
+
+    /// Set the iOS status bar style for the current window.
+    pub fn set_window_status_bar(&mut self, status_bar: StatusBarStyle) {
+        self.update_window_presentation(PresentationUpdate::StatusBar(status_bar));
     }
 
     pub fn set_window_presentation(&mut self, presentation: WindowPresentation) {

@@ -6,7 +6,7 @@ use octara_model::semantics::{A11yAction, TextPosition};
 use octara_model::style::{FlexDirection, Length, Overflow, State, StyleProp, When};
 use octara_runtime::engine::AccessibilityConsumer;
 use octara_tree::overlay::LayerPolicy;
-use octara_tree::tables::{AuthoredStyle, SemanticsSlot};
+use octara_tree::tables::{AuthoredStyle, HandlerId, SemanticsSlot};
 use octara_tree::transaction::OverlaySpec;
 use octara_tree::{NodeChange, NodeContent, NodeSpec, Retirement, RuntimeOp};
 
@@ -29,6 +29,7 @@ fn a_z_only_update_changes_the_accessible_modal() {
     let second = tx.create(NodeSpec::new(NodeContent::Box));
     for (index, node) in [first, second].into_iter().enumerate() {
         tx.change(node, NodeChange::Overlay(OverlaySpec { layer: Some(LayerPolicy::modal()), ..Default::default() }));
+        tx.change(node, NodeChange::Handler { kind: HandlerKind::Press, id: Some(HandlerId(index as u64)) });
         tx.change(
             node,
             NodeChange::Style(Box::new(AuthoredStyle {
@@ -44,15 +45,44 @@ fn a_z_only_update_changes_the_accessible_modal() {
     let mut delta = tree.initial_delta();
     delta.merge(mounted);
     let mut projector = Projection::new();
+    let publication = AccessPublication::for_window_host();
+    publication.set_active(AccessibilityConsumer::Inspector, true);
+    projector.access = AccessKitProjector::new(publication.clone());
     projector.publish(&tree, &delta);
-    let published = &projector.access.publication.0;
-    assert_eq!(published.borrow().modal.as_ref().unwrap().modal, Some(second));
+    assert_eq!(publication.context().unwrap().modal, Some(node_identity(second)));
+    assert_eq!(publication.target(node_identity(second)), Some(tree.guard(second)));
+    assert_eq!(publication.target(node_identity(first)), None);
+    assert_eq!(publication.target(node_identity(tree.root())), None);
+    assert!(publication.supports_action(tree.guard(second), ak::Action::Click));
+    assert!(!publication.supports_action(tree.guard(first), ak::Action::Click));
+    assert!(publication.take_platform_commits().is_empty());
 
+    publication.set_active(AccessibilityConsumer::Platform, true);
     let delta = tree.apply_runtime(RuntimeOp::SetState { node: first, state: State::SELECTED, on: true });
     assert!(delta.topology_dirty.is_empty());
     assert_eq!(tree.front_modal(), Some(first));
     projector.publish(&tree, &delta);
-    assert_eq!(projector.access.publication.0.borrow().modal.as_ref().unwrap().modal, Some(first));
+    let context = publication.context().unwrap();
+    assert_eq!(context.modal, Some(node_identity(first)));
+    assert_eq!(context.scale, projector.viewport.scale);
+    assert_eq!(context.tree, tree.id());
+    assert_eq!(publication.target(node_identity(first)), Some(tree.guard(first)));
+    assert_eq!(publication.target(node_identity(second)), None);
+    let commits = publication.take_platform_commits();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].context, context);
+    assert!(publication.supports_action(tree.guard(first), ak::Action::Click));
+    assert!(!publication.supports_action(tree.guard(second), ak::Action::Click));
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(first), NodeChange::Disabled(true));
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    projector.publish(&tree, &delta);
+    assert!(!publication.supports_action(tree.guard(first), ak::Action::Click));
+
+    publication.set_active(AccessibilityConsumer::Platform, false);
+    assert!(publication.snapshot_full().is_some());
+    publication.set_active(AccessibilityConsumer::Inspector, false);
+    assert!(publication.snapshot_full().is_none());
 }
 
 struct Projection {

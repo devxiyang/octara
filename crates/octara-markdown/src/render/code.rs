@@ -176,7 +176,7 @@ fn code_copy(build: &mut BuildCx<'_>, block: &RenderBlock, code: CodeSource, loc
             let text = w.with(code, |code| code.as_ref().map(|code| code.parts().2.to_owned()).unwrap_or_default());
             let slot = action.as_ref().and_then(|action| action.slot(w));
             let renderer = renderer.clone();
-            w.request_service(ServiceRequest::WriteClipboardText { text }, move |w, outcome| {
+            w.request_service(ServiceRequest::WriteClipboard { items: vec![ClipboardItem::Text(text)] }, move |w, outcome| {
                 if outcome != ServiceOutcome::ClipboardWritten {
                     return;
                 }

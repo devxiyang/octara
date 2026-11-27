@@ -82,7 +82,7 @@ fn assert_copied(mounted: &mut Mounted, anchor: TextPosition, focus: TextPositio
     assert!(mounted.a11y("markdown", A11yAction::SetTextSelection { anchor, focus }));
     assert!(mounted.a11y("markdown", A11yAction::CopyTextSelection));
     assert!(mounted.driver.take_host_commands().iter().any(|out| matches!(out,
-        HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. } if text == want
+        HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. } if items.as_slice() == [ClipboardItem::Text(want.into())]
     )));
 }
 
@@ -121,7 +121,8 @@ fn markdown_pointer_selection_copies_source_in_tree_order() {
     let event = InteractionEvent::Key(KeyEvent::new(Key::Char('c'), Modifiers::CTRL));
     assert!(mounted.driver.dispatch(mounted.id, Input::Interaction(event)).unwrap().handled);
     assert!(mounted.driver.take_host_commands().iter().any(|out| matches!(out,
-        HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. } if text == "# Title\n\nFirst **strong**"
+        HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. }
+            if items.as_slice() == [ClipboardItem::Text("# Title\n\nFirst **strong**".into())]
     )));
 }
 
@@ -154,7 +155,8 @@ fn markdown_stream_keeps_completed_blocks_and_formats_copy() {
             .handled
     );
     assert!(mounted.driver.take_host_commands().iter().any(|out| matches!(out,
-        HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. } if text == "let n = 1;"
+        HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. }
+            if items.as_slice() == [ClipboardItem::Text("let n = 1;".into())]
     )));
     assert!(mounted.tree().subtree(mounted.node("markdown")).any(|node| {
         mounted.tree().semantics(node).is_some_and(|sem| sem.live == Some(Live::Polite) && sem.label.as_deref() == Some("First strong"))
@@ -168,8 +170,8 @@ fn markdown_stream_keeps_completed_blocks_and_formats_copy() {
     ));
     assert!(mounted.a11y("markdown", A11yAction::CopyTextSelection));
     assert!(mounted.driver.take_host_commands().iter().any(|out| matches!(out,
-        HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. }
-            if text == "# Title\n\nFirst **strong**"
+        HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. }
+            if items.as_slice() == [ClipboardItem::Text("# Title\n\nFirst **strong**".into())]
     )));
 
     assert!(mounted.a11y(
@@ -181,8 +183,8 @@ fn markdown_stream_keeps_completed_blocks_and_formats_copy() {
     ));
     assert!(mounted.a11y("markdown", A11yAction::CopyTextSelection));
     assert!(mounted.driver.take_host_commands().iter().any(|out| matches!(out,
-        HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. }
-            if text == "strong"
+        HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. }
+            if items.as_slice() == [ClipboardItem::Text("strong".into())]
     )));
 }
 
@@ -652,8 +654,8 @@ fn markdown_callouts_and_code_controls_use_locale_and_theme() {
             .take_host_commands()
             .into_iter()
             .find_map(|command| match command {
-                HostCommand::Service { id, request: ServiceRequest::WriteClipboardText { text }, .. } => {
-                    assert_eq!(text, "a\nb");
+                HostCommand::Service { id, request: ServiceRequest::WriteClipboard { items }, .. } => {
+                    assert_eq!(items, [ClipboardItem::Text("a\nb".into())]);
                     Some(id)
                 }
                 _ => None,

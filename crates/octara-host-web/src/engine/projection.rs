@@ -209,6 +209,13 @@ impl DomEngine {
             if tree.is_live(node)
                 && let Some(element) = self.projected_element(node)
             {
+                let inert = tree.is_inert(node);
+                if self.entries.get(&node).is_some_and(|entry| entry.inert != inert) {
+                    self.remember(node);
+                    self.entries.get_mut(&node).expect("retained semantics").inert = inert;
+                    self.register_indexes(node);
+                    self.pending().inert_dirty = true;
+                }
                 dom::update_semantics(&mut self.pending().undo, &element, tree, node, modal, &modal_ancestors)?;
             }
         }

@@ -3,6 +3,7 @@
 use crate::os::{ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, OsWindow, surface_drawable};
 use crate::presentation::{PendingNativeViews, Presentation};
 use octara::module::{HostSurfaceKind, ModuleDispatcher, NativeViewInstance, NativeViewMounts};
+use octara::runtime::engine::AccessibilityConsumer;
 use octara::runtime::{AppRuntime, WindowId, WindowRuntime};
 use octara::tree::editor::EditorSession;
 use octara::tree::resolve_cursor;
@@ -87,7 +88,7 @@ pub(crate) struct HostWindow {
     pending_module_views: PendingNativeViews<Box<dyn NativeViewInstance>>,
     pub window: Arc<Window>,
     pub os: Box<dyn OsWindow>,
-    pub a11y: accesskit_winit::Adapter,
+    pub a11y: Option<accesskit_winit::Adapter>,
     accessibility: AccessibilityDelivery,
     pub publication: NativePublication,
     pub synchronized: Option<u64>,
@@ -113,7 +114,7 @@ impl HostWindow {
         id: WindowId,
         window: Arc<Window>,
         os: Box<dyn OsWindow>,
-        a11y: accesskit_winit::Adapter,
+        a11y: Option<accesskit_winit::Adapter>,
         surface: Arc<wgpu::Surface<'static>>,
         publication: NativePublication,
         transparent: bool,
@@ -147,7 +148,7 @@ impl HostWindow {
     }
 
     pub fn viewport(&mut self) -> WindowViewport {
-        let size = self.window.inner_size();
+        let size = self.os.surface_size(&self.window);
         let scale = self.window.scale_factor().max(f64::EPSILON) as f32;
         let viewport = WindowViewport {
             size: Size::new(size.width as f32 / scale, size.height as f32 / scale),
@@ -215,7 +216,7 @@ impl HostWindow {
     }
 
     fn size(&self) -> [u32; 2] {
-        let extent = self.window.inner_size();
+        let extent = self.os.surface_size(&self.window);
         [extent.width, extent.height]
     }
 
@@ -339,21 +340,36 @@ impl HostWindow {
         self.request_frame();
     }
 
-    pub fn set_accessibility_active(&mut self, active: bool) {
+    pub fn set_accessibility_active(&mut self, runtime: &WindowRuntime, active: bool) {
+        let was_active = !matches!(self.accessibility, AccessibilityDelivery::Inactive);
+        if active == was_active {
+            return;
+        }
+        runtime.set_accessibility_active(AccessibilityConsumer::Platform, active);
         self.accessibility = if active { AccessibilityDelivery::Requested } else { AccessibilityDelivery::Inactive };
         if active {
             self.synchronize_accessibility();
+        } else if let Some(accessibility) = self.os.accessibility() {
+            accessibility.clear();
         }
     }
 
     fn synchronize_accessibility(&mut self) {
+        if matches!(self.accessibility, AccessibilityDelivery::Inactive) {
+            return;
+        }
+        if let Some(accessibility) = self.os.accessibility() {
+            accessibility.synchronize(&self.publication);
+            return;
+        }
+        let Some(a11y) = &mut self.a11y else { return };
         match self.accessibility {
             AccessibilityDelivery::Inactive => {}
             AccessibilityDelivery::Requested => {
                 if let Some(frame) = self.publication.latest()
                     && let Some(snapshot) = self.publication.snapshot_full()
                 {
-                    self.a11y.update_if_active(|| {
+                    a11y.update_if_active(|| {
                         // The snapshot already includes these committed revisions.
                         self.publication.take_accessibility_updates();
                         self.accessibility = AccessibilityDelivery::Published(frame.number);
@@ -365,7 +381,7 @@ impl HostWindow {
                 // Accessibility consumes each delta even when presentation skips a frame.
                 for (version, update) in self.publication.take_accessibility_updates() {
                     if version > previous {
-                        self.a11y.update_if_active(|| update.as_ref().clone());
+                        a11y.update_if_active(|| update.as_ref().clone());
                         self.accessibility = AccessibilityDelivery::Published(version);
                     }
                 }

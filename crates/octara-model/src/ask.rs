@@ -88,7 +88,7 @@ impl Answer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ServiceId(pub u64);
 
-/// Data offered by the system clipboard. Debug formatting omits private contents.
+/// Data read from or written to the system clipboard. Debug formatting omits private contents.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClipboardItem {
@@ -118,19 +118,20 @@ bitflags::bitflags! {
     }
 }
 
-/// An operation requested from the host. Recorders must omit private transfer data.
+/// An operation requested from the host. A clipboard write offers one batch of items.
+/// Recorders must omit private transfer data.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceRequest {
     ReadClipboard { accept: ClipboardKinds },
-    WriteClipboardText { text: String },
+    WriteClipboard { items: Vec<ClipboardItem> },
 }
 
 impl fmt::Debug for ServiceRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ReadClipboard { accept } => f.debug_struct("ReadClipboard").field("accept", accept).finish(),
-            Self::WriteClipboardText { .. } => f.debug_struct("WriteClipboardText").field("text", &"<redacted>").finish(),
+            Self::WriteClipboard { .. } => f.debug_struct("WriteClipboard").field("items", &"<redacted>").finish(),
         }
     }
 }
@@ -184,6 +185,21 @@ impl std::error::Error for ServiceError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_write_serializes_the_union_and_redacts_debug() {
+        let request = ServiceRequest::WriteClipboard {
+            items: vec![
+                ClipboardItem::Text("private text".into()),
+                ClipboardItem::Image { media_type: "image/png".into(), bytes: vec![17, 23, 42] },
+                ClipboardItem::Files(vec!["/private/file".into()]),
+            ],
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(wire["write_clipboard"]["items"].as_array().unwrap().len(), 3);
+        assert_eq!(serde_json::from_value::<ServiceRequest>(wire).unwrap(), request);
+        assert_eq!(format!("{request:?}"), "WriteClipboard { items: \"<redacted>\" }");
+    }
 
     #[test]
     fn clipboard_text_preserves_payload_types() {

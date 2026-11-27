@@ -32,8 +32,8 @@ pub use octara_model::theme::{
     contrast, linear_color_stop, linear_gradient, over, palette, rgb,
 };
 pub use octara_model::window::{
-    SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial,
-    WindowPresentation,
+    StatusBarStyle, SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest,
+    WindowMaterial, WindowPresentation,
 };
 pub use octara_runtime::graph::{
     delta::{Changes, Cursor},

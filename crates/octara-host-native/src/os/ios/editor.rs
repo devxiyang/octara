@@ -6,14 +6,14 @@ use crate::os::ActiveEditorView;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRange, NSRect, NSSize, NSString, NSValue};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRange, NSRect, NSSize, NSString};
 use objc2_ui_kit::{
-    NSObjectUIAccessibility, NSValueUIGeometryExtensions, UIColor, UIControlEvents, UICoordinateSpace, UIEdgeInsets, UIEvent,
-    UIKeyboardFrameEndUserInfoKey, UIKeyboardType, UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIReturnKeyType,
-    UIScrollViewDelegate, UITextAutocapitalizationType, UITextAutocorrectionType, UITextContentTypeEmailAddress,
-    UITextContentTypeNewPassword, UITextContentTypeOneTimeCode, UITextContentTypePassword, UITextContentTypeTelephoneNumber,
-    UITextContentTypeURL, UITextContentTypeUsername, UITextField, UITextFieldDelegate, UITextInput, UITextInputTraits, UITextPosition,
-    UITextRange, UITextView, UITextViewDelegate, UIView,
+    NSObjectUIAccessibility, UIColor, UIControlEvents, UIEdgeInsets, UIEvent, UIKeyboardDidChangeFrameNotification, UIKeyboardType,
+    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIReturnKeyType, UIScrollViewDelegate,
+    UITextAutocapitalizationType, UITextAutocorrectionType, UITextContentTypeEmailAddress, UITextContentTypeNewPassword,
+    UITextContentTypeOneTimeCode, UITextContentTypePassword, UITextContentTypeTelephoneNumber, UITextContentTypeURL,
+    UITextContentTypeUsername, UITextField, UITextFieldDelegate, UITextInput, UITextInputTraits, UITextPosition, UITextRange, UITextView,
+    UITextViewDelegate, UIView,
 };
 use octara::EditorRope;
 use octara::runtime::Input;
@@ -322,43 +322,20 @@ fn first_rect(geometry: &TextGeometry, start: usize, end: usize) -> Option<Rect>
     Some(Rect::new(geometry.origin.x + left, geometry.origin.y + line.rect.y, right - left, line.rect.h))
 }
 
-struct KeyboardState {
-    frame: Cell<Option<NSRect>>,
-    refresh: Box<dyn Fn()>,
-}
-
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "OctaraKeyboardObserver"]
-    #[ivars = KeyboardState]
+    #[ivars = Box<dyn Fn()>]
     struct KeyboardObserver;
 
     impl KeyboardObserver {
         #[unsafe(method(keyboardChanged:))]
-        fn changed(&self, event: &NSNotification) {
-            let Some(info) = event.userInfo() else { return };
-            // SAFETY: UIKit documents the value for this notification key as a CGRect in an NSValue.
-            let frame = unsafe { info.objectForKey(UIKeyboardFrameEndUserInfoKey) }
-                .and_then(|value| value.downcast::<NSValue>().ok())
-                .map(|value| unsafe { value.CGRectValue() });
-            self.update_frame(frame);
-        }
-
-        #[unsafe(method(keyboardHidden:))]
-        fn hidden(&self, _: &NSNotification) {
-            self.update_frame(None);
+        fn changed(&self, _: &NSNotification) {
+            (self.ivars())();
         }
     }
 );
-
-impl KeyboardObserver {
-    fn update_frame(&self, frame: Option<NSRect>) {
-        if self.ivars().frame.replace(frame) != frame {
-            (self.ivars().refresh)();
-        }
-    }
-}
 
 fn position_byte(input: &(impl UITextInput + Message), text: &EditorRope, position: &UITextPosition) -> usize {
     let beginning = input.beginningOfDocument();
@@ -525,14 +502,15 @@ pub(super) struct TextInput {
 impl TextInput {
     pub(super) fn new(content: Retained<UIView>, wake: impl Fn() + 'static, refresh: impl Fn() + 'static) -> Self {
         let mtm = MainThreadMarker::from(&*content);
-        let state = KeyboardState { frame: Cell::new(None), refresh: Box::new(refresh) };
         // SAFETY: NSObject initialization on the UIKit thread.
-        let observer: Retained<KeyboardObserver> = unsafe { msg_send![super(mtm.alloc::<KeyboardObserver>().set_ivars(state)), init] };
+        let observer: Retained<KeyboardObserver> =
+            unsafe { msg_send![super(mtm.alloc::<KeyboardObserver>().set_ivars(Box::new(refresh))), init] };
         let center = NSNotificationCenter::defaultCenter();
         // SAFETY: UIKit posts these notifications on the main thread and the selector accepts NSNotification.
         unsafe {
             center.addObserver_selector_name_object(&observer, sel!(keyboardChanged:), Some(UIKeyboardWillChangeFrameNotification), None);
-            center.addObserver_selector_name_object(&observer, sel!(keyboardHidden:), Some(UIKeyboardWillHideNotification), None);
+            center.addObserver_selector_name_object(&observer, sel!(keyboardChanged:), Some(UIKeyboardDidChangeFrameNotification), None);
+            center.addObserver_selector_name_object(&observer, sel!(keyboardChanged:), Some(UIKeyboardWillHideNotification), None);
         }
         Self { content, observer, wake: Rc::new(wake), session: None, active: true }
     }
@@ -661,6 +639,10 @@ impl TextInput {
             session.signals.muted.set(true);
             session.editor.view().resignFirstResponder();
             session.editor.view().removeFromSuperview();
+            // UIKit can hand the keyboard back to winit's UIKeyInput view.
+            if self.content.isFirstResponder() {
+                self.content.resignFirstResponder();
+            }
         }
     }
 
@@ -707,25 +689,13 @@ impl TextInput {
         }
     }
 
-    pub(super) fn keyboard_inset(&self) -> f32 {
-        let Some(frame) = self.observer.ivars().frame.get() else { return 0.0 };
-        let Some(window) = self.content.window() else { return 0.0 };
-        let Some(scene) = window.windowScene() else { return 0.0 };
-        let frame = self.content.convertRect_fromCoordinateSpace(frame, &scene.screen().coordinateSpace());
-        let bounds = self.content.bounds();
-        if frame.min().x >= bounds.max().x || frame.max().x <= bounds.min().x || frame.max().y + 0.5 < bounds.max().y {
-            return 0.0;
-        }
-        (bounds.max().y - frame.min().y).clamp(0.0, bounds.size.height) as f32
-    }
-
     pub(super) fn inspect(&self) -> Value {
         json!({
             "allowed": self.session.is_some(),
             "native_focus": self.session.as_ref().is_some_and(|session| session.editor.view().isFirstResponder()),
             "key_window": self.content.window().is_some_and(|window| window.isKeyWindow()),
             "has_marked": self.session.as_ref().is_some_and(|session| session.expected.marked.is_some()),
-            "keyboard_inset": self.keyboard_inset(),
+            "keyboard_inset": super::scene::keyboard_inset(&self.content),
         })
     }
 }

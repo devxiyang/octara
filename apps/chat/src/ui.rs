@@ -777,7 +777,7 @@ fn transcript_text(message: &Message) -> String {
 fn copy_message(chat: Chat, id: MessageId, label: &str, toasts: ToastQueue<String>) -> El {
     icon_button(icons::COPY, label).test_id(format!("copy-{id}")).on_press(move |w| {
         if let Some(text) = w.with_row(chat.messages, &id, |m| m.map(Message::text)) {
-            w.request_service(ServiceRequest::WriteClipboardText { text }, move |w, outcome| {
+            w.request_service(ServiceRequest::WriteClipboard { items: vec![ClipboardItem::Text(text)] }, move |w, outcome| {
                 let message =
                     if outcome == ServiceOutcome::ClipboardWritten { "Copied to clipboard" } else { "Couldn’t copy to clipboard" };
                 toasts.push(w, message.into(), ToastOptions::default());

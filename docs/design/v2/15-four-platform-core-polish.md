@@ -98,7 +98,7 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
    - Sync `WindowPresentation.title` → `document.title` and `WindowPresentation.theme` background → `<meta name="theme-color">` (creating/updating the tag cleanly).
    - Wire `window` `beforeunload` to the window's `on_close_request` handler (calling `preventDefault()` / setting `returnValue` when the handler returns `false`).
 3. **Multimodal Clipboard Write**:
-   - Extend `ServiceRequest::WriteClipboard(Vec<ClipboardItem>)` (replacing text-only `WriteClipboardText`, keeping zero dual-track) so both Native (`NSPasteboard` / Linux clipboard) and Web (`navigator.clipboard.write([new ClipboardItem(...)])`) can write text and PNG images cleanly.
+   - Use `ServiceRequest::WriteClipboard { items: Vec<ClipboardItem> }` to write text and PNG images through the native and Web clipboard APIs. On Web, publish both formats as representations of a single browser `ClipboardItem`. A host that lacks support for the requested combination reports `ServiceError::Unavailable`.
 4. **Complete Modal ARIA Focus Trap & `inert`**:
    - When an overlay with `LayerPolicy { inert_outside: true, focus_trap, .. }` is mounted in `DomEngine`, set the native HTML `inert` attribute on occluded sibling roots, lock `Tab`/`Shift+Tab` inside the modal subtree, and restore focus to the opener upon dismiss (matching Native `LayerPolicy` 100%).
 
@@ -182,7 +182,7 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
 
 ### Wave B — P0 120Hz `CADisplayLink` Pacing, Input Coalescing, Scroll Hot-Path & iOS/Web Closure
 - Implement **C7** (monotonic GPU presentation without `Retry(+16ms)` cascade, replace `CAMetalDisplayLink` with unified macOS/iOS `CADisplayLink` + adaptive `CAFrameRateRange` ProMotion + `targetTimestamp` scanout sampling + screen-tracking + ~120 ms idle grace window + on-demand drawable acquisition, causal VSync `MouseWheel`/`CursorMoved` coalescing + real `WheelPhase`, Release profiling & optimization of `SetScroll` / `virtual_each` + `octara-markdown` / bulk switch, plus automated overlapping-input pacing regression test).
-- Implement **C3** (iOS `UIAccessibility` VoiceOver bridge, `StatusBarStyle`, safe-area/rotation verification) and **C4** (Web `visualViewport` keyboard inset, `document.title`/`theme-color`, `beforeunload`, unified `WriteClipboard(Vec<ClipboardItem>)`, ARIA `inert` focus trap).
+- Implement **C3** (iOS `UIAccessibility` VoiceOver bridge, `StatusBarStyle`, safe-area/rotation verification) and **C4** (Web `visualViewport` keyboard inset, `document.title`/`theme-color`, `beforeunload`, unified `WriteClipboard`, ARIA `inert` focus trap).
 
 ### Wave C — Desktop Drag-Out, Window Levels/Panels, Linux Polish & Airspace `SnapshotOnOcclude`
 - Implement **C5** (macOS/Web Drag Out, `WindowLevel` / `NSPanel`, Linux Wayland IME/HiDPI/XDG Portal) and **C6-part** (`AirspacePolicy::SnapshotOnOcclude`).

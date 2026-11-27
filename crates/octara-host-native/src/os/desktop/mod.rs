@@ -2,6 +2,8 @@
 
 mod ime;
 #[cfg(target_os = "linux")]
+mod linux_clipboard;
+#[cfg(target_os = "linux")]
 mod linux_preferences;
 mod services;
 #[cfg(target_os = "windows")]
@@ -13,7 +15,7 @@ use crate::os::{ActiveEditorView, OsHost, OsWindow, OsWindowContext, ServiceClea
 use ime::WinitIme;
 use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::Input;
-use octara_model::ask::{ServiceId, ServiceRequest};
+use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError, ServiceId, ServiceRequest};
 use octara_model::geometry::Point;
 use octara_model::input::{EditorEvent, GestureEvent, HostReply, Modifiers};
 use octara_model::paint::Image;
@@ -113,12 +115,12 @@ impl OsHost for DesktopHost {
         let _ = open::that_detached(url);
     }
 
-    fn read_clipboard(&mut self, accept: octara_model::ask::ClipboardKinds) -> Option<Vec<octara_model::ask::ClipboardItem>> {
+    fn read_clipboard(&mut self, accept: ClipboardKinds) -> Option<Vec<ClipboardItem>> {
         self.clipboard.with_native(|native| services::read_clipboard(native, accept))?.ok()
     }
 
-    fn write_clipboard_text(&mut self, text: &str) {
-        let _ = self.clipboard.with_native(|clipboard| clipboard.set_text(text));
+    fn write_clipboard(&mut self, items: &[ClipboardItem]) -> Result<(), ServiceError> {
+        self.clipboard.write(items)
     }
 
     fn write_clipboard_image(&mut self, image: &Image) {

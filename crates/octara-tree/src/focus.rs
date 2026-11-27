@@ -87,6 +87,11 @@ impl Tree {
         self.front_layer(modal, |_, layer| layer.focus_trap.contains(feature))
     }
 
+    /// The front layer in modal scope that enables the requested focus feature.
+    pub fn front_focus_layer(&self, feature: FocusTrapFeatures) -> Option<NodeId> {
+        self.focus_layer(self.front_modal(), feature)
+    }
+
     pub fn is_layer_focus_container(&self, node: NodeId) -> bool {
         self.overlay(node).and_then(|slot| slot.layer).is_some_and(|layer| {
             layer.focus_trap.intersects(FocusTrapFeatures::INITIAL_FOCUS | FocusTrapFeatures::AUTO_FOCUS | FocusTrapFeatures::TAB_LOCK)
@@ -185,12 +190,17 @@ impl Tree {
 
     /// The next Tab stop. A layer wraps traversal only when it has a Tab lock.
     pub fn tab_target(&self, forward: bool) -> Option<NodeId> {
-        let focused = self.focus();
+        self.tab_target_from(self.focus(), forward)
+    }
+
+    /// Finds the next logical Tab stop from a host focus target. `None` enters
+    /// the sequence in the requested direction, including from platform-owned controls.
+    pub fn tab_target_from(&self, from: Option<NodeId>, forward: bool) -> Option<NodeId> {
         let modal = self.front_modal();
         let tab_lock = self.focus_layer(modal, FocusTrapFeatures::TAB_LOCK);
         let focus_lock = self.focus_layer(modal, FocusTrapFeatures::FOCUS_LOCK);
         let order: Vec<_> = self
-            .focus_order(tab_lock.or(focus_lock).or(modal), focused)
+            .focus_order(tab_lock.or(focus_lock).or(modal), self.focus())
             .into_iter()
             .filter(|&node| {
                 modal.is_none_or(|modal| self.is_in_modal_scope(node, modal))
@@ -201,7 +211,7 @@ impl Tree {
             return tab_lock.filter(|&node| self.is_focusable(node));
         }
         let wraps = tab_lock.is_some() || !self.manages_tab();
-        let position = focused.and_then(|focus| order.iter().position(|&id| id == focus));
+        let position = from.and_then(|focus| order.iter().position(|&id| id == focus));
         match (position, forward) {
             (Some(position), true) => order.get(position + 1).or_else(|| order.first().filter(|_| wraps)).copied(),
             (Some(position), false) if position > 0 => order.get(position - 1).copied(),

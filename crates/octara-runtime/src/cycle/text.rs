@@ -262,7 +262,8 @@ impl AppRuntime {
                     return false;
                 }
                 let Some(text) = window.copy_selection(&mut self.world, region) else { return false };
-                self.write(window.scope, id).request_service(ServiceRequest::WriteClipboardText { text }, |_, _| {});
+                self.write(window.scope, id)
+                    .request_service(ServiceRequest::WriteClipboard { items: vec![ClipboardItem::Text(text)] }, |_, _| {});
                 true
             }
             _ => false,
@@ -306,12 +307,15 @@ impl AppRuntime {
                 'c' | 'x' => {
                     let Some(text) = editor.clipboard_text().map(str::to_owned) else { return true };
                     let scope = window.scope;
-                    self.write(scope, id).request_service(ServiceRequest::WriteClipboardText { text }, move |cx, outcome| {
-                        if command == 'x' && outcome == ServiceOutcome::ClipboardWritten {
-                            let event = insert(String::new(), Some(ordered));
-                            cx.commands().queued.push_back(AppCommand::EditorEdit { window: id, event });
-                        }
-                    });
+                    self.write(scope, id).request_service(
+                        ServiceRequest::WriteClipboard { items: vec![ClipboardItem::Text(text)] },
+                        move |cx, outcome| {
+                            if command == 'x' && outcome == ServiceOutcome::ClipboardWritten {
+                                let event = insert(String::new(), Some(ordered));
+                                cx.commands().queued.push_back(AppCommand::EditorEdit { window: id, event });
+                            }
+                        },
+                    );
                     return true;
                 }
                 _ => return false,

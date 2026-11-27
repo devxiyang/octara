@@ -85,7 +85,7 @@ fn headless_editor_fallback_keeps_unicode_selections_and_clipboard_edits() {
     key(app, window, Key::Char('c'), Modifiers::META);
     assert!(app.runtime_mut().take_host_commands().iter().any(|command| matches!(
         command,
-        HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. } if text == "🚀"
+        HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. } if items.as_slice() == [ClipboardItem::Text("🚀".into())]
     )));
     key(app, window, Key::End, Modifiers::empty());
     key(app, window, Key::Left, Modifiers::CTRL);
@@ -97,12 +97,18 @@ fn headless_editor_fallback_keeps_unicode_selections_and_clipboard_edits() {
     key(app, window, Key::Delete, Modifiers::empty());
     assert_eq!(value(app), "🚀 文");
     key(app, window, Key::Char('a'), Modifiers::CTRL);
-    key(app, window, Key::Char('x'), Modifiers::CTRL);
-    let cut = app.runtime_mut().take_host_commands().into_iter().find_map(|command| match command {
-        HostCommand::Service { id, request: ServiceRequest::WriteClipboardText { text }, .. } if text == "🚀 文" => Some(id),
-        _ => None,
-    });
-    app.dispatch(window, Input::Host(HostReply::ServiceReply { id: cut.unwrap(), outcome: ServiceOutcome::ClipboardWritten })).unwrap();
+    for outcome in [ServiceOutcome::Error(ServiceError::Denied), ServiceOutcome::ClipboardWritten] {
+        key(app, window, Key::Char('x'), Modifiers::CTRL);
+        let cut = app.runtime_mut().take_host_commands().into_iter().find_map(|command| match command {
+            HostCommand::Service { id, request: ServiceRequest::WriteClipboard { items }, .. } => {
+                assert_eq!(items, [ClipboardItem::Text("🚀 文".into())]);
+                Some(id)
+            }
+            _ => None,
+        });
+        assert_eq!(value(app), "🚀 文");
+        app.dispatch(window, Input::Host(HostReply::ServiceReply { id: cut.unwrap(), outcome })).unwrap();
+    }
     assert_eq!(value(app), "");
     key(app, window, Key::Char('v'), Modifiers::CTRL);
     let paste = app.runtime_mut().take_host_commands().into_iter().find_map(|command| match command {
@@ -350,7 +356,8 @@ fn selectable_document_keeps_tree_order_and_pauses_selection_rendering_when_inac
     key(&mut app, window, Key::Char('c'), Modifiers::META);
     assert!(app.runtime_mut().take_host_commands().iter().any(|command| matches!(
         command,
-        HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. } if text == "first\nsecond"
+        HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. }
+            if items.as_slice() == [ClipboardItem::Text("first\nsecond".into())]
     )));
 
     let target = app.runtime().window(window).unwrap().tree().guard(editor);

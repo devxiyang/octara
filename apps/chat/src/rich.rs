@@ -151,7 +151,7 @@ fn transit_code(code: ReadSignal<Arc<str>>, complete: ReadSignal<bool>) -> El {
         .disabled(move |r: &mut ReadCx<'_>| !r.get(complete))
         .on_press(move |w| {
             let text = w.with(code, |code| code.to_string());
-            w.request_service(ServiceRequest::WriteClipboardText { text }, |_, _| {});
+            w.request_service(ServiceRequest::WriteClipboard { items: vec![ClipboardItem::Text(text)] }, |_, _| {});
         });
     panel("Radius calculation · Rust", icons::CODE, copy).child(
         text(move |r: &mut ReadCx<'_>| r.with(code, |code| code.to_string()))

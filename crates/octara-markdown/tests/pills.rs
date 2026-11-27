@@ -73,7 +73,8 @@ fn metadata_updates_link_presentation_without_changing_its_destination() {
         assert!(driver.dispatch(window, Input::Host(HostReply::AccessibilityAction { target, action })).unwrap().handled);
     }
     assert!(driver.take_host_commands().iter().any(|command| {
-        matches!(command, HostCommand::Service { request: ServiceRequest::WriteClipboardText { text }, .. } if text == URL)
+        matches!(command, HostCommand::Service { request: ServiceRequest::WriteClipboard { items }, .. }
+            if items.as_slice() == [ClipboardItem::Text(URL.into())])
     }));
 
     driver

@@ -125,6 +125,31 @@ fn system_preferences_are_initialized_and_shared_reactively() {
 }
 
 #[test]
+fn a_host_close_check_returns_its_guard_without_closing_the_window() {
+    let (mut app, _) = app();
+    let request_count = app.build(|build| build.signal(0_u32)).unwrap();
+    let window = app
+        .open_window(WindowOptions::default(), move |build| {
+            build.on_close_request(move |write| {
+                let next = write.get(request_count) + 1;
+                write.set(request_count, next);
+                next > 1
+            });
+            text(move |read: &mut ReadCx<'_>| read.get(request_count).to_string()).test_id("close-count")
+        })
+        .unwrap();
+    let runtime = app.runtime_mut();
+    runtime.take_host_commands();
+    assert!(runtime.has_window_close_request(window));
+    assert!(!runtime.check_window_close(window).unwrap());
+    assert!(runtime.check_window_close(window).unwrap());
+    runtime.settle().unwrap();
+    let tree = runtime.window(window).unwrap().tree();
+    assert_eq!(&*tree.text(tree.test_ids("close-count")[0]).unwrap().text, "2");
+    assert!(runtime.take_host_commands().is_empty());
+}
+
+#[test]
 fn close_requests_can_be_vetoed_confirmed_or_allowed() {
     let (mut app, _) = app();
     let pending = app.build(|build| build.signal(None)).unwrap();

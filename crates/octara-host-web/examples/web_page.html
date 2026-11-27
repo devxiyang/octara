@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#112233">
+<title>Octara browser page regression</title>
+<body data-result="waiting">
+<button id="activate">Enable navigation</button>
+<div id="mount" style="width: 500px; height: 250px"></div>
+<output></output>
+<script type="module">
+import init, { PageFixture } from "./web_page.js";
+
+const require = (condition, message) => {
+    if (!condition) throw new Error(message);
+};
+const until = async (condition, message) => {
+    const stop = performance.now() + 1500;
+    while (!condition()) {
+        require(performance.now() < stop, message);
+        await new Promise(resolve => setTimeout(resolve, 16));
+    }
+};
+const unqualified = () => document.querySelectorAll('meta[name="theme-color"]:not([media])');
+const mount = document.getElementById("mount");
+const output = document.querySelector("output");
+
+try {
+    await init();
+    const fixture = new PageFixture(mount);
+    require(document.title === "Initial page title", "the initial title was not projected");
+    require(unqualified().length === 1 && unqualified()[0].content === "#285480ff", "the default theme tag was not created");
+    require(document.querySelector('meta[name="theme-color"]').content === "#285480ff", "an authored media tag took precedence");
+    fixture.update_chrome();
+    require(document.title === "Updated page title", "the updated title was not projected");
+    require(unqualified().length === 1 && unqualified()[0].content === "#713251ff", "the updated background was not projected");
+
+    const viewport = window.visualViewport;
+    const setViewport = (height, offsetTop, event) => {
+        Object.defineProperties(viewport, {
+            height: { configurable: true, value: height },
+            offsetTop: { configurable: true, value: offsetTop },
+        });
+        viewport.dispatchEvent(new Event(event));
+    };
+    setViewport(innerHeight - 128, 20, "resize");
+    await until(() => fixture.keyboard_inset() === 108, "visual viewport resize did not settle the keyboard inset");
+    setViewport(innerHeight - 128, 41, "scroll");
+    await until(() => fixture.keyboard_inset() === 87, "visual viewport scroll did not settle the keyboard inset");
+    setViewport(innerHeight + 20, 0, "resize");
+    await until(() => fixture.keyboard_inset() === 0, "keyboard inset did not clamp to zero");
+    delete viewport.height;
+    delete viewport.offsetTop;
+
+    fixture.free();
+    require(unqualified().length === 0, "the app-owned meta tag was not removed");
+    const authorMeta = document.createElement("meta");
+    authorMeta.name = "theme-color";
+    authorMeta.content = "#abcdef";
+    document.head.prepend(authorMeta);
+    const next = new PageFixture(mount);
+    require(unqualified().length === 1 && authorMeta.content === "#285480ff", "the authored meta tag was not reused");
+    window.finishPageFixture = () => {
+        next.free();
+        require(authorMeta.content === "#abcdef", "the authored meta value was not restored");
+        document.body.dataset.result = "passed";
+        output.value = "Octara browser page regression passed.";
+    };
+    window.pageFixture = next;
+    document.body.dataset.result = "ready";
+} catch (error) {
+    document.body.dataset.result = "failed";
+    output.value = String(error);
+    throw error;
+}
+</script>

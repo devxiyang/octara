@@ -4,6 +4,7 @@ mod assets;
 mod editor;
 mod exit;
 mod geometry;
+mod layers;
 mod projection;
 mod reveal;
 
@@ -15,13 +16,14 @@ use octara::runtime::engine::{CommitOutput, HostEngine, ProjectError, ProjectFee
 use octara::tree::{NodeFlags, NodeId, Tree, TreeDelta};
 use octara_model::geometry::{LayoutBox, Point, Rect, WindowViewport};
 use octara_model::input::ContactTarget;
+use octara_model::overlay::FocusTrapFeatures;
 use octara_model::paint::{NodeIcon, Sample};
 use octara_model::semantics::TextClip;
 use octara_model::style::State;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{Document, HtmlCanvasElement, HtmlElement};
+use web_sys::{Document, Element, HtmlCanvasElement, HtmlElement};
 
 #[derive(Clone, Default)]
 struct EntryState {
@@ -42,6 +44,7 @@ struct EntryState {
     bounds_demand: bool,
     scrollport: bool,
     text_clip: Option<TextClip>,
+    inert: bool,
 }
 
 #[derive(Clone)]
@@ -66,6 +69,11 @@ struct Pending {
     viewport: Option<WindowViewport>,
     modal: Option<NodeId>,
     focus: Option<NodeId>,
+    active_before: Option<Element>,
+    focused_in_modal: bool,
+    preserve_dom_focus: bool,
+    modal_scope: Option<layers::ModalScope>,
+    inert_dirty: bool,
     keyboard_focus: Option<NodeId>,
     reduced_motion: Option<bool>,
     inline_pixel_generation: Option<u64>,
@@ -109,6 +117,9 @@ pub struct DomEngine {
     pending: Option<Pending>,
     viewport: Option<WindowViewport>,
     modal: Option<NodeId>,
+    layer_dom: layers::LayerDom,
+    focus: Option<NodeId>,
+    authored_inert: FxHashSet<NodeId>,
     keyboard_focus: Option<NodeId>,
     frame: u64,
     reveals: FxHashMap<NodeId, octara_model::motion::TextRevealTrack>,
@@ -163,6 +174,9 @@ impl DomEngine {
             pending: None,
             viewport: None,
             modal: None,
+            layer_dom: layers::LayerDom::default(),
+            focus: None,
+            authored_inert: FxHashSet::default(),
             keyboard_focus: None,
             frame: 0,
             reveals: FxHashMap::default(),
@@ -205,6 +219,7 @@ impl DomEngine {
 
     fn register_indexes(&mut self, node: NodeId) {
         let entry = self.entries.get(&node);
+        set_member(&mut self.authored_inert, node, entry.is_some_and(|entry| entry.inert));
         set_member(&mut self.demands, node, entry.is_some_and(|entry| entry.bounds_demand));
         set_member(&mut self.scrollports, node, entry.is_some_and(|entry| entry.scrollport));
         set_member(
@@ -232,7 +247,12 @@ impl DomEngine {
 
     fn project_round(&mut self, tree: &Tree, delta: &TreeDelta, viewport: WindowViewport, now: f64) -> Result<ProjectFeedback, JsValue> {
         if self.pending.is_none() {
-            self.pending = Some(Pending::default());
+            let active_before = self.document.active_element();
+            let focused_in_modal = self.modal.is_some()
+                && active_before
+                    .as_ref()
+                    .is_some_and(|active| self.surface.contains(Some(active)) && active.closest("[inert]").ok().flatten().is_none());
+            self.pending = Some(Pending { active_before, focused_in_modal, ..Pending::default() });
         }
         let resized = self.dom.take_resized();
         self.pending().observed.extend(resized.iter().copied());
@@ -260,6 +280,31 @@ impl DomEngine {
         let mut feedback = ProjectFeedback::default();
         let exits = self.capture_exits(tree, delta, now);
         let (created, moved) = self.patch_structure(tree, delta, exits, &mut feedback)?;
+        let replaced_inert = created.iter().any(|node| self.authored_inert.contains(node));
+        self.pending().inert_dirty |= replaced_inert;
+        let scope_changed = modal_changed
+            || (modal.is_some()
+                && (!created.is_empty()
+                    || !delta.retired.is_empty()
+                    || !delta.topology_dirty.is_empty()
+                    || !delta.overlay_dirty.is_empty()));
+        if scope_changed {
+            self.pending().modal_scope = Some(layers::ModalScope::new(tree, modal));
+        }
+        let preserve_dom_focus = self.pending.as_ref().and_then(|pending| pending.active_before.as_ref()).is_some_and(|active| {
+            self.dom.node(active).is_none()
+                && self.focus == tree.focus()
+                && modal.is_none_or(|modal| {
+                    self.dom.owner(active).is_some_and(|owner| {
+                        tree.is_in_modal_scope(owner, modal)
+                            && !tree.is_inert(owner)
+                            && tree
+                                .front_focus_layer(FocusTrapFeatures::FOCUS_LOCK)
+                                .is_none_or(|lock| tree.is_in_interaction_scope(owner, lock))
+                    })
+                })
+        });
+        self.pending().preserve_dom_focus = preserve_dom_focus;
         let mut styles = self.patch_semantics(tree, delta, &created, &moved, modal_changed)?;
         let last_reduced_motion = self.pending().reduced_motion.unwrap_or(self.published_reduced_motion);
         if last_reduced_motion != self.reduced_motion {
@@ -314,18 +359,25 @@ impl HostEngine for DomEngine {
         }
         let mut pending = self.pending.take().expect("an open DOM projection");
         pending.undo.clear();
-        for node in pending.retired {
+        for &node in &pending.retired {
             self.exits.remove(&node);
             self.dom.remove(node);
             self.entries.remove(&node);
             self.register_indexes(node);
         }
-        for node in pending.created {
+        for &node in &pending.created {
             self.dom.observe(node);
         }
         self.fallback_focus = None;
+        let openers = self.publish_layer_dom(&mut pending);
         let active = self.document.active_element();
-        if let Some(next) = pending.focus.and_then(|node| self.dom.element(node)) {
+        if openers
+            .into_iter()
+            .any(|opener| undo::focus(&opener).is_ok() && self.document.active_element().as_ref() == Some(opener.as_ref()))
+            || (pending.preserve_dom_focus && active.is_some() && active == pending.active_before)
+        {
+            // The focused control is owned by the page or by a typed view.
+        } else if let Some(next) = pending.focus.and_then(|node| self.dom.element(node)) {
             if active.as_ref() != Some(next.as_ref()) && active.as_ref().and_then(dom::native_view_host).as_ref() != Some(next.as_ref()) {
                 let _ = undo::focus(&next);
                 if let Some(selection) = pending.focus.and_then(|node| self.entries.get(&node)?.rich_selection) {
@@ -334,7 +386,7 @@ impl HostEngine for DomEngine {
             }
         } else if let Some(active) = active.and_then(|active| active.dyn_into::<HtmlElement>().ok())
             && self.surface.contains(Some(&active))
-            && dom::native_view_host(&active).is_none()
+            && (self.dom.node(&active).is_some() || pending.modal.is_some())
         {
             let _ = active.blur();
         }
@@ -342,6 +394,7 @@ impl HostEngine for DomEngine {
         self.publish_reveals(pending.reveals);
         self.viewport = pending.viewport;
         self.modal = pending.modal;
+        self.focus = pending.focus;
         self.keyboard_focus = pending.keyboard_focus;
         if let Some(reduced_motion) = pending.reduced_motion {
             self.published_reduced_motion = reduced_motion;

@@ -64,6 +64,10 @@ impl DomHandle {
         self.0.entries.borrow().contains_key(&id).then_some(id)
     }
 
+    pub fn owner(&self, element: &Element) -> Option<NodeId> {
+        std::iter::successors(Some(element.clone()), |element| element.parent_element()).find_map(|element| self.node(&element))
+    }
+
     pub fn target(&self, tree: &Tree, element: &JsValue) -> Option<ContactTarget> {
         let node = self.node(element).filter(|&node| tree.is_live(node))?;
         let action = self.0.entries.borrow().get(&node)?.action.filter(|&action| tree.is_live(action));
@@ -278,7 +282,6 @@ pub(crate) fn update_semantics(
     set!("data-octara-id", tree.provenance(node).and_then(|source| source.test_id.as_deref()))?;
     set!("data-octara-action", tree.has_activation_handler(node).then_some(""))?;
     set!("data-octara-preserve-focus", core.flags.contains(NodeFlags::PRESERVE_FOCUS).then_some(""))?;
-    set!("inert", inert.then_some(""))?;
     set!("aria-hidden", (inert || core.flags.contains(NodeFlags::HIDDEN)).then_some("true"))?;
     set!("aria-disabled", (expose && disabled).then_some("true"))?;
     set!("aria-modal", (modal == Some(node)).then_some("true"))?;
