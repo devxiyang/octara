@@ -50,16 +50,20 @@
 
 ---
 
-### `0.0.10` — Zero-`winit` Direct Native Hosts, Zero-`TaffyTree` ECS Layout Kernel & Tier-1 Core Closure *(In Progress)*
-- **Specs**: [15 — Tier-1 Core Closure](v2/15-four-platform-core-polish.md) (C3–C6), [17 — Direct Native Platform Hosts (Zero `winit` Architecture)](v2/17-native-platform-hosts-without-winit.md) & [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture)](v2/18-native-layout-and-spatial-kernel.md)
+### `0.0.10` — Zero-`winit` Direct Native Hosts, Zero-`TaffyTree` ECS Layout Kernel, Unified Native IME & Tier-1 Closure *(In Progress)*
+- **Specs**: [15 — Tier-1 Core Closure](v2/15-four-platform-core-polish.md) (C3–C6), [17 — Direct Native Platform Hosts (Zero `winit` Architecture)](v2/17-native-platform-hosts-without-winit.md), [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture)](v2/18-native-layout-and-spatial-kernel.md) & [19 — Unified Native IME, Text Editing & Clipboard Hygiene](v2/19-unified-native-ime-and-text-editing.md)
 - **Scope**:
   1. **iOS & Web Production Closure (C3 + C4, Wave B2 — Done)**: iOS `UIAccessibility` VoiceOver bridge + `StatusBarStyle` + scene-local keyboard layout; Web `visualViewport`, `document.title`/`theme-color`, `beforeunload`, unified multimodal `WriteClipboard`, and modal ARIA focus trap + `inert`.
-  2. **100% `winit` & `accesskit_winit` Removal (Waves D1–D2)**: Pure platform-neutral `OsHost` / `OsWindow` / `PlatformEvent` SPI in `octara-host-native`; direct macOS `15.4+` AppKit host (`NSApplication` / `NSWindow` / `NSPanel` / `NSTextInputClient` / `accesskit_macos`), direct iOS `18.4+` UIKit host (`UIApplicationMain` / `UIWindowSceneDelegate` / `UIViewController`), and direct Linux Wayland (`smithay-client-toolkit`, `zwp_text_input_v3`, `zwp_pointer_gestures_v1`, `wp_fractional_scale_v1`, `wl_data_device`, XDG Portal) + X11 (`x11rb`) host.
+  2. **100% `winit` & `accesskit_winit` Removal (Waves D1 Done, D2 Running)**: Pure platform-neutral `OsHost` / `OsWindow` / `PlatformEvent` SPI in `octara-host-native`; direct macOS `15.4+` AppKit host (`NSApplication` / `NSWindow` / `NSPanel` / `NSTextInputClient` / `accesskit_macos`), direct iOS `18.4+` UIKit host (`UIApplicationMain` / `UIWindowSceneDelegate` / `UIViewController`), and direct Linux Wayland (`smithay-client-toolkit`, `zwp_text_input_v3`, `zwp_pointer_gestures_v1`, `wp_fractional_scale_v1`, `wl_data_device`, XDG Portal) + X11 (`x11rb`) host.
   3. **Desktop Drag-Out, Window Levels/Panels & Airspace Closure (C5 + C6, Wave D2)**: `DragItem` / `el.on_drag_start` (`NSDraggingSession`, Web `DataTransfer`, Linux `wl_data_device`), `WindowLevel` + native macOS `NSPanel`, and `AirspacePolicy::SnapshotOnOcclude`.
   4. **Zero-`TaffyTree` Native ECS Layout & Spatial Kernel (Wave D3)**:
-     - **Delete `TaffyTree` completely** (`taffy_tree` feature removed); build Octara's hot/cold SoA `LayoutKernel` (`8 B` `LayoutMeta` + dense `SecondaryMap` + `DenseProjected` rollback journal) implementing Taffy's zero-copy `LayoutPartialTree` / `LayoutContainingBlock` / `LayoutFlexboxContainer` / `LayoutGridContainer` traits directly over `octara-tree` and interned `Arc<ResolvedStyle>`, with O(1) leaf/hidden fast paths and zero `FxHashMap` fragmentation.
+     - **Delete `TaffyTree` completely** (`taffy_tree` feature removed); build Octara's hot/cold SoA `LayoutKernel` (`8 B` `LayoutMeta` + dense `SecondaryMap` + shared `DenseProjected` rollback journal across `layout`/`text`/`paint`/`a11y`) implementing Taffy's zero-copy `LayoutPartialTree` / `LayoutContainingBlock` / `LayoutFlexboxContainer` / `LayoutGridContainer` traits directly over `octara-tree` and interned `Arc<ResolvedStyle>`, with O(1) leaf/hidden fast paths and zero `FxHashMap` fragmentation.
      - **Mathematically Sound Dual-Layer `RelayoutBoundary` + Cross-Platform `Contain`**: Zero-config automatic tight-box+clipped boundaries + first-class W3C `Contain::LAYOUT | SIZE | PAINT` (projected to native containment and Web CSS `contain`), plus isolated anchored overlay layout roots and automatic escalation.
      - **Rigid-Body `local_changed()` vs `world_changed()` Separation + Epoch-Pruned Projection + Lazy/Incremental `FlatTree` + Content-Addressed `Shape` Probe Cache + `check_layout_cache` Oracle**: Eliminate full-window `collect_frames`, eager spatial rebuilds, and streaming-growth sibling cascades (`1,832 → <= 16` geometry visits on 160-row hover; 0 sibling text/a11y re-projections on rigid-body row shifts; 0.00 ms spatial work on non-pointer frames), verified bit-for-bit against cold full-tree layout in DST.
+  5. **Unified Native IME, Text Editing & Clipboard Hygiene (Wave D4)**:
+     - Collapse `winit`-era duplicate `EditorEvent` variants into minimal orthogonal `Edit` / `Select` / `Command(EditorCommand)` / `KeyIntercept` (with `TextEdit::DeleteSurrounding` and CJK `MarkedClause` underlines) and execute every `EditorCommand` in one shared `octara-tree`/`octara-runtime` path.
+     - Extract one platform-neutral `HostTextBridge` in `octara-host-native` (shared `EditorMirror`, optimistic prediction reconciliation, UTF-8↔UTF-16 mapping, 4000 B Wayland `surrounding_text`, `TextGeometry` queries), deleting duplicated per-platform shadow state machines (`os/ios/draft.rs` & AppKit command duplication) and enforcing the deterministic 4-tier key routing law.
+     - Delete dead `arboard` dependency workspace-wide (every Tier-1 platform uses native OS clipboard directly).
 
 ---
 
@@ -77,7 +81,7 @@
 ---
 
 ### `0.0.12` — Complex Components, Modern Graphics, `WebKitGTK` & Advanced Hardware Modules
-- **Planned Spec**: `v2/19-components-graphics-and-hardware-modules.md`
+- **Planned Spec**: `v2/20-components-graphics-and-hardware-modules.md`
 - **Scope**:
   1. **Complex Components (`octara-headless` + `octara-kit`)**:
      - Virtualized `DataTable` (sticky headers/columns, resizable columns, sorting, multi-select), `TreeView`, `SplitPane` (draggable & collapsible).
@@ -97,7 +101,7 @@
 ---
 
 ### `0.1.0` — Production Beta: Packaging, Fast Restart, DevTools & Core API Freeze
-- **Planned Spec**: `v2/20-packaging-devtools-and-v01-freeze.md`
+- **Planned Spec**: `v2/21-packaging-devtools-and-v01-freeze.md`
 - **Scope**:
   1. **`octara dev` State-Preserving Fast Restart**: File watcher + automatic `RestartState` snapshot → incremental rebuild → instant relaunch restoring window geometry and reactive state.
   2. **`octara bundle` One-Command Packaging**:

@@ -25,6 +25,7 @@ This document is the architectural overview. Exact crate layouts, naming convent
 16. [16 — High-Frequency System Modules & WebView Depth (`0.0.11`)](v2/16-high-frequency-modules.md)
 17. [17 — Direct Native Platform Hosts (Zero `winit` Architecture) (`0.0.10`)](v2/17-native-platform-hosts-without-winit.md)
 18. [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture) (`0.0.10`)](v2/18-native-layout-and-spatial-kernel.md)
+19. [19 — Unified Native IME, Text Editing & Clipboard Hygiene (`0.0.10`)](v2/19-unified-native-ime-and-text-editing.md)
 
 See also: [Octara Master Roadmap (`0.0.8` → `0.1.0` → `0.2.0`)](roadmap.md).
 

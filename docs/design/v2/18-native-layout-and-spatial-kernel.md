@@ -222,10 +222,10 @@ Upgrade measurement caching from per-`NodeId` to **content-addressed `SharedShap
 
 ---
 
-### 3.6 `DenseProjected<T>` Rollback Journal & `check_layout_cache` Full-Tree Oracle
+### 3.6 Shared `DenseProjected<T>` Rollback Journal Across `octara-pipeline` & `check_layout_cache` Oracle
 
-1. **SQLite-Style Dense Undo Journal (`DenseProjected<T>`)**:
-   - Replace `Projected<T>`'s three `FxHashMap`s (`entries`, `undo`, `before_project`) with:
+1. **Shared SQLite-Style Dense Undo Journal (`crates/octara-pipeline/src/projected.rs`)**:
+   - Lift `DenseProjected<T>` into a single shared module in `octara-pipeline` and adopt it across **all four native projection engines** (`LayoutKernel`, `TextEngine` caches replacing `text/cache.rs`, `PaintCompiler` retained/staged node maps, and `AccessKitProjector` node/geometry maps) — eliminating ~30 separate `FxHashMap<NodeId, _>` tables and per-frame `FxHashMap` undo allocations in one stroke:
      - `entries: SecondaryMap<NodeId, T>`
      - `undo_log: Vec<(NodeId, Option<T>)>` + `undo_recorded: DirtyBitmap` (O(1) dedup, 0 heap allocation after warmup, sequential reverse replay on `rollback()`)
      - `stage_log: Vec<(NodeId, Option<T>)>` + `stage_recorded: DirtyBitmap` (for per-round `local_changed` / `changed` / `scroll_changed` diffing)
