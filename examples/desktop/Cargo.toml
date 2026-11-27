@@ -1,0 +1,34 @@
+[package]
+name = "octara-examples-desktop"
+description = "Native launchers and GPU validation for the Octara example apps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../README.md"
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+octara.workspace = true
+octara-examples = { path = ".." }
+octara-host-native.workspace = true
+octara-icons.workspace = true
+octara-inspect.workspace = true
+octara-kit.workspace = true
+octara-pipeline.workspace = true
+octara-render = { workspace = true, features = ["gpu"] }
+
+[dev-dependencies]
+octara-fonts.workspace = true
+octara-markdown = { workspace = true, features = ["composer", "math", "media"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation.workspace = true
+octara-release = { workspace = true, features = ["http"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true

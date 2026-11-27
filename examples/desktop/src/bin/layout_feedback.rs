@@ -31,5 +31,5 @@ fn layout_feedback(cx: &mut BuildCx<'_>) -> El {
 }
 
 fn main() -> Result<(), octara_host_native::ShellError> {
-    octara_examples::native::run(window_options("Octara layout feedback", 800.0, 500.0), layout_feedback)
+    octara_examples_desktop::native::run(window_options("Octara layout feedback", 800.0, 500.0), layout_feedback)
 }

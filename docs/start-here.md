@@ -327,7 +327,7 @@ fn model_picker(build: &mut BuildCx<'_>) -> View {
 
 在构造控件前调用 `build.provide(octara_kit::KitLocale::zh_cn())`，让当前作用域内的 Kit 控件使用简体中文的系统标签。可通过 `KitLocale` 的字段覆盖个别标签。
 
-运行 `cargo run -p octara-examples --bin window -- showcase workspace` 体验数据表、树视图、命令面板、右键菜单和 Toast。工作台也展示了 Navigator 保活和元素拖放重排。
+运行 `cargo run -p octara-examples-desktop --bin window -- showcase workspace` 体验数据表、树视图、命令面板、右键菜单和 Toast。工作台也展示了 Navigator 保活和元素拖放重排。
 
 ## 定制流式 Markdown
 
@@ -368,16 +368,29 @@ fn notes(build: &mut BuildCx<'_>, source: TextBuffer) -> El {
 
 补全项的 `Completion` 可通过 `.icon(...)`、`.description(...)` 和 `.category(...)` 添加信息。用 `editor_with_completion_row` 定制建议项的布局，继续使用编辑器的键盘导航和选中行为。
 
-运行 `cargo run -p octara-examples --bin window -- showcase markdown` 查看流式文档和补全输入框。
+运行 `cargo run -p octara-examples-desktop --bin window -- showcase markdown` 查看流式文档和补全输入框。
 
 ## 用 Inspect 验证应用
 
-在应用库的 `Cargo.toml` 中把 `octara-inspect` 加为开发依赖。`HeadlessDriver` 可以用 `launch(startup())` 启动同一个应用定义，也可以单独打开待测界面。布局、语义和交互断言都可以在无头测试中执行。需要将原生宿主排除在测试构建之外时，把 `octara-host-native` 依赖放在独立的桌面启动包中。
+将应用库和桌面启动包设为同一工作区的两个成员。`my-app/src/lib.rs` 公开 `startup() -> AppDefinition`，并在 `my-app/Cargo.toml` 中声明界面和测试所需的依赖。
 
 ```toml
+[dependencies]
+octara = "0.0.7"
+
 [dev-dependencies]
 octara-inspect = "0.0.7"
 ```
+
+在同级的 `my-app-desktop/Cargo.toml` 中依赖应用库和原生宿主。桌面包的 `src/main.rs` 调用 `octara_host_native::run_app(my_app::startup())`。
+
+```toml
+[dependencies]
+my-app = { path = "../my-app" }
+octara-host-native = "0.0.7"
+```
+
+用 `cargo test -p my-app` 单独运行应用库的无头测试。`HeadlessDriver` 可以用 `launch(startup())` 启动同一个应用定义，也可以单独打开待测界面。它用 `octara-pipeline` 计算布局和语义，以 `octara-render` 的 CPU 渲染器生成绘制截图。用 `cargo tree -p my-app` 检查测试依赖里是否有 `octara-host-native`、`octara-gpu`、`wgpu` 或 `objc2`。单独构建应用库可以避免桌面包的依赖 feature 合并到同一次构建中。[Cargo tree 参考](https://doc.rust-lang.org/cargo/commands/cargo-tree.html) · [Cargo feature 解析](https://doc.rust-lang.org/cargo/reference/resolver.html#features)
 
 在无头驱动和真实宿主中都可以通过 `octara.inspect/2` 发送观察与动作。先从观察结果取完整目标。节点被销毁并重建或换窗后重新观察。回执提供送达状态、当前树版本、结算状态和已提交帧。有实际呈现回执的宿主还提供已呈现帧。
 
@@ -422,16 +435,16 @@ cargo run -q -p octara-cli -- audit --manifest-path examples/Cargo.toml --json
 
 ## 配置开发与测试构建
 
-在工作区根 `Cargo.toml` 设置 Cargo profile。下面的通配覆盖为非工作区依赖启用基础优化。工作区成员仍使用默认的 `opt-level = 0`，也可以用具名包覆盖单独调整。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)
+在工作区根 `Cargo.toml` 设置 Cargo profile。下面的通配覆盖为开发和测试构建中的非工作区依赖设置 `opt-level = 2`。对一般的下游应用，这包括用到的 `octara` 和 `octara-*` crate，以及依赖图中的 `wgpu`、`parley` 和 `taffy`。工作区成员使用默认的 `opt-level = 0`，便于快速迭代应用代码。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)
 
 ```toml
 [profile.dev.package."*"]
-opt-level = 1
+opt-level = 2
 
 [profile.test.package."*"]
-opt-level = 1
+opt-level = 2
 ```
 
-这组设置在开发和测试构建中为文本排版和渲染依赖保留基础优化。在 macOS 上，可以用 `xcrun size -m` 分别查看测试可执行文件的 `__eh_frame` 和 `__unwind_info`，核对展开表大小。
+依赖优化可以降低 debug 构建中文本排版和渲染的 CPU 开销，具体收益随工作负载而变。在 macOS arm64 上对 `6ea4f49` 的相同代码进行比较时，外部依赖从 `opt-level = 1` 调到 `2`，千项待办启动并完成首次投影的中位耗时从 514.30 ms 降到 463.64 ms。27 个 Chat 和 examples 测试可执行文件的 `__eh_frame` 与 `__unwind_info` 合计从 43,613,036 降到 40,669,392 字节，减少约 6.7%。可用 `xcrun size -m` 查看这两个段在自己项目中的体积。
 
-Octara CLI 将根清单的 `[profile.*]` 表复制到生成程序的独立工作区，并使用应用的 Cargo target 目录。Cargo 在生成的工作区中把应用包及其依赖作为工作区外依赖处理，因此通配覆盖也可能命中应用原来的工作区成员。具名包覆盖按 Cargo 的优先级生效。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)
+Octara CLI 将根清单的 `[profile.*]` 表原样复制到生成程序的独立工作区，并使用应用的 Cargo target 目录。Cargo 在生成的工作区中把应用库及其依赖视为工作区外依赖，因此通配覆盖也会命中参与构建的原工作区成员。若希望生成程序以 `opt-level = 0` 编译应用库，可为相应 profile 设置具名包覆盖，例如 `[profile.dev.package.my-app]`。具名包覆盖优先于通配覆盖。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)

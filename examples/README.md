@@ -1,21 +1,26 @@
 # 示例与窗口验证
 
-从仓库根目录构建并运行。示例以 `AppDefinition` 或 `BuildCx` 工厂声明窗口，桌面与 iOS 使用同一原生宿主。
+从仓库根目录构建并运行。`octara-examples` 提供示例应用、无窗口测试和 CPU 工具。`octara-examples-desktop` 提供桌面与 iOS 共用的原生启动器及 GPU 验证。
 
 | 功能 | 启动命令 |
 | --- | --- |
-| 计数器与可恢复状态 | `cargo run -p octara-examples --bin window -- counter` |
-| 稳定键、筛选、排序与分组 | `cargo run -p octara-examples --bin window -- todo` 或 `contacts` |
-| 聊天回复、虚拟行与编辑器 | `cargo run -p octara-examples --bin window -- chat_virtual` |
-| Kit 表单、组合框与弹层 | `cargo run -p octara-examples --bin window -- showcase forms` 或 `choices`、`interaction`、`controls` |
-| 发布工作台，含 Navigator、树视图、数据表、拖放排序、命令面板、右键菜单与 Toast | `cargo run -p octara-examples --bin window -- showcase workspace` |
-| 实时 Markdown、可选富文本、画布、地图与原生 Web 视图 | `cargo run -p octara-examples --bin window -- showcase markdown` 或 `text`、`drawing`、`map`、`web` |
-| 多窗口与各窗口独立的撤销历史 | `cargo run -p octara-examples --bin window -- windows` 或 `undo` |
-| 虚拟行尺寸与离屏编辑器 | `cargo run -p octara-examples --bin virtual_geometry` 或 `--bin virtual_interaction` |
-| 系统输入法与标记文本 | `cargo run -p octara-examples --bin ime`。[IME 操作步骤](IME.md) |
-| 交互式 GPU 材质、流场与折射 | `cargo run -p octara-examples --bin window -- gpu_lab` |
+| 计数器与可恢复状态 | `cargo run -p octara-examples-desktop --bin window -- counter` |
+| 稳定键、筛选、排序与分组 | `cargo run -p octara-examples-desktop --bin window -- todo` 或 `contacts` |
+| 聊天回复、虚拟行与编辑器 | `cargo run -p octara-examples-desktop --bin window -- chat_virtual` |
+| Kit 表单、组合框与弹层 | `cargo run -p octara-examples-desktop --bin window -- showcase forms` 或 `choices`、`interaction`、`controls` |
+| 发布工作台，含 Navigator、树视图、数据表、拖放排序、命令面板、右键菜单与 Toast | `cargo run -p octara-examples-desktop --bin window -- showcase workspace` |
+| 实时 Markdown、可选富文本、画布、地图与原生 Web 视图 | `cargo run -p octara-examples-desktop --bin window -- showcase markdown` 或 `text`、`drawing`、`map`、`web` |
+| 多窗口与各窗口独立的撤销历史 | `cargo run -p octara-examples-desktop --bin window -- windows` 或 `undo` |
+| 虚拟行尺寸与离屏编辑器 | `cargo run -p octara-examples-desktop --bin virtual_geometry` 或 `--bin virtual_interaction` |
+| 系统输入法与标记文本 | `cargo run -p octara-examples-desktop --bin ime`。[IME 操作步骤](IME.md) |
+| 交互式 GPU 材质、流场与折射 | `cargo run -p octara-examples-desktop --bin window -- gpu_lab` |
 | CPU 参考截图 | `cargo run -p octara-examples --bin screenshot -- /tmp/octara-shots 2 --bundled` |
-| 原生投影与 GPU 绘制基准 | `cargo run --release -p octara-examples --bin bench` 或 `-- gpu`、`-- gpu-retain` |
+| CPU 投影基准 | `cargo run --release -p octara-examples --bin bench` |
+| GPU 绘制与缓存基准 | `cargo run --release -p octara-examples-desktop --bin gpu_bench -- gpu` 或 `-- gpu-retain` |
+
+CPU 截图默认使用内置字体。使用系统字体时，添加 Cargo 参数 `--features system-fonts` 并省略 `--bundled`。
+
+运行 `cargo test -p octara-examples` 验证无窗口应用行为和 CPU 渲染。运行 `cargo test -p octara-examples-desktop` 验证 GPU 帧规划的性能预算、着色器回退和富文本 CPU/GPU 像素一致性。可设置 `OCTARA_REQUIRE_GPU=1` 要求像素一致性测试使用可用的 GPU 适配器。
 
 `gpu_lab replay 60` 与 `gpu_lab replay 120 stress` 通过应用时钟持续更新着色器。使用 `gpu_lab input-pressure` 时，点击 **Start workload**，随后用系统键盘、点击与拖动操作控件。设置 `OCTARA_GPU_LAB_TRANSITION=1` 会在玻璃面板中显示局部 GPU 过渡。
 
@@ -26,7 +31,7 @@ Markdown 示例使用本地月食对话。点击 **Replay answer** 可查看流�
 ## 检查真实窗口
 
 ```sh
-cargo build -p octara-examples --bin window -p octara-cli --bin octara
+cargo build -p octara-examples-desktop --bin window -p octara-cli --bin octara
 python3 -B examples/live_inspect.py --window target/debug/window
 ```
 
@@ -46,7 +51,7 @@ OCTARA_INSPECT="$socket" target/debug/window counter
 已启动 Apple Silicon iPhone 模拟器时，可构建并安装与桌面共用的示例。
 
 ```sh
-IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --locked --target aarch64-apple-ios-sim -p octara-examples --bin panel_scroll
+IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --locked --target aarch64-apple-ios-sim -p octara-examples-desktop --bin panel_scroll
 sim_run=$(mktemp -d /tmp/octara-ios.XXXXXX)
 python3 -B examples/ios_panel.py --device "$device" \
   --binary target/aarch64-apple-ios-sim/debug/panel_scroll --output "$sim_run/run"
@@ -72,4 +77,4 @@ python3 -m http.server --bind 127.0.0.1 --directory "$web_run" 0
 
 ## 本地签名发布样本
 
-`signed_review` 是 macOS 原生样本。构建时用 `OCTARA_REVIEW_PUBLIC_KEY` 绑定发布公钥，应用可用 `signed_review STORE SIGNED_PACKAGE` 暂存包，下次启动后在首帧确认。编辑草稿保存在 `STORE/draft.json`。使用 `package_signed_review.py` 组装并验证本地应用包。[签名发布流程](../docs/design/v2/06-inspect-dst-release-migration.md)
+`signed_review` 是 macOS 原生样本。用 `cargo build -p octara-examples-desktop --bin signed_review` 构建，并用 `OCTARA_REVIEW_PUBLIC_KEY` 绑定发布公钥。应用可用 `signed_review STORE SIGNED_PACKAGE` 暂存包，下次启动后在首帧确认。编辑草稿保存在 `STORE/draft.json`。使用 `package_signed_review.py` 组装并验证本地应用包。[签名发布流程](../docs/design/v2/06-inspect-dst-release-migration.md)

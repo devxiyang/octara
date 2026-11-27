@@ -6,8 +6,8 @@ pub mod input_pressure;
 pub mod replay;
 mod transition;
 
-use crate::window_options;
 use octara::prelude::*;
+use octara_examples::window_options;
 use octara_icons as icons;
 use octara_kit::slider;
 use octara_render::gpu::material;

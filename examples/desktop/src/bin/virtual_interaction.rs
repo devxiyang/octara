@@ -1,7 +1,8 @@
 //! Reveal an offscreen editor and replace its row during a focused session.
 
 use octara::prelude::*;
-use octara_examples::{native, window_options};
+use octara_examples::window_options;
+use octara_examples_desktop::native;
 use octara_kit::{ButtonVariant, Size as KitSize, button, text_field};
 
 fn view(cx: &mut BuildCx<'_>) -> El {

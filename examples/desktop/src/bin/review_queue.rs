@@ -179,5 +179,5 @@ fn view(cx: &mut BuildCx<'_>) -> El {
 }
 
 fn main() -> Result<(), octara_host_native::ShellError> {
-    octara_examples::native::run(window_options("资料审阅", 830.0, 650.0), view)
+    octara_examples_desktop::native::run(window_options("资料审阅", 830.0, 650.0), view)
 }

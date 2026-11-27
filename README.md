@@ -12,8 +12,8 @@
 在工作区根目录使用 Rust 1.100 或更高版本。
 
 ```sh
-cargo run -p octara-examples --bin window -- counter
-cargo run -p octara-examples --bin window -- showcase workspace
+cargo run -p octara-examples-desktop --bin window -- counter
+cargo run -p octara-examples-desktop --bin window -- showcase workspace
 cargo run -q -p octara-cli -- vocab BuildCx
 cargo run -q -p octara-cli -- audit --manifest-path examples/Cargo.toml --json
 ```

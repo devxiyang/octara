@@ -2589,7 +2589,6 @@ name = "octara-chat"
 version = "0.0.7"
 dependencies = [
  "octara",
- "octara-host-native",
  "octara-icons",
  "octara-inspect",
  "octara-kit",
@@ -2599,6 +2598,18 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "octara-chat-desktop"
+version = "0.0.7"
+dependencies = [
+ "octara",
+ "octara-chat",
+ "octara-host-native",
+ "reqwest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2628,8 +2639,25 @@ dependencies = [
 name = "octara-examples"
 version = "0.0.7"
 dependencies = [
+ "octara",
+ "octara-fonts",
+ "octara-icons",
+ "octara-inspect",
+ "octara-kit",
+ "octara-markdown",
+ "octara-pipeline",
+ "octara-render",
+ "png",
+ "serde_json",
+]
+
+[[package]]
+name = "octara-examples-desktop"
+version = "0.0.7"
+dependencies = [
  "objc2-foundation 0.3.2",
  "octara",
+ "octara-examples",
  "octara-fonts",
  "octara-host-native",
  "octara-icons",
@@ -2639,7 +2667,6 @@ dependencies = [
  "octara-pipeline",
  "octara-release",
  "octara-render",
- "png",
  "serde",
  "serde_json",
  "tempfile",

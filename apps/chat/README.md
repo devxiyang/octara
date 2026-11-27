@@ -1,6 +1,6 @@
 # 运行 Chat
 
-在仓库根目录运行 `cargo run -p octara-chat`。Chat 使用 Octara v2 的原生窗口、编辑器和组件。可以创建并管理会话、流式阅读回复、停止或重新生成答案、调整模型和输出设置。
+在仓库根目录运行 `cargo run -p octara-chat-desktop`。Chat 使用 Octara v2 的原生窗口、编辑器和组件。可以创建并管理会话、流式阅读回复、停止或重新生成答案、调整模型和输出设置。
 
 ## 选择后端
 
@@ -54,14 +54,14 @@ python3 -B apps/chat/serve_network_fixture.py --output /tmp/octara-chat-peer
 
 ```sh
 OCTARA_CHAT_ENDPOINT="$(cat /tmp/octara-chat-peer/endpoint.txt)" \
-OCTARA_CHAT_MODEL=local-fixture OCTARA_CHAT_DIR="$chat_tmp/session" cargo run -p octara-chat
+OCTARA_CHAT_MODEL=local-fixture OCTARA_CHAT_DIR="$chat_tmp/session" cargo run -p octara-chat-desktop
 ```
 
 在界面中发送消息，确认收到标题为 “Local HTTP stream” 的回复。关闭窗口后结束测试服务。
 
 ## 长会话观测
 
-`--example long_session` 使用明确指定的空目录生成带有 1,000 或 10,000 条消息的历史。将 `OCTARA_CHAT_MESSAGES` 设为 `10000` 可检查较大的历史。在这个窗口中发送消息会开始一段较长的离线回复。
+使用 `cargo run -p octara-chat-desktop --example long_session` 打开长会话窗口。通过 `OCTARA_CHAT_DIR` 指定空目录以生成带有 1,000 条消息的历史。将 `OCTARA_CHAT_MESSAGES` 设为 `10000` 可检查较大的历史。在这个窗口中发送消息会开始一段较长的离线回复。
 
 ```sh
 cargo run --release -p octara-chat --example long_bench -- --samples 40

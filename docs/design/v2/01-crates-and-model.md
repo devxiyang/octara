@@ -48,8 +48,10 @@ crates/
   octara-cli/          # Layer 4: CLI (vocab, skill export, launch, dev restart, release)
                        #          (-> octara, octara-inspect, octara-release)
 
-apps/chat/             # Reference compound application
-examples/              # Native, iOS, Web & GPU Lab examples and live verification harnesses
+apps/chat/             # Reference application library and headless tests
+  desktop/             # Native Chat launchers
+examples/              # Example views, headless tests, and CPU tools
+  desktop/             # Native, iOS, and GPU Lab launchers and GPU tests
 ```
 
 ### 1.2 Exact `ALLOWED` Edges for `tools/check_layers.py`
@@ -67,6 +69,7 @@ ALLOWED = {
     "octara": {"octara-model", "octara-tree", "octara-runtime", "octara-macros"},
     "octara-headless": {"octara"},
     "octara-kit": {"octara", "octara-headless", "octara-icons"},
+    "octara-markdown": {"octara", "octara-headless", "octara-icons"},
     "octara-pipeline": {"octara-model", "octara-tree", "octara-runtime"},
     "octara-render": {"octara-model"},
     "octara-gpu": {"octara-model", "octara-render"},
@@ -74,16 +77,22 @@ ALLOWED = {
     "octara-host-web": {"octara", "octara-model", "octara-render"},  # octara-render is optional (feature = "webgpu")
     "octara-inspect": {"octara", "octara-model", "octara-pipeline", "octara-render"},
     "octara-cli": {"octara", "octara-model", "octara-inspect", "octara-release"},
-    "octara-chat": {"octara", "octara-icons", "octara-kit", "octara-host-native"},
+    "octara-chat": {"octara", "octara-icons", "octara-kit", "octara-markdown"},
+    "octara-chat-desktop": {"octara-chat", "octara-host-native"},
     "octara-examples": {
         "octara", "octara-fonts", "octara-icons",
-        "octara-kit", "octara-pipeline", "octara-render", "octara-gpu",
-        "octara-host-native", "octara-inspect", "octara-release",
+        "octara-kit", "octara-markdown", "octara-pipeline", "octara-render", "octara-inspect",
+    },
+    "octara-examples-desktop": {
+        "octara", "octara-examples", "octara-host-native", "octara-icons",
+        "octara-inspect", "octara-kit", "octara-pipeline", "octara-render", "octara-release",
     },
 }
 ```
 
 Kit, Chat, and the examples use `octara` or `octara::prelude` for authoring. The layer check covers their source paths as well as Cargo production edges.
+
+The desktop packages depend on the application libraries. Headless tests use the CPU projection and renderer through `octara-inspect` and can be built by selecting the library packages.
 
 ### 1.3 Removed v1 Crates (Zero Legacy Preservation)
 - `octara-primitives` → replaced by `octara-model` (with `png`, `zeno`, `roxmltree` stripped out).

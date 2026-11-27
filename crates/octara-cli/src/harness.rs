@@ -178,7 +178,9 @@ fn dependency(d: &serde_json::Value, sibling: Option<&str>) -> String {
 }
 
 /// Copy the workspace's `[profile.*]` tables verbatim into the generated manifest.
-/// Cargo evaluates package overrides in the harness workspace, where the app is a dependency.
+/// Cargo evaluates `"*"` package overrides in the harness's own workspace. The app and
+/// its dependencies, including original workspace members, are external to that workspace.
+/// Named overrides take precedence.
 fn profiles(manifest: &str) -> String {
     let mut out = String::new();
     let mut inside = false;
@@ -376,9 +378,9 @@ mod tests {
 
     #[test]
     fn profiles_are_taken_verbatim() {
-        let dev = "[profile.dev.package.\"*\"]\nopt-level = 1\n\n";
+        let dev = "[profile.dev.package.\"*\"]\nopt-level = 2\n\n";
         let app_override = "[profile.dev.package.\"my-app:0.1.0\"]\nopt-level = 3\n\n";
-        let test = "[profile.test.package.\"*\"]\nopt-level = 1\n";
+        let test = "[profile.test.package.\"*\"]\nopt-level = 2\n";
         let manifest = format!("[workspace]\nmembers = []\n\n{dev}{app_override}[workspace.dependencies]\nserde = \"1\"\n\n{test}");
         assert_eq!(profiles(&manifest), format!("{dev}{app_override}{test}"));
     }

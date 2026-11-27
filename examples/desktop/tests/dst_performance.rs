@@ -1,4 +1,4 @@
-//! Device-free performance gates for settled native frames driven by the virtual clock.
+//! Device-free performance gates for the GPU frame planner driven by the virtual clock.
 
 use octara::model::paint::FontId;
 use octara::{EditorEvent, EditorSession, EditorSessionId, Input, NodeId, PaintItem, Tree, WindowRuntime, prelude::*};

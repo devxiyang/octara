@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepare a macOS app bundle for manual OS-input/IME validation; never launch or control it.
 
-Build first: cargo build -p octara-examples --bin ime -p octara-cli --bin octara
+Build first: cargo build -p octara-examples-desktop --bin ime -p octara-cli --bin octara
 The output directory owns one copied executable, Info.plist, and manifest.json. No input source,
 keyboard, pointer, process, user preference or Accessibility permission is changed by this tool.
 """

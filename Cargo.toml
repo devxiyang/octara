@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "apps/chat",
+    "apps/chat/desktop",
     "crates/octara",
     "crates/octara-cli",
     "crates/octara-fonts",
@@ -22,6 +23,7 @@ members = [
     "crates/octara-svg",
     "crates/octara-tree",
     "examples",
+    "examples/desktop",
 ]
 
 [workspace.package]
@@ -103,9 +105,9 @@ octara-runtime = { path = "crates/octara-runtime", version = "0.0.7" }
 octara-svg = { path = "crates/octara-svg", version = "0.0.7" }
 octara-tree = { path = "crates/octara-tree", version = "0.0.7" }
 
-# Enable basic optimization for non-workspace dependencies. Members use the profile defaults.
+# Optimize dependencies while workspace members keep the default unoptimized builds.
 [profile.dev.package."*"]
-opt-level = 1
+opt-level = 2
 
 [profile.test.package."*"]
-opt-level = 1
+opt-level = 2

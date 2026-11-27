@@ -1,4 +1,4 @@
-//! Example applications and their shared native launch options.
+//! Example applications shared by headless tests and native launchers.
 
 use octara::prelude::{Size, WindowOptions, WindowPresentation, WindowViewport};
 use std::sync::Arc;
@@ -6,8 +6,6 @@ use std::sync::Arc;
 pub mod album_back;
 pub mod apps;
 pub mod failure;
-pub mod gpu_lab;
-pub mod native;
 pub mod panel_scroll;
 pub mod rename;
 pub mod showcase;

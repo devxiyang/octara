@@ -45,13 +45,9 @@ Rather than hacking around core limitations inside a Markdown crate, **9 foundat
 "octara-headless": {"octara"},
 "octara-kit": {"octara", "octara-headless", "octara-icons"},
 "octara-markdown": {"octara", "octara-headless", "octara-icons"},
-"octara-chat": {"octara", "octara-icons", "octara-kit", "octara-markdown", "octara-host-native"},
-"octara-examples": {
-    "octara", "octara-fonts", "octara-icons",
-    "octara-kit", "octara-markdown", "octara-pipeline", "octara-render", "octara-gpu",
-    "octara-host-native", "octara-inspect", "octara-release",
-},
 ```
+
+The full [workspace dependency map](01-crates-and-model.md#12-exact-allowed-edges-for-toolscheck_layerspy) covers the app and desktop packages.
 
 **Hard Invariants**:
 1. `"octara-markdown"` is added to `AUTHORING_PACKAGES` in `tools/check_layers.py`: **zero imports of `octara-model`, `octara-tree`, or `octara-runtime` internals**. Every core primitive it relies on is a first-class public API on `octara`.

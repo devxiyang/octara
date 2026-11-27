@@ -1,4 +1,4 @@
-//! The AI chat reference app in a window: `cargo run -p octara-chat`. Conversations are kept in
+//! Run the AI chat reference app in a window with `cargo run -p octara-chat-desktop`. Conversations are kept in
 //! the platform's application data directory (`OCTARA_CHAT_DIR` overrides it).
 
 use std::process::ExitCode;

@@ -21,7 +21,17 @@
 
 ## 验证应用
 
-在应用库的 `[dev-dependencies]` 中添加 `octara-inspect`，用 `HeadlessDriver::launch(startup())` 启动定义。为待测节点设置稳定的 `test_id`，用 `Observe` 取得目标，再发送 `Act` 并断言更新后的状态。将 `octara-host-native` 依赖放在独立的桌面启动包中，可以让应用库的测试只使用无头驱动。
+在同一工作区中用 `my-app` 库公开 `startup() -> AppDefinition`，在库的 `[dev-dependencies]` 中添加 `octara-inspect`。将原生宿主依赖放在同级的 `my-app-desktop` 包中，其 `src/main.rs` 调用 `octara_host_native::run_app(my_app::startup())`。
+
+```toml
+[dependencies]
+my-app = { path = "../my-app" }
+octara-host-native = "0.0.7"
+```
+
+用 `cargo test -p my-app` 单独运行应用库的测试。`HeadlessDriver::launch(startup())` 启动应用定义，使用布局管线和 CPU 绘制路径。用 `cargo tree -p my-app` 检查测试依赖里是否有 `octara-host-native`、`octara-gpu`、`wgpu` 或 `objc2`。[Cargo tree 参考](https://doc.rust-lang.org/cargo/commands/cargo-tree.html)
+
+为待测节点设置稳定的 `test_id`，用 `Observe` 取得目标，再发送 `Act` 并断言更新后的状态。
 
 1. 在 Cargo 的 `[package.metadata.octara]` 中登记 `entry = "my_app::startup"`。该函数返回 `AppDefinition`。`octara check -p my-app` 检查手机和桌面尺寸、亮色和暗色下的诊断与结算。`octara inspect -p my-app --json` 启动无头宿主并观察窗口。`octara audit -p my-app --json` 检查文本裁剪、无障碍名称和焦点目标。按回执里的 `provenance.file` 和 `provenance.line` 定位问题。错误级问题退出码为 1。
 2. 用 `octara launch -p my-app --socket SOCKET --receipt FILE` 在本机启动同一个入口。选择未占用的绝对 Unix socket 路径和新的回执文件。`octara inspect --connect SOCKET --receipt FILE --json` 校验进程和构建身份。
@@ -30,4 +40,8 @@
 
 ## 配置开发与测试构建
 
-把 `[profile.dev.package."*"]` 和 `[profile.test.package."*"]` 放在工作区根 `Cargo.toml`。在两张表中设置 `opt-level = 1` 可为非工作区依赖启用基础优化，工作区成员使用默认的 `opt-level = 0`。CLI 将根清单中的 profile 表复制到生成程序的独立工作区，其中应用包也作为依赖参与构建。具名包覆盖优先于通配覆盖。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)
+在工作区根 `Cargo.toml` 的 `[profile.dev.package."*"]` 和 `[profile.test.package."*"]` 中设置 `opt-level = 2`。下游应用用到的 `octara`、`octara-*` 及 `wgpu`、`parley`、`taffy` 等外部依赖自动使用该设置，工作区成员使用默认的 `opt-level = 0`。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)
+
+依赖优化可降低 debug 排版和渲染的 CPU 开销，收益随工作负载而变。在 macOS arm64 上对 `6ea4f49` 的 27 个 Chat 和 examples 测试可执行文件进行同口径比较时，外部依赖从 `opt-level = 1` 调到 `2`，`__eh_frame` 与 `__unwind_info` 的合计体积减少约 6.7%。
+
+CLI 将根清单的 `[profile.*]` 表原样复制到生成程序的独立工作区。应用库及其依赖在这里都是工作区外依赖，通配覆盖也会命中参与构建的原工作区成员。具名包覆盖优先于通配覆盖，例如用 `[profile.dev.package.my-app]` 将应用库设为 `opt-level = 0`。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)

@@ -1,6 +1,6 @@
 [package]
 name = "octara-examples"
-description = "Example apps, their acceptance tests and benchmarks."
+description = "Example apps, headless acceptance tests and CPU tools."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,24 +16,20 @@ publish = false
 [package.metadata.octara]
 entry = "octara_examples::apps::counter_app"
 
+[features]
+system-fonts = ["octara-pipeline/system-fonts"]
+
 [dependencies]
 octara.workspace = true
 octara-fonts.workspace = true
 octara-icons.workspace = true
+octara-inspect.workspace = true
 octara-kit.workspace = true
 octara-markdown = { workspace = true, features = ["composer", "math", "media"] }
-octara-render = { workspace = true, features = ["gpu"] }
-octara-host-native.workspace = true
 octara-pipeline.workspace = true
-octara-inspect.workspace = true
+octara-render.workspace = true
 png.workspace = true
 serde_json.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-foundation.workspace = true
-octara-release = { workspace = true, features = ["http"] }
-serde.workspace = true
-tempfile.workspace = true
 
 [[bin]]
 name = "bench"
@@ -42,7 +38,3 @@ path = "src/bin/bench.rs"
 [[bin]]
 name = "screenshot"
 path = "src/bin/screenshot.rs"
-
-[[bin]]
-name = "window"
-path = "src/bin/window.rs"

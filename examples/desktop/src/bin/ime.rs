@@ -37,9 +37,9 @@ fn main() -> Result<(), octara_host_native::ShellError> {
     let mode = std::env::args().nth(1).or_else(|| std::env::var("OCTARA_IME_SCENE").ok());
     match mode.as_deref() {
         Some("rename") => {
-            octara_examples::native::run(window_options("Octara Rename Validation", 800.0, 600.0), octara_examples::rename::view)
+            octara_examples_desktop::native::run(window_options("Octara Rename Validation", 800.0, 600.0), octara_examples::rename::view)
         }
-        Some("choices") => octara_examples::native::run(options, |b| showcase::page(b, "choices").expect("choices card")),
-        _ => octara_examples::native::run(options, view),
+        Some("choices") => octara_examples_desktop::native::run(options, |b| showcase::page(b, "choices").expect("choices card")),
+        _ => octara_examples_desktop::native::run(options, view),
     }
 }

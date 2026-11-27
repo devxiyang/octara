@@ -45,5 +45,5 @@ fn view(cx: &mut BuildCx<'_>) -> El {
 }
 
 fn main() -> Result<(), octara_host_native::ShellError> {
-    octara_examples::native::run(window_options("Octara Trackpad Validation", 480.0, 500.0), view)
+    octara_examples_desktop::native::run(window_options("Octara Trackpad Validation", 480.0, 500.0), view)
 }

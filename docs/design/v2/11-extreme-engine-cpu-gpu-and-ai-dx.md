@@ -131,7 +131,7 @@ Enable a `Depth24Plus` / `Depth16Unorm` attachment on the render target with mon
    - Ship clean built-in open-source checks (`ClippedText` reusing `TextEngine::clipped`, `MissingSemantics`, `DeadFocusTarget`), allowing applications and external crates to register rich custom design-system, contrast, overlap, and telemetry audit packs cleanly.
 2. **Deterministic Performance Regression Gates (DST)**:
    - CI replays canonical stress scenarios (10k-row scroll, 120Hz streaming Markdown, CJK IME composition) under virtual clock and asserts hard ceilings on `draw_calls`, `uploaded_bytes`, `shapes_built`, and `heap_allocs`.
-   - Run `cargo test -p octara-examples --test dst_performance -- --nocapture` to print the observed peaks and ceilings. The device-free frame planner measures draw batches, logical upload bytes and heap allocations. The native projection supplies text shaping counts.
+   - Run `cargo test -p octara-examples-desktop --test dst_performance -- --nocapture` to print the observed peaks and ceilings. The device-free GPU frame planner measures draw batches, logical upload bytes and heap allocations. The native projection supplies text shaping counts.
 
 ---
 

@@ -8,7 +8,7 @@ use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (flags, args): (Vec<String>, Vec<String>) = std::env::args().skip(1).partition(|arg| arg.starts_with("--"));
-    let bundled = flags.iter().any(|flag| flag == "--bundled");
+    let bundled = !cfg!(feature = "system-fonts") || flags.iter().any(|flag| flag == "--bundled");
     let size = flags
         .iter()
         .find_map(|flag| flag.strip_prefix("--size="))

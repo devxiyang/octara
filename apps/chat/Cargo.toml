@@ -21,7 +21,6 @@ octara.workspace = true
 octara-icons.workspace = true
 octara-kit.workspace = true
 octara-markdown = { workspace = true, features = ["composer", "math", "media"] }
-octara-host-native.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "stream"] }
@@ -30,7 +29,3 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "net"] }
 [dev-dependencies]
 octara-inspect.workspace = true
 tempfile.workspace = true
-
-[[bin]]
-name = "octara-chat"
-path = "src/main.rs"

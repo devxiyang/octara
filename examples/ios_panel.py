@@ -101,7 +101,7 @@ def main():
         if not separator or reported_bundle != bundle or not pid.isdecimal():
             raise RuntimeError(f"Could not read the simulator process ID: {result}")
         receipt.write_text(json.dumps({
-            "schema": "octara.launch/2", "package": "octara-examples", "entry": executable_name,
+            "schema": "octara.launch/2", "package": "octara-examples-desktop", "entry": executable_name,
             "build": {"digest": build, "pid": int(pid)},
         }) + "\n", encoding="utf-8")
         report = json.dumps(run, indent=2)

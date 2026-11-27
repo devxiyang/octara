@@ -1,0 +1,27 @@
+[package]
+name = "octara-chat-desktop"
+description = "Desktop launcher for Octara Chat."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../README.md"
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+octara-chat = { path = ".." }
+octara-host-native.workspace = true
+
+[dev-dependencies]
+octara.workspace = true
+reqwest = { version = "0.13.5", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "octara-chat"
+path = "src/main.rs"

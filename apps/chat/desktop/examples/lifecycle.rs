@@ -1,7 +1,7 @@
 //! The actual Chat UI with a controllable, cancellation-resistant transport for live checks.
 //! Use Octara Inspect v2 menu commands to drive controlled replies.
 
-#[path = "support/controlled.rs"]
+#[path = "../../examples/support/controlled.rs"]
 mod controlled;
 
 use controlled::Controlled;

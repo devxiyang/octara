@@ -1,10 +1,7 @@
 use octara::diagnostics::codes;
 use octara::prelude::*;
-use octara::{
-    A11yAction, BackPhase, CaptureSource, CommitKind, EditorEvent, Input, InteractionEvent, PaintFallback, PaintOutcome, PointerId,
-    PointerKind, TextEdit,
-};
-use octara_examples::{album_back, apps, gpu_lab, panel_scroll, showcase, window_options};
+use octara::{A11yAction, BackPhase, CommitKind, EditorEvent, Input, InteractionEvent, PointerId, PointerKind, TextEdit};
+use octara_examples::{album_back, apps, panel_scroll, showcase, window_options};
 use octara_inspect::protocol::{Delivery, NodeSnapshot, TreeSnapshot};
 use octara_inspect::{AgentAction, AgentCommand, AgentReceipt, AgentRequest, HeadlessDriver, TargetRef};
 use std::time::Duration;
@@ -284,19 +281,6 @@ fn showcase_dialog_retains_its_draft_and_routes_enter_to_suggestions_first() {
     accessible(&mut driver, window, "suggest-editor", A11yAction::Focus);
     assert!(driver.dispatch(window, enter).unwrap().handled);
     assert_eq!(node(&observe(&mut driver, window), "interaction-submissions").text.as_deref(), Some("提交次数：1"));
-}
-
-#[test]
-fn reference_capture_samples_shader_lab_fallbacks() {
-    let (mut driver, window) = launch(gpu_lab::view);
-    let initial = observe(&mut driver, window);
-    let flow = node(&initial, "gpu-preview").target.node().unwrap();
-    let request = AgentRequest::new(Some(window), AgentCommand::Capture { source: CaptureSource::Painted, settle_ms: 0 });
-    let capture = driver.execute(request).capture.expect("reference capture");
-    assert_eq!((capture.picture.width(), capture.picture.height()), (800, 600));
-    assert!(capture.effects.iter().any(|receipt| {
-        receipt.source == flow && receipt.outcome == PaintOutcome::Fallback { reason: PaintFallback::ReferenceRenderer }
-    }));
 }
 
 #[test]

@@ -3,7 +3,7 @@
 构建 IME 样本和 CLI。
 
 ```sh
-cargo build -p octara-examples --bin ime -p octara-cli --bin octara
+cargo build -p octara-examples-desktop --bin ime -p octara-cli --bin octara
 python3 -B examples/ime_window.py
 ```
 

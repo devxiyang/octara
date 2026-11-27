@@ -1,7 +1,8 @@
 //! Variable-height keyed rows retain a reading position across list and width changes.
 
 use octara::prelude::*;
-use octara_examples::{native, window_options};
+use octara_examples::window_options;
+use octara_examples_desktop::native;
 use octara_kit::{ButtonVariant, Size as KitSize, button};
 
 const ROWS: u32 = 10_000;

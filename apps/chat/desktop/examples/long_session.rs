@@ -1,6 +1,6 @@
 //! The ordinary Chat UI with isolated 1k/10k mixed history and a controlled live answer.
 
-#[path = "support/long_session.rs"]
+#[path = "../../examples/support/long_session.rs"]
 mod long_session;
 
 use long_session::{LongSession, Payload, seed};

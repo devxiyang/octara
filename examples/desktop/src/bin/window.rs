@@ -1,8 +1,8 @@
 //! Launch an individual Octara example using the native host.
 
 use octara::prelude::*;
-use octara_examples::native;
-use octara_examples::{apps, failure, gpu_lab, showcase, window_options};
+use octara_examples::{apps, failure, showcase, window_options};
+use octara_examples_desktop::{gpu_lab, native};
 use octara_host_native::ShellError;
 
 fn main() -> Result<(), ShellError> {

@@ -32,18 +32,27 @@ ALLOWED = {
     "octara-host-web": {"octara", "octara-model", "octara-render"},
     "octara-inspect": {"octara", "octara-model", "octara-pipeline", "octara-render"},
     "octara-cli": {"octara", "octara-model", "octara-inspect", "octara-release"},
-    "octara-chat": {"octara", "octara-icons", "octara-kit", "octara-markdown", "octara-host-native"},
+    "octara-chat": {"octara", "octara-icons", "octara-kit", "octara-markdown"},
+    "octara-chat-desktop": {"octara-chat", "octara-host-native"},
     "octara-examples": {
         "octara", "octara-fonts", "octara-icons",
-        "octara-kit", "octara-markdown", "octara-pipeline", "octara-render", "octara-gpu",
-        "octara-host-native", "octara-inspect", "octara-release",
+        "octara-kit", "octara-markdown", "octara-pipeline", "octara-render", "octara-inspect",
+    },
+    "octara-examples-desktop": {
+        "octara", "octara-examples", "octara-host-native", "octara-icons",
+        "octara-inspect", "octara-kit", "octara-pipeline", "octara-render", "octara-release",
     },
 }
 
-APP_DIRS = {"octara-chat": "apps/chat", "octara-examples": "examples"}
+APP_DIRS = {
+    "octara-chat": "apps/chat",
+    "octara-chat-desktop": "apps/chat/desktop",
+    "octara-examples": "examples",
+    "octara-examples-desktop": "examples/desktop",
+}
 
 
-AUTHORING_PACKAGES = ("octara-headless", "octara-kit", "octara-markdown", "octara-chat", "octara-examples")
+AUTHORING_PACKAGES = ("octara-headless", "octara-kit", "octara-markdown", *APP_DIRS)
 INTERNAL_IMPORT = re.compile(
     r"\boctara_(?:model|runtime|tree)\b"
     r"|\boctara\s*::\s*(?:model|runtime|tree)\b"
