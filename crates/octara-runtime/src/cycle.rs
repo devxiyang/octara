@@ -399,6 +399,7 @@ impl AppRuntime {
                     keyboard_open: window.keyboard_open,
                     pointer: Some(PointerGeometry { hit, bounds: &bounds }),
                     text_selection: !window.engine.platform_text_selection(),
+                    platform_drag_out: window.engine.platform_drag_out(),
                     scrollbar,
                 };
                 let mut decision = window.arbiter.handle(&window.tree, event, context);
@@ -1422,6 +1423,7 @@ impl AppRuntime {
                     color_scheme: presentation.theme.scheme,
                     material: presentation.material,
                     status_bar: presentation.status_bar,
+                    level: presentation.level,
                 });
                 window.presentation_published = true;
             }

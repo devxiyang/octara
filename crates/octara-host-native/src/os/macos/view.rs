@@ -7,15 +7,16 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{AllocAnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSCursor, NSDragOperation, NSDraggingDestination, NSDraggingInfo, NSEvent, NSEventModifierFlags,
-    NSEventType, NSPasteboardTypeFileURL, NSTextInputClient, NSTextInputContext, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAutoresizingMaskOptions, NSCursor, NSDragOperation, NSDraggingContext, NSDraggingDestination, NSDraggingInfo, NSDraggingSession,
+    NSDraggingSource, NSEvent, NSEventModifierFlags, NSEventType, NSPasteboardTypeFileURL, NSTextInputClient, NSTextInputContext,
+    NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowStyleMask,
 };
 use objc2_foundation::{NSArray, NSAttributedString, NSAttributedStringKey, NSPoint, NSRange, NSRangePointer, NSRect, NSURL};
 use objc2_quartz_core::{CALayer, CAMetalLayer};
 use octara_model::ask::ClipboardKinds;
 use octara_model::geometry::Point;
 use octara_model::identity::{EditorSessionId, TargetGuard, WindowId};
-use octara_model::input::{Button, CursorStyle, HostReply, InteractionEvent, PasteEvent, PointerId, PointerKind};
+use octara_model::input::{Button, CursorStyle, DragItem, HostReply, InteractionEvent, PasteEvent, PointerId, PointerKind};
 use octara_model::semantics::A11yAction;
 use octara_pipeline::NativePublication;
 use std::cell::{Cell, RefCell};
@@ -25,9 +26,29 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+pub(super) type Dispatch = dyn Fn(PlatformEvent, Option<DragEvent<'_>>) -> bool;
+
+pub(super) struct DragEvent<'a> {
+    view: &'a OctaraView,
+    event: &'a NSEvent,
+}
+
+impl DragEvent<'_> {
+    pub(super) fn dispatch<T>(self, deliver: impl FnOnce() -> T) -> T {
+        // Only the matching direct input may start an AppKit session. The host can drain
+        // queued events before this callback and run idle work after it.
+        let pending = &self.view.ivars().pending_drag_event;
+        let previous = pending.replace(Some(self.event.retain()));
+        let _restore = DropGuard::new(previous, |previous| {
+            pending.replace(previous);
+        });
+        deliver()
+    }
+}
+
 pub(super) struct ViewIvars {
     id: WindowId,
-    dispatch: Rc<dyn Fn(PlatformEvent) -> bool>,
+    dispatch: Rc<Dispatch>,
     pub(super) text_input: TextInput,
     // The editor fallback runs inside the synchronous key dispatch.
     pending_key: Cell<Option<PendingKey>>,
@@ -36,6 +57,7 @@ pub(super) struct ViewIvars {
     pointer_inside: Cell<bool>,
     cursor: RefCell<(CursorStyle, Retained<NSCursor>)>,
     gestures: RefCell<GestureState>,
+    pending_drag_event: RefCell<Option<Retained<NSEvent>>>,
     accepted_drag: Cell<Option<isize>>,
     accessibility: RefCell<Option<AccessibilityState>>,
 }
@@ -69,6 +91,11 @@ define_class!(
 
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool { true }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _: Option<&NSEvent>) -> bool {
+            self.window().is_some_and(|window| window.styleMask().contains(NSWindowStyleMask::NonactivatingPanel))
+        }
 
         #[unsafe(method_id(inputContext))]
         fn input_context(&self) -> Option<Retained<NSTextInputContext>> { self.editor_context() }
@@ -136,7 +163,7 @@ define_class!(
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) { self.cursor_moved(event); }
         #[unsafe(method(mouseDragged:))]
-        fn mouse_dragged(&self, event: &NSEvent) { self.cursor_moved(event); }
+        fn mouse_dragged(&self, event: &NSEvent) { self.button(event, PointerPhase::Moved); }
         #[unsafe(method(rightMouseDragged:))]
         fn right_mouse_dragged(&self, event: &NSEvent) { self.cursor_moved(event); }
         #[unsafe(method(otherMouseDragged:))]
@@ -204,6 +231,13 @@ define_class!(
             let hit = self.ivars().accessibility.borrow_mut().as_mut().and_then(|state| state.hit_test(point));
             // SAFETY: The default behavior applies without an active virtual element.
             hit.or_else(|| unsafe { msg_send![super(self), accessibilityHitTest: point] })
+        }
+    }
+
+    unsafe impl NSDraggingSource for OctaraView {
+        #[unsafe(method(draggingSession:sourceOperationMaskForDraggingContext:))]
+        fn drag_source_operation(&self, _: &NSDraggingSession, _: NSDraggingContext) -> NSDragOperation {
+            NSDragOperation::Copy
         }
     }
 
@@ -299,13 +333,7 @@ define_class!(
 );
 
 impl OctaraView {
-    pub(super) fn new(
-        mtm: MainThreadMarker,
-        frame: NSRect,
-        id: WindowId,
-        dispatch: Rc<dyn Fn(PlatformEvent) -> bool>,
-        wake: HostWake,
-    ) -> Retained<Self> {
+    pub(super) fn new(mtm: MainThreadMarker, frame: NSRect, id: WindowId, dispatch: Rc<Dispatch>, wake: HostWake) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             id,
             dispatch,
@@ -316,6 +344,7 @@ impl OctaraView {
             pointer_inside: Cell::default(),
             cursor: RefCell::new((CursorStyle::Arrow, NSCursor::arrowCursor())),
             gestures: RefCell::default(),
+            pending_drag_event: RefCell::default(),
             accepted_drag: Cell::default(),
             accessibility: RefCell::default(),
         });
@@ -352,7 +381,7 @@ impl OctaraView {
     fn emit(&self, event: PlatformEvent) -> bool {
         // Dispatch can close the window while AppKit is still in this callback.
         let _keep_alive = self.retain();
-        (self.ivars().dispatch)(event)
+        (self.ivars().dispatch)(event, None)
     }
 
     fn interaction(&self, event: InteractionEvent) {
@@ -379,7 +408,7 @@ impl OctaraView {
             2 => Button::Middle,
             _ => return,
         };
-        self.emit(PlatformEvent::Pointer {
+        let input = PlatformEvent::Pointer {
             window: self.ivars().id,
             phase,
             position: Some(self.position(event.locationInWindow())),
@@ -387,7 +416,31 @@ impl OctaraView {
             kind: PointerKind::Mouse,
             button,
             modifiers: modifiers(event.modifierFlags()),
-        });
+        };
+        if phase == PointerPhase::Moved {
+            let _keep_alive = self.retain();
+            (self.ivars().dispatch)(input, Some(DragEvent { view: self, event }));
+        } else {
+            self.emit(input);
+        }
+    }
+
+    pub(super) fn start_drag_out(&self, items: &[DragItem]) -> bool {
+        let event = self.ivars().pending_drag_event.borrow().clone();
+        let Some(event) = event else { return false };
+        let Some(window) = self.window() else { return false };
+        if event.r#type() != NSEventType::LeftMouseDragged || event.windowNumber() != window.windowNumber() || items.is_empty() {
+            return false;
+        }
+        let point = self.convertPoint_fromView(event.locationInWindow(), None);
+        let Some(items) = super::drag::dragging_items(items, point) else { return false };
+        self.ivars().pending_drag_event.take();
+        let source = ProtocolObject::<dyn NSDraggingSource>::from_ref(self);
+        // SAFETY: These are AppKit dragging items, and the exact mouse event is still being dispatched to this view.
+        // AppKit documents a nil return when the session cannot start.
+        let session: Option<Retained<NSDraggingSession>> =
+            unsafe { msg_send![self, beginDraggingSessionWithItems: &*items, event: &*event, source: source] };
+        session.is_some()
     }
 
     fn try_key_equivalent(&self, event: &NSEvent) -> bool {

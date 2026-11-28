@@ -12,11 +12,12 @@ use octara_model::ask::{Answer, Ask, AskId, Menu, ServiceId, ServiceOutcome, Ser
 use octara_model::diagnostics::Diagnostic;
 use octara_model::geometry::Vec2;
 use octara_model::identity::{NativeId, TreeId, WindowId};
-use octara_model::input::{EditorEvent, HostReply, InteractionEvent, PasteEvent, TextEdit};
+use octara_model::input::{DragItem, EditorEvent, HostReply, InteractionEvent, PasteEvent, TextEdit};
 use octara_model::native::{NativeCommand, TypedNativeCommand};
 use octara_model::theme::{ColorScheme, Theme};
 use octara_model::window::{
-    StatusBarStyle, SystemPreferences, UserAttention, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowPresentation,
+    StatusBarStyle, SystemPreferences, UserAttention, WindowGeometry, WindowGeometryRequest, WindowLevel, WindowMaterial,
+    WindowPresentation,
 };
 use octara_tree::NodeId;
 use octara_tree::editor::{EditorSession, EditorState};
@@ -75,6 +76,7 @@ pub enum HostCommand {
         color_scheme: ColorScheme,
         material: WindowMaterial,
         status_bar: StatusBarStyle,
+        level: WindowLevel,
     },
     SetAppBadge {
         badge: Option<Arc<str>>,
@@ -98,6 +100,11 @@ pub enum HostCommand {
     },
     StartWindowDrag {
         window: WindowId,
+    },
+    StartDragOut {
+        window: WindowId,
+        contact: Option<octara_model::input::PointerId>,
+        items: Vec<DragItem>,
     },
     NativeCommand {
         window: WindowId,
@@ -134,6 +141,7 @@ pub(crate) enum PresentationUpdate {
     Theme(Box<Theme>),
     Material(WindowMaterial),
     StatusBar(StatusBarStyle),
+    Level(WindowLevel),
     All(Box<WindowPresentation>),
 }
 
@@ -144,6 +152,7 @@ impl PresentationUpdate {
             Self::Theme(theme) => presentation.theme = *theme,
             Self::Material(material) => presentation.material = material,
             Self::StatusBar(status_bar) => presentation.status_bar = status_bar,
+            Self::Level(level) => presentation.level = level,
             Self::All(next) => *presentation = *next,
         }
     }
@@ -575,6 +584,22 @@ impl WriteCx<'_> {
     /// Set the iOS status bar style for the current window.
     pub fn set_window_status_bar(&mut self, status_bar: StatusBarStyle) {
         self.update_window_presentation(PresentationUpdate::StatusBar(status_bar));
+    }
+
+    /// Set the desktop stacking priority of the current window.
+    pub fn set_window_level(&mut self, level: WindowLevel) {
+        self.update_window_presentation(PresentationUpdate::Level(level));
+    }
+
+    #[doc(hidden)]
+    pub fn start_drag_out(&mut self, items: Vec<DragItem>, contact: Option<octara_model::input::PointerId>) -> bool {
+        if let Some(window) = self.window_id().filter(|_| !items.is_empty()) {
+            let command = HostCommand::StartDragOut { window, contact, items };
+            self.commands().queued.push_back(AppCommand::WindowControl { window, command });
+            true
+        } else {
+            false
+        }
     }
 
     pub fn set_window_presentation(&mut self, presentation: WindowPresentation) {

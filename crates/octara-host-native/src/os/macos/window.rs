@@ -7,11 +7,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBackingStoreType, NSPanel, NSView, NSWindow, NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask, NSWindowTabbingMode,
-    NSWindowTitleVisibility,
+    NSBackingStoreType, NSFloatingWindowLevel, NSNormalWindowLevel, NSPanel, NSStatusWindowLevel, NSView, NSWindow, NSWindowDelegate,
+    NSWindowOcclusionState, NSWindowStyleMask, NSWindowTabbingMode, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSNotification, NSPoint, NSRect, NSSize, NSString};
 use octara::{TitlebarStyle, WindowId, WindowOptions};
+use octara_model::window::WindowLevel;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -24,11 +25,10 @@ define_class!(
 );
 
 define_class!(
-    // SAFETY: Reserved for native panel construction when panel options become available.
+    // SAFETY: OctaraPanel uses the designated NSPanel initializer on the main thread.
     #[unsafe(super(NSPanel, NSWindow))]
     #[thread_kind = MainThreadOnly]
     #[name = "OctaraPanel"]
-    #[allow(dead_code)]
     struct OctaraPanel;
 );
 
@@ -51,12 +51,23 @@ pub(super) fn create(mtm: MainThreadMarker, options: &WindowOptions) -> Retained
     if hidden_inset {
         style |= NSWindowStyleMask::FullSizeContentView;
     }
-    let window = mtm.alloc::<OctaraWindow>().set_ivars(());
-    // SAFETY: This is the designated initializer for the allocated NSWindow subclass.
-    let window: Retained<OctaraWindow> = unsafe {
-        msg_send![super(window), initWithContentRect: frame, styleMask: style, backing: NSBackingStoreType::Buffered, defer: false]
+    let window = if options.non_activating_panel {
+        let panel = mtm.alloc::<OctaraPanel>().set_ivars(());
+        let style = style | NSWindowStyleMask::NonactivatingPanel;
+        // SAFETY: Pass the nonactivating style to the designated initializer to establish AppKit's activation behavior.
+        let panel: Retained<OctaraPanel> = unsafe {
+            msg_send![super(panel), initWithContentRect: frame, styleMask: style, backing: NSBackingStoreType::Buffered, defer: false]
+        };
+        panel.setHidesOnDeactivate(false);
+        panel.into_super().into_super()
+    } else {
+        let window = mtm.alloc::<OctaraWindow>().set_ivars(());
+        // SAFETY: This is the designated initializer for the allocated NSWindow subclass.
+        let window: Retained<OctaraWindow> = unsafe {
+            msg_send![super(window), initWithContentRect: frame, styleMask: style, backing: NSBackingStoreType::Buffered, defer: false]
+        };
+        window.into_super()
     };
-    let window = window.into_super();
     // SAFETY: The Rust host owns the retain count, including after the native window closes.
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(&NSString::from_str(&options.presentation.title));
@@ -75,6 +86,17 @@ pub(super) fn create(mtm: MainThreadMarker, options: &WindowOptions) -> Retained
     }
     window.center();
     window
+}
+
+pub(super) fn set_level(window: &NSWindow, level: WindowLevel) {
+    let level = match level {
+        WindowLevel::Normal => NSNormalWindowLevel,
+        WindowLevel::Floating => NSFloatingWindowLevel,
+        WindowLevel::AlwaysOnTop => NSStatusWindowLevel,
+    };
+    if window.level() != level {
+        window.setLevel(level);
+    }
 }
 
 define_class!(

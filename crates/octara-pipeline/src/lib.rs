@@ -3,6 +3,7 @@
 pub mod a11y;
 pub mod paint;
 
+mod airspace;
 mod flat_tree;
 mod frame_arena;
 mod layout;
@@ -10,6 +11,7 @@ mod motion;
 mod text;
 
 use a11y::{AccessKitProjector, AccessPublication};
+use airspace::{Airspace, AirspaceFrame};
 use flat_tree::FlatTree;
 use layout::LayoutEngine;
 use octara_model::geometry::{LayoutBox, Point, Rect, WindowViewport};
@@ -21,6 +23,7 @@ use octara_model::semantics::TextClip;
 use octara_model::text::TextGeometry;
 use octara_model::window::WindowMaterial;
 use octara_runtime::engine::{AccessibilityConsumer, ScrollRange};
+use octara_runtime::module::{ModuleDispatcher, NativeViewMounts};
 use octara_runtime::{CommitOutput, HostEngine, ProjectError, ProjectFeedback};
 use octara_tree::arbiter::{ScrollbarHit, ScrollbarKey};
 use octara_tree::{NodeId, NodeKind, Tree, TreeDelta};
@@ -60,6 +63,13 @@ pub struct NativeFrame {
     pub editor_caret: Option<Rect>,
     pub editor_geometry: Option<TextGeometry>,
     pub measurements: Vec<NativeMeasureRequest>,
+    airspace: AirspaceFrame,
+}
+
+impl NativeFrame {
+    pub fn contains_native_snapshot(&self, id: NativeId) -> bool {
+        self.airspace.images.contains_key(&id.node())
+    }
 }
 
 /// Allows a platform event loop to consume native-only frame information after Publish.
@@ -68,6 +78,7 @@ pub struct NativePublication {
     frame: Rc<RefCell<Option<Arc<NativeFrame>>>>,
     accessibility: AccessPublication,
     pending_native_changes: Option<Rc<RefCell<Vec<NativeChange>>>>,
+    airspace: Rc<RefCell<Airspace>>,
 }
 
 impl NativePublication {
@@ -82,6 +93,27 @@ impl NativePublication {
 
     pub fn take_native_changes(&self) -> Vec<NativeChange> {
         self.pending_native_changes.as_ref().map_or_else(Vec::new, |changes| std::mem::take(&mut *changes.borrow_mut()))
+    }
+
+    /// Request captures for the latest committed geometry after its views have mounted.
+    pub fn capture_native_airspace(&self, mounts: &mut NativeViewMounts, dispatcher: &ModuleDispatcher) -> bool {
+        self.latest().is_some_and(|frame| self.airspace.borrow_mut().start(&frame.airspace, mounts, dispatcher))
+    }
+
+    /// Retain a snapshot once the host can include it in a submitted frame.
+    pub fn retain_native_snapshot(&self, id: NativeId) {
+        self.airspace.borrow_mut().retain_for_presentation(id);
+    }
+
+    /// Release the image after a frame physically restores the native view.
+    pub fn did_restore_native_snapshot(&self, id: NativeId) {
+        if self.latest().is_none_or(|frame| !frame.contains_native_snapshot(id)) {
+            self.forget_native_snapshot(id);
+        }
+    }
+
+    pub fn forget_native_snapshot(&self, id: NativeId) {
+        self.airspace.borrow_mut().remove(id);
     }
 
     /// Build a complete snapshot of the active AccessKit tree.
@@ -134,6 +166,7 @@ struct StagedFrame {
     scale: f32,
     editor_caret: Option<Rect>,
     editor_geometry: Option<TextGeometry>,
+    airspace: AirspaceFrame,
 }
 
 pub struct NativeEngine {
@@ -280,6 +313,7 @@ impl HostEngine for NativeEngine {
         self.flat.project(tree, delta, &self.layout);
         let scroll_deadline = self.scrolling.step(tree, &self.layout, &mut updates, now, self.config.reduced_motion);
         self.accessibility.project(tree, delta, &self.layout, &self.text, viewport.scale, self.config.check_a11y_cache);
+        let airspace = self.publication.airspace.borrow().project(tree, &self.layout);
         let frame = self.paint.compile(
             tree,
             delta,
@@ -292,6 +326,7 @@ impl HostEngine for NativeEngine {
                 verify: self.config.check_paint_cache,
                 transparent_window: self.config.transparent_window || self.vibrant_window,
                 window_active: self.window_active,
+                native_snapshots: &airspace.images,
             },
         );
         let editor = tree.focus().filter(|&node| tree.editor(node).is_some());
@@ -303,6 +338,7 @@ impl HostEngine for NativeEngine {
             scale: viewport.scale,
             editor_caret: editor.filter(|_| self.window_active).and_then(|node| self.text.caret(node, &self.layout)),
             editor_geometry: editor.and_then(|node| self.text.geometry(node, &self.layout)),
+            airspace,
         });
         Ok(ProjectFeedback { updates, replies: frame.replies, next_deadline: frame.next_deadline.into_iter().chain(scroll_deadline).min() })
     }
@@ -318,6 +354,7 @@ impl HostEngine for NativeEngine {
         self.scrolling.commit_stage();
         let accessibility = self.accessibility.commit(self.frame);
         let (native_changes, measurements) = self.native.commit();
+        self.publication.airspace.borrow_mut().commit(&staged.airspace);
         if let Some(pending) = &self.publication.pending_native_changes {
             pending.borrow_mut().extend(native_changes.iter().cloned());
         }
@@ -332,6 +369,7 @@ impl HostEngine for NativeEngine {
             measurements,
             editor_caret: staged.editor_caret,
             editor_geometry: staged.editor_geometry,
+            airspace: staged.airspace,
         });
         *self.publication.frame.borrow_mut() = Some(frame);
         CommitOutput { draw: Some(staged.draw), frame: Some(self.frame) }
@@ -414,6 +452,9 @@ impl HostEngine for NativeEngine {
     }
 
     fn native_reply(&mut self, reply: &HostReply) {
+        if let HostReply::NativeSnapshot { request, snapshot } = reply {
+            self.publication.airspace.borrow_mut().resolve(*request, snapshot);
+        }
         if let HostReply::NativeMeasurement { ticket, size } = reply
             && self.native.accept_measurement(*ticket)
         {

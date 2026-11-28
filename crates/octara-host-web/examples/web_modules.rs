@@ -6,8 +6,9 @@ fn main() {}
 mod browser {
     use js_sys::{Function, Promise};
     use octara::module::{
-        CallTicket, HostLifecycleEvent, HostSurface, HostSurfaceKind, ModuleCallCx, ModuleDispatcher, ModuleError, ModuleId,
-        ModuleInstallCx, ModuleLifecycleCx, NativeViewEmitter, NativeViewFactory, NativeViewInstance, OctaraModule, TypedNativeProps,
+        AirspacePolicy, CallTicket, HostLifecycleEvent, HostSurface, HostSurfaceKind, ModuleCallCx, ModuleDispatcher, ModuleError,
+        ModuleId, ModuleInstallCx, ModuleLifecycleCx, NativeViewEmitter, NativeViewFactory, NativeViewInstance, OctaraModule,
+        TypedNativeProps,
     };
     use octara::prelude::*;
     use octara_host_web::WebApp;
@@ -62,6 +63,10 @@ mod browser {
             KIND
         }
 
+        fn airspace_policy(&self) -> AirspacePolicy {
+            AirspacePolicy::SnapshotOnOcclude
+        }
+
         fn create(
             &mut self,
             surface: HostSurface<'_>,
@@ -79,6 +84,7 @@ mod browser {
             assert_eq!(host.get_attribute("data-octara-id").as_deref(), Some("typed-slot"));
             let element = host.owner_document().unwrap().create_element("input").unwrap().dyn_into::<HtmlInputElement>().unwrap();
             element.set_type("checkbox");
+            element.set_attribute("style", "position:absolute;left:12px;top:12px;margin:0").unwrap();
             host.append_child(&element).unwrap();
             emitter.emit("value", 7_u32, None)?;
             let mut view = Instance { element, emitter, observed: self.0.clone() };
@@ -107,7 +113,13 @@ mod browser {
             self.emitter.emit("value", *command.downcast::<u32>().unwrap(), None).unwrap();
         }
 
-        fn snapshot(&mut self, _: NativeSnapshotRequest, _: ModuleDispatcher) {}
+        fn snapshot(&mut self, _: NativeSnapshotRequest, _: ModuleDispatcher) {
+            panic!("Browser overlays use the DOM paint order");
+        }
+
+        fn set_occluded_by_snapshot(&mut self, _: bool) {
+            panic!("The browser keeps this DOM element mounted and visible");
+        }
     }
 
     impl Drop for Instance {
@@ -146,22 +158,28 @@ mod browser {
                 move |b| {
                     let props = b.signal("first".to_owned());
                     let shown = b.signal(true);
-                    handles.set(Some((props, shown)));
-                    col().child(show(
-                        move |r| r.get(shown),
-                        move |_| {
-                            let listener = listener.clone();
-                            typed_native_view(KIND, move |r: &mut ReadCx<'_>| TypedNativeProps::new(r.get(props), None))
-                                .w(100)
-                                .h(40)
-                                .test_id("typed-slot")
-                                .on_typed_native::<u32>(move |_, name, &value| {
-                                    assert_eq!(name, "value");
-                                    let resolve = listener.take().expect("waiting for a native event");
-                                    resolve.call1(&JsValue::UNDEFINED, &JsValue::from(value)).unwrap();
-                                })
-                        },
-                    ))
+                    let covered = b.signal(false);
+                    handles.set(Some((props, shown, covered)));
+                    col()
+                        .child(show(
+                            move |r| r.get(shown),
+                            move |_| {
+                                let listener = listener.clone();
+                                typed_native_view(KIND, move |r: &mut ReadCx<'_>| TypedNativeProps::new(r.get(props), None))
+                                    .w(100)
+                                    .h(40)
+                                    .test_id("typed-slot")
+                                    .on_typed_native::<u32>(move |_, name, &value| {
+                                        assert_eq!(name, "value");
+                                        let resolve = listener.take().expect("waiting for a native event");
+                                        resolve.call1(&JsValue::UNDEFINED, &JsValue::from(value)).unwrap();
+                                    })
+                            },
+                        ))
+                        .portal_part(
+                            move |r| r.get(covered),
+                            |_| el().position(Position::Absolute).top(0).left(0).w(40).h(32).bg(rgb(0x3264a8)).test_id("cover"),
+                        )
                 }
             }));
         let app = WebApp::launch(mount.clone(), definition, None)?;
@@ -176,10 +194,18 @@ mod browser {
         assert_eq!(input.get_attribute("data-width").as_deref(), Some("100"));
         assert_eq!(JsFuture::from(created).await?.as_f64(), Some(7.0));
 
-        let (props, shown) = handles.get().unwrap();
+        let (props, shown, covered) = handles.get().unwrap();
         input.focus()?;
         input.click();
         assert!(input.checked());
+        let rect = input.get_bounding_client_rect();
+        let hit = || document.element_from_point((rect.x() + 2.0) as f32, (rect.y() + 2.0) as f32).unwrap();
+        assert!(hit().is_same_node(Some(&input)));
+        app.update(|w| w.set(covered, true)).unwrap();
+        assert_eq!(hit().get_attribute("data-octara-id").as_deref(), Some("cover"));
+        assert!(input.is_connected() && input.checked());
+        app.update(|w| w.set(covered, false)).unwrap();
+        assert!(hit().is_same_node(Some(&input)));
         app.update(|w| w.set(props, "second".to_owned())).unwrap();
         assert_eq!(input.get_attribute("data-props").as_deref(), Some("second"));
         assert_eq!(document.active_element().as_ref(), Some(input.as_ref()));

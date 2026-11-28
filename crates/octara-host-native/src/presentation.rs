@@ -79,11 +79,17 @@ impl Presentation {
 /// Each window can have at most one frame in flight.
 pub(crate) struct PendingNativeViews<View> {
     prepared_rev: Option<u64>,
-    prepared: BTreeMap<NativeId, NativePlacement>,
-    next: BTreeMap<NativeId, NativePlacement>,
+    prepared: BTreeMap<NativeId, NativeViewChange>,
+    next: BTreeMap<NativeId, NativeViewChange>,
     prepared_removals: Vec<View>,
     retiring: Vec<View>,
-    retiring_placements: BTreeMap<NativeId, RetiringView<View>>,
+    retiring_changes: BTreeMap<NativeId, RetiringView<View>>,
+}
+
+#[derive(Default)]
+pub(crate) struct NativeViewChange {
+    pub placement: Option<NativePlacement>,
+    pub snapshot_hidden: Option<bool>,
 }
 
 struct RetiringView<View> {
@@ -99,22 +105,27 @@ impl<View> Default for PendingNativeViews<View> {
             next: BTreeMap::new(),
             prepared_removals: Vec::new(),
             retiring: Vec::new(),
-            retiring_placements: BTreeMap::new(),
+            retiring_changes: BTreeMap::new(),
         }
     }
 }
 
 impl<View> PendingNativeViews<View> {
     pub fn insert(&mut self, placement: NativePlacement) {
-        self.next.insert(placement.id, placement);
+        let change = self.next.entry(placement.id).or_default();
+        change.placement = Some(placement);
+    }
+
+    pub fn set_snapshot_visibility(&mut self, id: NativeId, hidden: bool) {
+        self.next.entry(id).or_default().snapshot_hidden = Some(hidden);
     }
 
     pub fn retire(&mut self, id: NativeId, view: View, placed: bool) {
         self.next.remove(&id);
-        // The admitted frame may call for a placement of this exact instance,
+        // The admitted frame may change this exact instance,
         // even if another view with the same id has since been created.
         if self.prepared.contains_key(&id)
-            && let Entry::Vacant(entry) = self.retiring_placements.entry(id)
+            && let Entry::Vacant(entry) = self.retiring_changes.entry(id)
         {
             entry.insert(RetiringView { view, placed });
         } else if placed {
@@ -124,7 +135,10 @@ impl<View> PendingNativeViews<View> {
 
     #[cfg(target_os = "macos")]
     pub fn latest(&self, id: NativeId) -> Option<&NativePlacement> {
-        self.next.get(&id).or_else(|| self.prepared.get(&id).filter(|_| !self.retiring_placements.contains_key(&id)))
+        self.next
+            .get(&id)
+            .and_then(|change| change.placement.as_ref())
+            .or_else(|| self.prepared.get(&id).filter(|_| !self.retiring_changes.contains_key(&id))?.placement.as_ref())
     }
 
     /// Freeze placements through the synchronized revision. If a draw was
@@ -132,8 +146,8 @@ impl<View> PendingNativeViews<View> {
     pub fn prepare(&mut self, revision: u64) -> bool {
         debug_assert!(self.prepared_rev.is_none_or(|previous| previous <= revision));
         self.prepared_rev = Some(revision);
-        self.discard_retired_placements();
-        self.prepared.append(&mut self.next);
+        self.discard_retired_changes();
+        self.merge_next();
         self.prepared_removals.append(&mut self.retiring);
         self.needs_commit(revision)
     }
@@ -142,13 +156,29 @@ impl<View> PendingNativeViews<View> {
         if self.prepared_rev.take().is_none() {
             return;
         }
-        self.discard_retired_placements();
-        self.prepared.append(&mut self.next);
+        self.discard_retired_changes();
+        self.merge_next();
         self.next = std::mem::take(&mut self.prepared);
     }
 
-    fn discard_retired_placements(&mut self) {
-        for (id, retired) in std::mem::take(&mut self.retiring_placements) {
+    fn merge_next(&mut self) {
+        if self.prepared.is_empty() {
+            self.prepared = std::mem::take(&mut self.next);
+            return;
+        }
+        for (id, next) in std::mem::take(&mut self.next) {
+            let prepared = self.prepared.entry(id).or_default();
+            if next.placement.is_some() {
+                prepared.placement = next.placement;
+            }
+            if next.snapshot_hidden.is_some() {
+                prepared.snapshot_hidden = next.snapshot_hidden;
+            }
+        }
+    }
+
+    fn discard_retired_changes(&mut self) {
+        for (id, retired) in std::mem::take(&mut self.retiring_changes) {
             self.prepared.remove(&id);
             if retired.placed {
                 self.retiring.push(retired.view);
@@ -160,25 +190,25 @@ impl<View> PendingNativeViews<View> {
         self.prepared_rev == Some(revision) && (!self.prepared.is_empty() || !self.prepared_removals.is_empty())
     }
 
-    pub fn commit(&mut self, revision: u64, mut place: impl FnMut(NativePlacement, Option<&mut View>)) {
+    pub fn commit(&mut self, revision: u64, mut apply: impl FnMut(NativeId, NativeViewChange, Option<&mut View>)) {
         if self.prepared_rev != Some(revision) {
             return;
         }
         self.prepared_rev = None;
         self.prepared_removals.clear();
-        for placement in std::mem::take(&mut self.prepared).into_values() {
-            if let Some(mut retired) = self.retiring_placements.remove(&placement.id) {
-                place(placement, Some(&mut retired.view));
+        for (id, change) in std::mem::take(&mut self.prepared) {
+            if let Some(mut retired) = self.retiring_changes.remove(&id) {
+                apply(id, change, Some(&mut retired.view));
                 self.retiring.push(retired.view);
             } else {
-                place(placement, None);
+                apply(id, change, None);
             }
         }
     }
 
     #[cfg(target_os = "macos")]
     pub fn retired_views(&self) -> impl Iterator<Item = &View> {
-        self.prepared_removals.iter().chain(&self.retiring).chain(self.retiring_placements.values().map(|retired| &retired.view))
+        self.prepared_removals.iter().chain(&self.retiring).chain(self.retiring_changes.values().map(|retired| &retired.view))
     }
 }
 
@@ -257,12 +287,12 @@ mod tests {
         pending.insert(placement(1, 8.0));
         pending.insert(placement(3, 0.0));
         pending.insert(placement(1, 12.0));
-        pending.commit(12, |p, _| committed.push(p));
+        pending.commit(12, |_, change, _| committed.push(change.placement.unwrap()));
         assert!(committed.is_empty());
-        pending.commit(10, |p, _| committed.push(p));
+        pending.commit(10, |_, change, _| committed.push(change.placement.unwrap()));
         assert_eq!(std::mem::take(&mut committed), [placement(1, 4.0), placement(2, 2.0)]);
         assert!(pending.prepare(12));
-        pending.commit(12, |p, _| committed.push(p));
+        pending.commit(12, |_, change, _| committed.push(change.placement.unwrap()));
         assert_eq!(committed, [placement(1, 12.0), placement(3, 0.0)]);
         assert!(!pending.prepare(13));
     }
@@ -280,15 +310,15 @@ mod tests {
         assert!(pending.prepare(10));
         pending.retire(NativeId(1), view, false);
 
-        pending.commit(10, |p, retired| {
-            assert_eq!(retired.map(|view| **view), (p.id == NativeId(1)).then_some(p.id));
-            committed.push(p);
+        pending.commit(10, |id, change, retired| {
+            assert_eq!(retired.map(|view| **view), (id == NativeId(1)).then_some(id));
+            committed.push(change.placement.unwrap());
         });
         assert_eq!(committed, [placement(1, 4.0), placement(2, 52.0)]);
         assert!(lifetime.upgrade().is_some());
         assert!(pending.prepare(11));
         assert!(lifetime.upgrade().is_some());
-        pending.commit(11, |_, _| panic!("expected only a removal"));
+        pending.commit(11, |_, _, _| panic!("expected only a removal"));
         assert!(lifetime.upgrade().is_none());
         assert!(!pending.prepare(12));
     }
@@ -310,13 +340,39 @@ mod tests {
         pending.retire(NativeId(2), unplaced, false);
         pending.insert(placement(3, 6.0));
         pending.abandon();
-        pending.commit(10, |_, _| panic!("abandoned frame cannot apply placements"));
+        pending.commit(10, |_, _, _| panic!("abandoned frame cannot apply placements"));
         assert!(unplaced_lifetime.upgrade().is_none());
         assert!(pending.prepare(11));
         assert!(displayed_lifetime.upgrade().is_some());
         let mut committed = Vec::new();
-        pending.commit(11, |p, _| committed.push(p));
+        pending.commit(11, |_, change, _| committed.push(change.placement.unwrap()));
         assert_eq!(committed, [placement(3, 6.0), placement(4, 8.0)]);
         assert!(displayed_lifetime.upgrade().is_none());
+    }
+
+    #[test]
+    fn snapshot_visibility_commits_with_its_draw_and_survives_a_rejected_draw() {
+        let mut pending = PendingNativeViews::<u32>::default();
+        let id = NativeId(1);
+        pending.set_snapshot_visibility(id, true);
+        assert!(pending.prepare(10));
+        pending.set_snapshot_visibility(id, false);
+        pending.insert(placement(1, 20.0));
+        pending.commit(10, |key, change, _| {
+            assert_eq!(key, id);
+            assert_eq!(change.snapshot_hidden, Some(true));
+            assert_eq!(change.placement, None);
+        });
+        assert!(pending.prepare(11));
+        pending.insert(placement(1, 24.0));
+        pending.abandon();
+        assert!(pending.prepare(12));
+        pending.retire(id, 42, true);
+        pending.commit(12, |key, change, retired| {
+            assert_eq!(key, id);
+            assert_eq!(retired.copied(), Some(42));
+            assert_eq!(change.snapshot_hidden, Some(false));
+            assert_eq!(change.placement, Some(placement(1, 24.0)));
+        });
     }
 }

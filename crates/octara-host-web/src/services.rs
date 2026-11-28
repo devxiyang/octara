@@ -72,6 +72,7 @@ impl Services {
             | HostCommand::Closed(_)
             | HostCommand::NativeCommand { .. }
             | HostCommand::TypedNativeCommand { .. }
+            | HostCommand::StartDragOut { .. }
             | HostCommand::SetAppBadge { .. }
             | HostCommand::RequestUserAttention { .. } => {}
         }

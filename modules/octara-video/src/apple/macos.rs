@@ -91,7 +91,10 @@ impl PlatformView {
             apply_corners(&layer, placement.radius, self.view.isFlipped());
         }
         self.clip.setAlphaValue(placement.opacity.into());
-        self.clip.setHidden(!placement.visible);
+    }
+
+    pub(super) fn set_hidden(&self, hidden: bool) {
+        self.clip.setHidden(hidden);
     }
 }
 

@@ -44,7 +44,7 @@
    - Forward native hardware pinch/rotate events:
      - **macOS**: `magnifyWithEvent:` / `rotateWithEvent:` via `OsWindow`.
      - **iOS**: `UIPinchGestureRecognizer` / `UIRotationGestureRecognizer`.
-     - **Linux**: `winit` touchpad `PinchGesture` / `RotationGesture`.
+     - **Linux**: Wayland pointer gesture pinch and rotation events.
      - **Web**: `ctrlKey` wheel zoom + Safari/Pointer multi-touch pinch.
 3. **Scroll Ergonomics**:
    - Add `ScrollDismissesKeyboard::{Never, Immediately, Interactively}` on scroll containers; when triggered during touch drag on iOS/Web, emit editor blur / keyboard dismissal cleanly.
@@ -116,14 +116,14 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
    ```
    - Add `el.on_drag_start(|w| -> Option<Vec<DragItem>>)` triggered once pointer drag crosses the system drag threshold.
    - **macOS**: Initiate `NSDraggingSession` (`beginDraggingSessionWithItems:event:source:`) with `NSString` / `NSURL` / `NSImage` pasteboard writers.
-   - **Web**: Set `draggable="true"` and populate `DataTransfer` in `dragstart`.
+   - **Web**: Set `draggable="true"` and populate `DataTransfer` in `dragstart` with text and in-memory images. Local filesystem paths remain private to desktop hosts.
    - **Linux**: Integrate standard drag source or clean fallback.
 2. **Window Levels & Non-Activating Panels (`octara-model::window`)**:
    - Add `WindowLevel::{Normal, Floating, AlwaysOnTop}` and `pub non_activating_panel: bool` to `WindowOptions` / `WindowPresentation`.
    - **macOS**: Configure `NSWindowLevel` (`NSNormalWindowLevel` / `NSFloatingWindowLevel` / `NSStatusWindowLevel`) and `NSWindowStyleMaskNonactivatingPanel` (`NSPanel` subclass) for Spotlight / HUD floating windows that do not steal activation from other apps.
-   - **Linux**: Map `WindowLevel` onto `winit::window::WindowLevel`.
-3. **Linux Native Host Polish (`crates/octara-host-native/src/os/desktop/`)**:
-   - Verify & complete Wayland `text-input-v3` IME cursor-rect syncing (`set_ime_cursor_area`) and preedit composition.
+   - **Linux**: Use the X11 EWMH utility window type for floating windows and the above state for always-on-top windows. Wayland toplevel stacking remains under compositor control.
+3. **Linux Native Host Polish (`crates/octara-host-native/src/os/linux/`)**:
+   - Verify & complete Wayland `text-input-v3` IME cursor-rect syncing (`set_cursor_rectangle`) and preedit composition.
    - Verify fractional HiDPI scale factor changes update `WindowViewport.scale` and re-shape text cleanly without blur.
    - Read XDG Desktop Portal `org.freedesktop.appearance` (`color-scheme`, `reduced-motion`, `contrast`) into `SystemPreferences`.
 
@@ -158,7 +158,7 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
      - **Exact Scanout Prediction (`targetTimestamp`) & Live Refresh Interval (`targetTimestamp - timestamp`)**: Convert `link.targetTimestamp` into the monotonic sample instant fed to `MotionEngine` / `scene.sample(...)` for zero phase jitter, and propagate the live display frame interval (`1/120 s` vs `1/60 s`) into text-stream coalescing and frame-pacing telemetry.
      - **Decoupled On-Demand Drawable Acquisition**: Acquire the Metal drawable (`CAMetalLayer::nextDrawable` / `wgpu::Surface`) **only** when a VSync tick actually has a dirty/animated frame to paint—eliminating `CAMetalDisplayLink`'s forced extra frame latency (`preferredFrameLatency` removed) and wasted drawable reservations.
 3. **Causal VSync Input Coalescing & `WheelPhase` Fidelity (`shell.rs`)**:
-   - Map `winit`'s `MouseWheel` `TouchPhase` accurately to `WheelPhase` (stopping hardcoded `WheelPhase::Discrete`) so trackpad direct vs. momentum scroll physics work natively.
+   - Preserve native wheel phases so direct trackpad scrolling and momentum remain distinct.
    - Coalesce bursty `CursorMoved` (keep latest position) and `MouseWheel` (accumulate `delta` for matching `(window, phase, mods)`) and flush them at the start of each `CADisplayLink` VSync tick—before running `Cycle` + layout + paint—while flushing immediately ahead of any discrete button/key/phase-change event to preserve strict causal ordering.
 4. **Architectural Scroll-Space Separation & Zero-Allocation Bulk Retirement (`octara-model`, `octara-pipeline`, `octara-tree`, `octara-runtime`, `octara-host-native`)**:
    - **P0-A — End-to-End CPU + GPU Scroll-Space Separation (`SpatialTable` + Retained GPU Instance Buffers)**:
@@ -167,7 +167,7 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
      - **GPU `SpatialTable` & Retained Instance Buffers (`octara-render/src/gpu/`)**: Bind a compact `var<storage, read> spatials: array<vec4f>` (16 B per scroll/motion layer) indexed by `spatial_id` packed in `DrawInst` / `GlyphDraw` / `ClipNode`. Retain the previous frame's sorted GPU storage buffers (`quads`, `glyphs`, `shadows`, `images`, `draws`, `clips`); when only `spatials` change between frames (confirmed via `Arc::ptr_eq` on unchanged group `parts` and matching target size), skip `plan_frame`, skip Radix Sort, and skip all instance-buffer re-uploads—uploading **only the tiny `spatials` buffer (< 1 KB)** before submitting the retained draw calls, while preserving 100% CPU↔Metal pixel parity and `wasm32` WebGPU compatibility.
      - **5K Large-Screen GPU Fill-Rate Optimization (`DamageRect` + Persistent Backing Scissor Partial Rasterization)**: Maintain a window-sized persistent backing texture (avoiding triple-buffered swapchain partial-present staleness), compute the exact `DamageRect` (union of old/new bounds of changed `Part`s and scrolled viewport clips with shadow/AA safety margin), and when `damage_area < 60%` of the viewport (caret blink, single-row hover, sidebar scroll on 5K), cull non-intersecting draws, scissor-clear + rasterize only inside `DamageRect` (`LoadOp::Load`), and copy/blit to the acquired `CAMetalDrawable`; fall back cleanly to full-frame clear when `damage_area >= 60%` or on resize, verified bit-exact against full-frame CPU/GPU renders.
    - **P0-B — Dormant-by-Default `AccessKitProjector` + Native Scroll-Container Semantics (`crates/octara-pipeline/src/a11y/mod.rs`)**:
-     - Keep `AccessKitProjector` dormant (`0.00 ms` per frame) until an assistive consumer activates it (`accesskit_winit` `InitialTreeRequested`, iOS VoiceOver enable, or `Inspector` a11y query); materialize via `snapshot_full` on first activation.
+     - Keep `AccessKitProjector` dormant (`0.00 ms` per frame) until an assistive consumer activates it (an AccessKit initial tree request, iOS VoiceOver enable, or an Inspector accessibility query); materialize via `snapshot_full` on first activation.
      - Even when active, pure scroll consumes only `layout.scroll_changed()` and updates the single scroll container's `scroll_x` / `scroll_y` / relative transform—**0 descendant** `Tree::is_locally_accessible` / `build_entry` / `Properties::eq` work.
    - **P1-C — Zero-Allocation O(1) Bulk Teardown & Preflight (`crates/octara-runtime/src/window.rs::is_retiring`, `crates/octara-tree/src/transaction.rs::Preflight::retirement_ancestor`)**:
      - Eliminate per-call heap `FxHashSet` allocation and repeated parent/portal-owner walks during bulk subtree retirement and transaction preflight via memoized lookup / single-pass retired-subtree marking.

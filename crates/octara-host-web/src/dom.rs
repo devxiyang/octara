@@ -266,6 +266,7 @@ pub(crate) fn update_semantics(
             undo.attr(element, $name, $value)
         };
     }
+    set!("draggable", (expose && !disabled && tree.handler(node, octara::HandlerKind::DragStart).is_some()).then_some("true"))?;
     set!(
         "role",
         if expose {

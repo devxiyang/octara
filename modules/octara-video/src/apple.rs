@@ -31,6 +31,7 @@ pub(super) struct Video {
     player: Player,
     platform: PlatformView,
     visible: bool,
+    snapshot_hidden: bool,
 }
 
 impl Video {
@@ -39,7 +40,7 @@ impl Video {
         let platform = PlatformView::new(surface, mtm)?;
         let mut player = Player::default();
         player.update(platform.player_view(), source);
-        Ok(Self { player, platform, visible: false })
+        Ok(Self { player, platform, visible: false, snapshot_hidden: false })
     }
 }
 
@@ -53,6 +54,7 @@ impl NativeViewInstance for Video {
     fn place(&mut self, placement: &NativePlacement) {
         self.platform.place(placement);
         self.visible = placement.visible;
+        self.platform.set_hidden(self.snapshot_hidden || !self.visible);
         if !self.visible {
             self.player.command(VideoCommand::Pause);
         }
@@ -68,6 +70,11 @@ impl NativeViewInstance for Video {
 
     fn snapshot(&mut self, request: NativeSnapshotRequest, reply: ModuleDispatcher) {
         snapshot_unavailable(request, reply);
+    }
+
+    fn set_occluded_by_snapshot(&mut self, hidden: bool) {
+        self.snapshot_hidden = hidden;
+        self.platform.set_hidden(hidden || !self.visible);
     }
 }
 

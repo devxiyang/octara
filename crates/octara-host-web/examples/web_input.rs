@@ -7,6 +7,12 @@ mod browser {
     use wasm_bindgen::prelude::*;
     use web_sys::HtmlElement;
 
+    const ONE_PIXEL_PNG: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13,
+        73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+        130,
+    ];
+
     #[wasm_bindgen]
     pub struct WebInputFixture {
         app: WebApp,
@@ -90,7 +96,19 @@ mod browser {
                             })
                             .child(text("Drop files").test_id("drop-label")),
                     )
-                    .child(text(bind(move |cx| cx.get(dropped))).test_id("dropped-files"));
+                    .child(text(bind(move |cx| cx.get(dropped))).test_id("dropped-files"))
+                    .child(
+                        el().test_id("drag-source")
+                            .on_drag_start(|_| {
+                                Some(vec![
+                                    DragItem::Text("Drag test text".into()),
+                                    DragItem::Image { media_type: "image/png".into(), bytes: ONE_PIXEL_PNG.to_vec() },
+                                    DragItem::File("/private/drag-fixture.png".into()),
+                                ])
+                            })
+                            .child(text("Drag this item")),
+                    )
+                    .child(el().test_id("declined-drag").on_drag_start(|_| None).child(text("Decline this drag")));
                 #[cfg(feature = "webgpu")]
                 let content = content.child(gpu_canvas());
                 content

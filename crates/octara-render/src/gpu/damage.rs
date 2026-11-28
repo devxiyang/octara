@@ -125,7 +125,7 @@ fn balanced(parts: &[Part], scrolls: Option<&ScrollPlacements>) -> bool {
 }
 
 fn simple_draw(item: &Item) -> bool {
-    matches!(item, Item::Quad(_) | Item::Shadow(_) | Item::Image(_) | Item::Glyphs(_) | Item::Path(_))
+    matches!(item, Item::Quad(_) | Item::Shadow(_) | Item::Image(_) | Item::Glyphs(_) | Item::Path(_) | Item::Native { cut: false, .. })
 }
 
 fn simple_scrollbars(placement: &ScrollPlacement) -> bool {
@@ -314,6 +314,9 @@ impl SceneDamage<'_> {
     fn item(&mut self, item: &Item, offset: Vec2, clip: Rect) -> Option<()> {
         let scale = self.scale;
         let bounds = match item {
+            // An overlay native view paints outside the GPU surface. Its marker
+            // contributes no pixels when swapped for the frozen image.
+            Item::Native { cut: false, .. } => return Some(()),
             Item::Quad(q) => scaled(q.rect, offset, scale),
             Item::Shadow(s) => grow(scaled(s.rect, offset, scale), s.reach() * scale),
             Item::Image(i) => {

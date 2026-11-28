@@ -27,6 +27,11 @@ fn main() -> Result<(), ShellError> {
     if std::env::var_os("OCTARA_TEST_NATIVE_WINDOW").is_none() {
         return Ok(());
     }
+    let expected_scale = std::env::var("OCTARA_TEST_NATIVE_SCALE")
+        .ok()
+        .map(|value| value.parse::<f32>())
+        .transpose()
+        .map_err(|error| ShellError(error.to_string()))?;
     let transparent = Theme::default().color(ColorToken::Background, Color::TRANSPARENT);
     let probe = Rc::new(RefCell::new(Probe::default()));
     let windows = AppDefinition::new()
@@ -44,10 +49,19 @@ fn main() -> Result<(), ShellError> {
         ));
     run_app_with_hook(
         windows,
-        TestWindows { started: Instant::now(), observed_hidden: [false; 2], observed_first: [false; 2], commands_sent: false },
+        TestWindows {
+            started: Instant::now(),
+            observed_hidden: [false; 2],
+            observed_first: [false; 2],
+            commands_sent: false,
+            expected_scale,
+        },
     )?;
     probe.borrow().verify();
     println!("Opaque and transparent native windows reached their first GPU-complete frames");
+    if let Some(scale) = expected_scale {
+        println!("Both native windows presented at scale {scale}");
+    }
     Ok(())
 }
 
@@ -178,6 +192,7 @@ struct TestWindows {
     observed_hidden: [bool; 2],
     observed_first: [bool; 2],
     commands_sent: bool,
+    expected_scale: Option<f32>,
 }
 
 impl ShellHook for TestWindows {
@@ -201,7 +216,8 @@ impl ShellHook for TestWindows {
                     assert_eq!(receipt.stamp.frame, 1, "{title}");
                     self.observed_first[index] = true;
                 }
-                ready += usize::from(receipt.gpu_complete);
+                let scale_matches = self.expected_scale.is_none_or(|scale| window.options().viewport.scale == scale);
+                ready += usize::from(receipt.gpu_complete && scale_matches);
             }
             finished.push(id);
         }

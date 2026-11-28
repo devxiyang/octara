@@ -2,6 +2,7 @@ use super::*;
 use crate::gpu::recording::FrameRecording;
 use octara_model::geometry::{Size, Vec2};
 use octara_model::identity::NativeId;
+use octara_model::native::NativeSlot;
 use octara_model::paint::{Image, ImagePaint, ScrollPlacement, ScrollPlacements, Shadow};
 
 const EXTENT: [u32; 2] = [4632, 2560];
@@ -291,6 +292,53 @@ fn nominally_disjoint_image_rects_can_overlap_at_an_antialiased_pixel() {
         opacity: 1.0,
     })]);
     assert_edge_changes(&old, &picture([]), [10, 7]);
+}
+
+#[test]
+fn native_overlay_snapshot_damages_its_pixels_and_reuses_scroll_spatials() {
+    let Some(mut gpu) = GpuRenderer::new() else { return };
+    let device = gpu.device().clone();
+    let mut reference = GpuRenderer::with_device(device.clone(), gpu.queue().clone());
+    let source = NodeId::default();
+    let extent = [64, 48];
+    let color = OutputColor::SrgbOpaque;
+    let drawable = target(&device, extent, true);
+    let rect = Rect::new(3.0, 7.0, 8.0, 7.0);
+    let clip = Rect::new(1.0, 3.0, 13.0, 12.0);
+    let structure = |item| -> Arc<[Part]> {
+        Arc::from([
+            Part::Item(Item::PushClip { source, rect: clip, radius: [0.0; 4] }),
+            Part::ScrollContent { source, spatial_id: 17, scrollbar_offset: Vec2::default(), parts: Arc::from([Part::Item(item)]) },
+            Part::Item(Item::PopClip),
+            Part::Item(Item::Quad(solid(Rect::new(10.0, 8.0, 5.0, 5.0), Color::WHITE))),
+        ])
+    };
+    let live = structure(Item::Native { source, rect, radius: [0.0; 4], slot: NativeSlot::Overlay, cut: false });
+    let frozen = structure(Item::Image(ImagePaint {
+        source,
+        image: Image::rgba(1, 1, [74, 115, 215, 255]).sample(),
+        rect,
+        bounds: rect,
+        radius: [0.0; 4],
+        opacity: 1.0,
+    }));
+    let scene = |parts, offset| {
+        let mut scrolls = ScrollPlacements::default();
+        scrolls.set(source, Some(ScrollPlacement { offset: Vec2::new(0.0, offset), scrollbars: [None, None] }));
+        DisplayList { parts: vec![Part::ScrollFrame { scrolls, parts }], ..picture([]) }
+    };
+    let before = scene(live.clone(), 0.0);
+    record(&mut gpu, &drawable, &before, color).0.submit();
+    for (index, list) in [scene(frozen.clone(), 0.0), scene(frozen, -3.0), scene(live, -3.0)].into_iter().enumerate() {
+        let (frame, profile) = record(&mut gpu, &drawable, &list, color);
+        assert!(profile.partial_raster, "{profile:?}");
+        if index == 1 {
+            assert_eq!(profile.spatial_upload_bytes, 16);
+        }
+        let actual = pixels(&device, frame, &drawable);
+        let full = full_pixels(&mut reference, &device, &drawable, &list, color);
+        parity(&actual, &full, extent[0]);
+    }
 }
 
 #[test]

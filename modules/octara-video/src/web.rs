@@ -74,6 +74,10 @@ impl NativeViewInstance for Video {
     fn snapshot(&mut self, request: NativeSnapshotRequest, reply: ModuleDispatcher) {
         snapshot_unavailable(request, reply);
     }
+
+    fn set_occluded_by_snapshot(&mut self, hidden: bool) {
+        self.element.set_hidden(hidden);
+    }
 }
 
 impl Drop for Video {

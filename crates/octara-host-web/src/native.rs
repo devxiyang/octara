@@ -81,7 +81,9 @@ impl NativeViews {
                 changes.push((id, change, element.clone()));
             }
 
-            // CSS applies ancestor clipping and stacking to the slot's DOM children.
+            // The overlay root intercepts hits and composites above this DOM
+            // child through CSS. The live element can stay in the browser's
+            // paint order, including while an Octara portal is open.
             let origin = origin.get_or_insert_with(|| mount.get_bounding_client_rect());
             let rect = bounds(&element, origin);
             let visual = tree.visual(node);

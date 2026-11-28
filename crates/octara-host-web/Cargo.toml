@@ -31,8 +31,8 @@ wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
 web-sys = { version = "0.3.107", features = [
     "AbortController", "AbortSignal", "AddEventListenerOptions", "BeforeUnloadEvent", "Blob", "BlobPropertyBag", "CanvasGradient", "CanvasRenderingContext2d", "CanvasWindingRule", "CharacterData", "Clipboard", "ClipboardEvent", "ClipboardItem", "CompositionEvent",
-    "CssStyleDeclaration", "DataTransfer", "Document", "DragEvent",
-    "DocumentFragment", "DomException", "DomRect", "DomRectList", "Element", "Event", "EventTarget", "File", "FileList", "FocusEvent", "FocusOptions",
+    "CssStyleDeclaration", "DataTransfer", "DataTransferItem", "DataTransferItemList", "Document", "DragEvent",
+    "DocumentFragment", "DomException", "DomRect", "DomRectList", "Element", "Event", "EventTarget", "File", "FileList", "FilePropertyBag", "FocusEvent", "FocusOptions",
     "History", "HtmlCanvasElement", "HtmlDialogElement", "HtmlElement", "HtmlHeadElement", "HtmlImageElement", "HtmlInputElement", "HtmlTextAreaElement", "ImageData", "InputEvent",
     "KeyboardEvent", "Location", "MediaQueryList", "MessageChannel", "MessageEvent", "MessagePort", "MouseEvent", "MutationObserver", "MutationObserverInit", "Navigator", "Node", "NodeList", "PageTransitionEvent", "PointerEvent", "PopStateEvent", "Range", "ResizeObserver", "Selection",
     "ResizeObserverBoxOptions", "ResizeObserverEntry", "ResizeObserverOptions", "ScrollBehavior", "ScrollToOptions", "Text",

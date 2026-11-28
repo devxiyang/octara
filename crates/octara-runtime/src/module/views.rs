@@ -166,7 +166,9 @@ struct MountedView {
     slot: NativeSlot,
     instance: Box<dyn NativeViewInstance>,
     _mount: Arc<()>,
-    placed: bool,
+    placed: Option<bool>,
+    snapshot_target: Option<bool>,
+    snapshot_hidden: bool,
 }
 
 /// Host-owned native views for a single window. Dropping a mount releases its instance.
@@ -198,8 +200,13 @@ impl NativeViewMounts {
                 let payload = props.boxed_payload().ok_or_else(|| ModuleError::InvalidArgs("missing typed native props".into()))?;
                 let mount = Arc::new(());
                 let emitter = NativeViewEmitter { window, id: *id, dispatcher: dispatcher.clone(), mount: Arc::downgrade(&mount) };
+                let snapshot_target =
+                    (*slot == NativeSlot::Overlay && factory.airspace_policy() == AirspacePolicy::SnapshotOnOcclude).then_some(false);
                 let instance = factory.create(surface, *id, *slot, payload, emitter)?;
-                self.views.insert(*id, MountedView { slot: *slot, instance, _mount: mount, placed: false });
+                self.views.insert(
+                    *id,
+                    MountedView { slot: *slot, instance, _mount: mount, placed: None, snapshot_target, snapshot_hidden: false },
+                );
                 Ok(true)
             }
             NativeChange::UpdateTyped { id, props } => {
@@ -227,14 +234,14 @@ impl NativeViewMounts {
     /// End command, measurement and event delivery now. The host can keep the
     /// instance mounted until presentation and knows whether it received a placement.
     pub fn retire(&mut self, id: NativeId) -> Option<(Box<dyn NativeViewInstance>, bool)> {
-        self.views.remove(&id).map(|view| (view.instance, view.placed))
+        self.views.remove(&id).map(|view| (view.instance, view.placed.is_some()))
     }
 
     /// Apply a placement to its mounted view during host presentation.
     pub fn place(&mut self, placement: &NativePlacement) {
         if let Some(view) = self.views.get_mut(&placement.id) {
             view.instance.place(placement);
-            view.placed = true;
+            view.placed = Some(placement.visible);
         }
     }
 
@@ -256,6 +263,34 @@ impl NativeViewMounts {
         let Some(view) = self.views.get_mut(&request.id) else { return false };
         view.instance.snapshot(request, dispatcher.clone());
         true
+    }
+
+    /// Airspace captures require an opted-in overlay with a visible committed placement.
+    pub fn can_snapshot_on_occlude(&self, id: NativeId) -> bool {
+        self.views.get(&id).is_some_and(|view| view.snapshot_target == Some(false) && !view.snapshot_hidden && view.placed == Some(true))
+    }
+
+    /// Stage visibility deltas against the last synchronized frame. The caller
+    /// applies them to the corresponding instances when the frame is presented.
+    pub fn snapshot_visibility_changes<'a>(
+        &'a mut self,
+        contains_snapshot: impl Fn(NativeId) -> bool + 'a,
+    ) -> impl Iterator<Item = (NativeId, bool)> + 'a {
+        self.views.iter_mut().filter_map(move |(&id, view)| {
+            let target = view.snapshot_target.as_mut()?;
+            let hidden = contains_snapshot(id);
+            (std::mem::replace(target, hidden) != hidden).then_some((id, hidden))
+        })
+    }
+
+    pub fn set_occluded_by_snapshot(&mut self, id: NativeId, hidden: bool) {
+        if let Some(view) = self.views.get_mut(&id)
+            && view.snapshot_target.is_some()
+            && view.snapshot_hidden != hidden
+        {
+            view.snapshot_hidden = hidden;
+            view.instance.set_occluded_by_snapshot(hidden);
+        }
     }
 
     pub fn busy_reason(&self) -> Option<String> {

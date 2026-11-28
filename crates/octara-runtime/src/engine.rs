@@ -100,6 +100,11 @@ pub trait HostEngine {
         false
     }
 
+    /// Whether drag-out begins in a platform drag event instead of pointer tracking.
+    fn platform_drag_out(&self) -> bool {
+        false
+    }
+
     /// UTF-8 caret and the cluster start under a viewport-space pointer.
     fn text_pointer_hit(&self, _node: NodeId, _pos: Point) -> Option<(usize, usize)> {
         None

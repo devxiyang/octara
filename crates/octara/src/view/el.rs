@@ -11,8 +11,8 @@ use octara_model::{
     geometry::{LayoutBox, Placement, Point, Vec2},
     image::{ImageSource, ImageState, VideoSource},
     input::{
-        ContextMenuEvent, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DroppedFile, GestureEvent, KeyEvent,
-        LinkEvent, PasteEvent,
+        ContextMenuEvent, CopyFormat, CursorStyle, DragItem, DragPayload, DropAxis, DropEvent, DropHover, DroppedFile, GestureEvent,
+        KeyEvent, LinkEvent, PasteEvent,
     },
     motion::Curve,
     native::{NativeEvent, NativeSlot, TypedNativeProps},
@@ -897,6 +897,20 @@ impl<C> El<C> {
             if let HandlerEvent::Interaction { payload: InteractionPayload::Drag(drag), .. } = *event {
                 f(write, drag);
             }
+        })
+    }
+
+    /// Offers data to the desktop or browser when a primary pointer drag begins.
+    /// Return `None` to decline the drag.
+    pub fn on_drag_start(self, f: impl Fn(&mut WriteCx<'_>) -> Option<Vec<DragItem>> + 'static) -> Self {
+        self.handle(HandlerKind::DragStart, move |write, event| {
+            let consumed = match event {
+                HandlerEvent::Interaction { payload: InteractionPayload::DragOut { contact }, .. } => {
+                    f(write).is_some_and(|items| write.start_drag_out(items, *contact))
+                }
+                _ => false,
+            };
+            HandlerOutcome { consumed, ..Default::default() }
         })
     }
 

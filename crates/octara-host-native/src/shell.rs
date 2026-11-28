@@ -4,7 +4,8 @@ mod frame_input;
 
 use self::frame_input::FrameInput;
 use crate::os::{
-    self, FileDropPhase, HostEvent, LoopState, OsHost, OsWindowInit, PlatformEvent, PlatformKey, PlatformSender, PointerPhase, ShellDriver,
+    self, FileDropPhase, HostEvent, LoopState, OsHost, OsWindowContext, PlatformEvent, PlatformKey, PlatformSender, PointerPhase,
+    ShellDriver,
 };
 use crate::window::{Device, FileDrop, HostWindow, create_surface, transparent_background};
 use crate::{NativeAppOptions, ShellConfig, ShellHook, trace};
@@ -150,9 +151,15 @@ impl Shell {
         let initial_fullscreen = runtime.window_geometry().fullscreen;
         let backend = self.device.as_ref().map_or(wgpu::Backends::all(), |device| device.adapter.get_info().backend.into());
         let mut window =
-            os.create_window(id, &options, OsWindowInit { backend, config: &self.config, sender: self.sender.clone(), transparent })?;
+            os.create_window(id, &options, OsWindowContext { backend, config: &self.config, sender: self.sender.clone(), transparent })?;
         window.configure_chrome(&options);
-        window.apply_presentation(&presentation.title, presentation.theme.scheme, presentation.material, presentation.status_bar);
+        window.apply_presentation(
+            &presentation.title,
+            presentation.theme.scheme,
+            presentation.material,
+            presentation.status_bar,
+            presentation.level,
+        );
         let raw = window.host_surface().raw_native();
         let surface = create_surface(&self.instance, window.as_ref())?;
         if self.device.is_none() {
@@ -239,9 +246,9 @@ impl Shell {
                 }
                 HostCommand::Closed(id) => self.detach_window(id)?,
                 HostCommand::Menus(menus) => os.set_menus(&menus),
-                HostCommand::UpdateWindowPresentation { window, title, color_scheme, material, status_bar } => {
+                HostCommand::UpdateWindowPresentation { window, title, color_scheme, material, status_bar, level } => {
                     if let Some(host) = self.windows.get_mut(&window) {
-                        host.os.apply_presentation(&title, color_scheme, material, status_bar);
+                        host.os.apply_presentation(&title, color_scheme, material, status_bar, level);
                     }
                 }
                 HostCommand::SetAppBadge { badge } => os.set_app_badge(badge.as_deref()),
@@ -287,6 +294,16 @@ impl Shell {
                 HostCommand::StartWindowDrag { window } => {
                     if let Some(host) = self.windows.get_mut(&window) {
                         host.os.start_window_drag();
+                    }
+                }
+                HostCommand::StartDragOut { window, contact, items } => {
+                    if self.app.runtime().window(window).is_some()
+                        && let Some(host) = self.windows.get_mut(&window)
+                        && host.os.start_drag_out(items)
+                        && let Some(id) = contact
+                    {
+                        // The native drag now owns the pointer, including the eventual release.
+                        self.dispatch(window, Input::Interaction(InteractionEvent::PointerCancel { id }))?;
                     }
                 }
                 HostCommand::Ask { window, id, ask } => {
@@ -963,8 +980,10 @@ impl Shell {
             PlatformEvent::CursorLeft(window) => return self.cursor(window, None, Modifiers::empty()),
             PlatformEvent::Pointer { window, phase, position, id, kind, button, modifiers } => {
                 let handled = self.pointer(window, phase, position, (id, kind), button, modifiers)?;
-                if phase == PointerPhase::Started && button == Button::Primary {
-                    // Interactive system dragging can use the current native pointer event.
+                if button == Button::Primary
+                    && (phase == PointerPhase::Started || (phase == PointerPhase::Moved && kind != PointerKind::Touch))
+                {
+                    // System dragging may need the initiating native input event.
                     self.drain_commands(os)?;
                 }
                 return Ok(handled);

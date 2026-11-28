@@ -156,6 +156,38 @@ try {
     assert(!drag("drop", dropLabel, files, dropRect), "a file drop should be handled");
     assert(node("dropped-files").textContent === "alpha.txt,beta.txt", "the app did not receive the browser file names in order");
 
+    const dragSource = node("drag-source");
+    assert(dragSource.draggable, "an authored drag source should opt in to native dragging");
+    const outbound = new DataTransfer();
+    assert(drag("dragstart", dragSource, outbound, dragSource.getBoundingClientRect()), "native drag was canceled");
+    assert(outbound.getData("text/plain") === "Drag test text", "the drag did not offer UTF-8 text");
+    assert(outbound.files.length === 1 && outbound.files[0].type === "image/png", "the drag did not offer the image file");
+    assert(outbound.files[0].name === "image.png" && outbound.files[0].size === 70, "the drag image is incomplete");
+    const declined = node("declined-drag");
+    const empty = new DataTransfer();
+    assert(!drag("dragstart", declined, empty, declined.getBoundingClientRect()), "a declined drag started");
+    assert(empty.items.length === 0, "a declined drag exposed data");
+
+    if (new URLSearchParams(location.search).has("trusted-drag")) {
+        await new Promise((resolve, reject) => {
+            dragSource.scrollIntoView({ block: "center" });
+            const bounds = dragSource.getBoundingClientRect();
+            window.octaraDragStart = { x: Math.floor(bounds.x + 16), y: Math.floor(bounds.y + bounds.height / 2) };
+            document.addEventListener("dragstart", event => {
+                try {
+                    assert(event.isTrusted && dragSource.contains(event.target), "expected a trusted drag of the Octara source");
+                    assert(!event.defaultPrevented && event.dataTransfer.getData("text/plain") === "Drag test text",
+                        "the DataTransfer was not populated during the trusted drag");
+                    const images = Array.from(event.dataTransfer.files);
+                    assert(images.length === 1 && images[0].type === "image/png", "the trusted drag image is missing");
+                    resolve();
+                } catch (error) {
+                    reject(error);
+                }
+            }, { once: true });
+        });
+    }
+
     mount.style.width = "360px";
     await within(() => app.viewport_width() === 360, "ResizeObserver did not update the viewport");
     const gpuNode = node("gpu-canvas");

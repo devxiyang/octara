@@ -331,6 +331,10 @@ impl DomEngine {
 }
 
 impl HostEngine for DomEngine {
+    fn platform_drag_out(&self) -> bool {
+        true
+    }
+
     fn platform_text_selection(&self) -> bool {
         true
     }

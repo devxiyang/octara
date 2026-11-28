@@ -66,6 +66,7 @@ pub enum InteractionEvent {
     PointerUp { id: PointerId, target: Option<ContactTarget>, pos: Point, mods: Modifiers },
     PointerCancel { id: PointerId },
     PointerLeave,
+    DragStart { target: TargetGuard, contact: Option<PointerId> },
     Wheel { pos: Point, delta: Vec2, phase: WheelPhase, mods: Modifiers },
     Gesture(GestureEvent),
     Key(KeyEvent),
@@ -78,6 +79,24 @@ pub enum InteractionEvent {
 pub struct ContactTarget {
     pub hit: TargetGuard,
     pub action: Option<TargetGuard>,
+}
+
+/// Data offered to the platform for a drag that can leave this application.
+#[derive(Clone, PartialEq, Eq)]
+pub enum DragItem {
+    Text(String),
+    File(PathBuf),
+    Image { media_type: String, bytes: Vec<u8> },
+}
+
+impl fmt::Debug for DragItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Text(_) => "Text(<redacted>)",
+            Self::File(_) => "File(<redacted>)",
+            Self::Image { .. } => "Image(<redacted>)",
+        })
+    }
 }
 
 /// Authored data carried for the lifetime of an in-app drag.

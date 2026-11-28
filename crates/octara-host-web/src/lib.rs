@@ -3,6 +3,7 @@
 
 mod css;
 mod dom;
+mod drag_out;
 mod edit;
 mod engine;
 mod gestures;
@@ -409,17 +410,7 @@ impl Driver {
                 event.prevent_default();
             }
         })?;
-        self.listen(self.mount.as_ref(), "dragstart", false, |driver, event| {
-            if let Some(element) = event_element(&event)
-                && let Ok(app) = driver.app.try_borrow()
-                && let Some(window) = app.as_ref().and_then(|app| app.runtime().window(driver.window.get()?))
-                && let Some(hit) = driver.dom.target(window.tree(), element.as_ref()).and_then(|hit| hit.hit.node())
-                && std::iter::successors(Some(hit), |&node| window.tree().logical_parent(node))
-                    .any(|node| window.tree().drag_drop(node).is_some_and(|slot| slot.source.is_some()))
-            {
-                event.prevent_default();
-            }
-        })?;
+        self.listen(self.mount.as_ref(), "dragstart", false, |driver, event| driver.drag_out(&event))?;
         for name in ["focus", "blur"] {
             self.listen(self.browser.as_ref(), name, false, move |driver, _| {
                 if name == "blur" {
@@ -749,6 +740,14 @@ impl Driver {
     }
 
     fn cycle<R>(&self, action: impl FnOnce(&mut App, WindowId) -> Result<R, AppError>) -> Result<R, AppError> {
+        self.cycle_with_drag(None, action)
+    }
+
+    fn cycle_with_drag<R>(
+        &self,
+        drag: Option<&drag_out::DragTransfer>,
+        action: impl FnOnce(&mut App, WindowId) -> Result<R, AppError>,
+    ) -> Result<R, AppError> {
         if self.stopped.get() {
             return Err(AppError::AppFailed);
         }
@@ -827,6 +826,13 @@ impl Driver {
                         if window == id {
                             let _guard = self.dom.project_guard();
                             self.native_views.borrow_mut().command(command, &dispatcher);
+                        }
+                    }
+                    HostCommand::StartDragOut { window, items, .. } => {
+                        if window == id
+                            && let Some(drag) = drag
+                        {
+                            drag.offer(items);
                         }
                     }
                     command => self.services.borrow_mut().apply(command),

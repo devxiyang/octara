@@ -49,7 +49,7 @@ impl Scrollbars {
         &mut self,
         tree: &Tree,
         layout: &LayoutEngine,
-        options: &CompileOptions,
+        options: &CompileOptions<'_>,
         local: &mut DirtyBitmap,
     ) -> Option<Duration> {
         self.previous.get_or_insert_with(|| self.state.clone());

@@ -503,9 +503,9 @@ impl Views {
         let flipped = self.parent.isFlipped();
         let height = self.parent.bounds().size.height as f32;
         let host = self.underlay_host();
-        self.pending.commit(revision, |placement, retired| {
-            let view = if let Some(view) = retired { Some(view) } else { self.hosted.get_mut(&placement.id) };
-            if let Some(view) = view {
+        self.pending.commit(revision, |id, change, retired| {
+            let view = if let Some(view) = retired { Some(view) } else { self.hosted.get_mut(&id) };
+            if let (Some(view), Some(placement)) = (view, change.placement) {
                 view.place(&host, placement, flipped, height);
             }
         });

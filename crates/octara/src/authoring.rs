@@ -6,8 +6,8 @@ pub use octara_model::ask::{
 pub use octara_model::geometry::{Align, Edges, LayoutBox, Placement, Point, Rect, Side, Size, Vec2, WindowViewport, point};
 pub use octara_model::image::{CachePolicy, HttpMediaEntry, ImageSource, ImageState, VideoSource};
 pub use octara_model::input::{
-    Button, Chord, ContextMenuEvent, ContextMenuItem, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DropPosition,
-    DroppedFile, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers, PasteEvent,
+    Button, Chord, ContextMenuEvent, ContextMenuItem, CopyFormat, CursorStyle, DragItem, DragPayload, DropAxis, DropEvent, DropHover,
+    DropPosition, DroppedFile, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers, PasteEvent,
 };
 pub use octara_model::input::{OverscrollEvent, ScrollDismissesKeyboard};
 pub use octara_model::motion::{Curve, Motion, Spring, TextReveal, TextRevealKind};
@@ -33,7 +33,7 @@ pub use octara_model::theme::{
 };
 pub use octara_model::window::{
     StatusBarStyle, SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest,
-    WindowMaterial, WindowPresentation,
+    WindowLevel, WindowMaterial, WindowPresentation,
 };
 pub use octara_runtime::graph::{
     delta::{Changes, Cursor},

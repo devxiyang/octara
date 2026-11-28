@@ -70,6 +70,7 @@ pub struct InteractionContext<'a> {
     pub keyboard_open: bool,
     pub pointer: Option<PointerGeometry<'a>>,
     pub text_selection: bool,
+    pub platform_drag_out: bool,
     pub scrollbar: Option<ScrollbarHit>,
 }
 
@@ -94,6 +95,7 @@ pub enum InteractionPayload {
     None,
     Press { pos: Point, modifiers: Modifiers },
     Drag(Drag),
+    DragOut { contact: Option<PointerId> },
     Drop { event: DropEvent, keyboard: bool },
     DropHover { event: DropHover, keyboard: bool },
     TouchScroll { available: Vec2 },
@@ -564,10 +566,17 @@ impl InteractionArbiter {
                 }
                 if let Some(mut contact) = self.contact.take_if(|contact| contact.id == id) {
                     let previous = contact.at;
-                    self.moved(tree, &mut decision, &mut contact, pos, context.now);
+                    self.moved(tree, &mut decision, &mut contact, pos, context);
                     self.move_contact_gesture(&mut decision, &mut contact, previous);
                     self.contact = Some(contact);
                     self.pointer_transfer(tree, &mut decision, id, pos, context.pointer);
+                }
+            }
+            InteractionEvent::DragStart { target, contact } if context.platform_drag_out => {
+                if let Some(hit) = guarded_node(tree, target, tree.front_modal())
+                    && let Some(source) = tree.drag_out_source(hit)
+                {
+                    decision.invoke(tree, tree.guard(source), HandlerKind::DragStart, InteractionPayload::DragOut { contact });
                 }
             }
             InteractionEvent::PointerUp { id, target, pos, mods } => {
@@ -587,7 +596,7 @@ impl InteractionArbiter {
                     }
                     match contact.mode {
                         ContactMode::Pressed if contact.text.is_some() && contact.kind != PointerKind::Touch => {
-                            self.moved(tree, &mut decision, &mut contact, pos, context.now);
+                            self.moved(tree, &mut decision, &mut contact, pos, context);
                         }
                         ContactMode::Pressed if distance(contact.down, pos) > self.slop(contact.kind) => {
                             self.last_press = None;
@@ -596,7 +605,7 @@ impl InteractionArbiter {
                             contact.mode = ContactMode::Spent;
                         }
                         ContactMode::Dragging(_) | ContactMode::Scrolling(_) | ContactMode::Selecting => {
-                            self.moved(tree, &mut decision, &mut contact, pos, context.now);
+                            self.moved(tree, &mut decision, &mut contact, pos, context);
                         }
                         _ => contact.at = pos,
                     }
@@ -734,7 +743,15 @@ impl InteractionArbiter {
         self.contact = Some(contact);
     }
 
-    fn moved(&mut self, tree: &Tree, decision: &mut InteractionDecision, contact: &mut Contact, pos: Point, now: Duration) {
+    fn moved(
+        &mut self,
+        tree: &Tree,
+        decision: &mut InteractionDecision,
+        contact: &mut Contact,
+        pos: Point,
+        context: InteractionContext<'_>,
+    ) {
+        let now = context.now;
         let previous = std::mem::replace(&mut contact.at, pos);
         if previous == pos {
             return;
@@ -750,6 +767,18 @@ impl InteractionArbiter {
                 contact.clear_press(decision);
                 contact.mode = ContactMode::Spent;
                 if contact.button != Button::Primary || contact.outside_modal {
+                    return;
+                }
+                if !context.platform_drag_out
+                    && contact.kind != PointerKind::Touch
+                    && let Some(source) = contact.target.hit.node().and_then(|hit| tree.drag_out_source(hit))
+                {
+                    decision.invoke(
+                        tree,
+                        tree.guard(source),
+                        HandlerKind::DragStart,
+                        InteractionPayload::DragOut { contact: Some(contact.id) },
+                    );
                     return;
                 }
                 if let Some(text) = contact.text.filter(|_| contact.kind != PointerKind::Touch) {
@@ -982,7 +1011,12 @@ fn window_drag_region(tree: &Tree, hit: NodeId, modal: Option<NodeId>) -> Option
             || tree.handlers(node).any(|(kind, _)| {
                 matches!(
                     kind,
-                    HandlerKind::Press | HandlerKind::Toggle | HandlerKind::SecondaryPress | HandlerKind::DoublePress | HandlerKind::Drag
+                    HandlerKind::Press
+                        | HandlerKind::Toggle
+                        | HandlerKind::SecondaryPress
+                        | HandlerKind::DoublePress
+                        | HandlerKind::Drag
+                        | HandlerKind::DragStart
                 )
             })
             || tree.drag_drop(node).is_some_and(|drag| drag.source.is_some() || drag.target.is_some())

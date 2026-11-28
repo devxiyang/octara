@@ -29,8 +29,17 @@ fn initial_presentation_resolves_custom_tokens_during_mount() {
 fn reactive_and_imperative_presentation_share_the_published_frame() {
     let mut driver = HeadlessDriver::new(NativeEngineConfig { supports_window_vibrancy: true, ..Default::default() });
     let app = driver.app_mut();
-    let (title, dark, vibrant, status_bar) =
-        app.build(|build| (build.signal("Initial"), build.signal(false), build.signal(false), build.signal(StatusBarStyle::Auto))).unwrap();
+    let (title, dark, vibrant, status_bar, level) = app
+        .build(|build| {
+            (
+                build.signal("Initial"),
+                build.signal(false),
+                build.signal(false),
+                build.signal(StatusBarStyle::Auto),
+                build.signal(WindowLevel::Normal),
+            )
+        })
+        .unwrap();
     let material = WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar);
     let window = AppDefinition::new()
         .window(
@@ -38,7 +47,8 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
                 .title_with(move |read| read.get(title))
                 .theme_with(move |read| if read.get(dark) { Theme::dark() } else { Theme::light() })
                 .material_with(move |read| if read.get(vibrant) { material } else { WindowMaterial::Opaque })
-                .status_bar_with(move |read| read.get(status_bar)),
+                .status_bar_with(move |read| read.get(status_bar))
+                .level_with(move |read| read.get(level)),
         )
         .launch(app, None)
         .unwrap()[0];
@@ -48,7 +58,7 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
     assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
         HostCommand::Opened(opened),
         HostCommand::UpdateWindowPresentation {
-            window: updated, title, color_scheme: ColorScheme::Light, material: WindowMaterial::Opaque, status_bar: StatusBarStyle::Auto,
+            window: updated, title, color_scheme: ColorScheme::Light, material: WindowMaterial::Opaque, status_bar: StatusBarStyle::Auto, level: WindowLevel::Normal,
         },
     ] if *opened == window && *updated == window && title.as_ref() == "Initial"));
 
@@ -58,11 +68,12 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
         write.set(dark, true);
         write.set(vibrant, true);
         write.set(status_bar, StatusBarStyle::Hidden);
+        write.set(level, WindowLevel::Floating);
     })
     .unwrap();
     assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
         HostCommand::UpdateWindowPresentation {
-            window: updated, title, color_scheme: ColorScheme::Dark, material: updated_material, status_bar: StatusBarStyle::Hidden,
+            window: updated, title, color_scheme: ColorScheme::Dark, material: updated_material, status_bar: StatusBarStyle::Hidden, level: WindowLevel::Floating,
         },
     ] if *updated == window && title.as_ref() == "Reactive" && *updated_material == material));
     let current = app.runtime().window(window).unwrap();
@@ -76,6 +87,7 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
         write.set_window_theme(theme.clone());
         write.set_window_material(WindowMaterial::Opaque);
         write.set_window_title("Final");
+        write.set_window_level(WindowLevel::AlwaysOnTop);
     })
     .unwrap();
     let current = app.runtime().window(window).unwrap();
@@ -84,7 +96,7 @@ fn reactive_and_imperative_presentation_share_the_published_frame() {
     assert_eq!(current.last_commit().unwrap().draw.as_ref().unwrap().background, background);
     assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
         HostCommand::UpdateWindowPresentation {
-            window: updated, title, color_scheme: ColorScheme::Dark, material: WindowMaterial::Opaque, status_bar: StatusBarStyle::Hidden,
+            window: updated, title, color_scheme: ColorScheme::Dark, material: WindowMaterial::Opaque, status_bar: StatusBarStyle::Hidden, level: WindowLevel::AlwaysOnTop,
         },
     ] if *updated == window && title.as_ref() == "Final"));
 
@@ -308,4 +320,66 @@ fn window_feedback_and_restart_state_are_independent_by_key() {
     assert_eq!(restored_max.window_geometry(), zoomed);
     assert!(restored_max.options().maximized);
     assert_eq!(restored_max.options().viewport.size, WindowOptions::default().viewport.size);
+}
+
+#[test]
+fn outbound_drag_uses_the_guarded_press_and_offers_private_payload_once() {
+    use octara::model::input::{Button, Modifiers};
+
+    let calls = Rc::new(Cell::new(0));
+    let invoked = calls.clone();
+    let mut driver = HeadlessDriver::new(Default::default());
+    let items = vec![
+        DragItem::Text("private drag content".into()),
+        DragItem::File("/tmp/private-drag-file".into()),
+        DragItem::Image { media_type: "image/png".into(), bytes: vec![211, 221, 231] },
+    ];
+    let payload = items.clone();
+    let window = driver
+        .app_mut()
+        .open_window(WindowOptions::default(), move |_| {
+            el().size(80)
+                .on_drag_start(move |_| {
+                    invoked.set(invoked.get() + 1);
+                    Some(payload.clone())
+                })
+                .child(el().size(40).test_id("drag-child"))
+        })
+        .unwrap();
+
+    driver.take_host_commands();
+    let press_at = Point::new(12.0, 12.0);
+    let contact = driver.app().runtime().window(window).unwrap().hit_test(press_at).unwrap();
+    let pointer = PointerId(7);
+    let modifiers = Modifiers::empty();
+    driver
+        .dispatch(
+            window,
+            Input::Interaction(InteractionEvent::PointerDown {
+                id: pointer,
+                target: contact,
+                pos: press_at,
+                kind: PointerKind::Mouse,
+                button: Button::Primary,
+                mods: modifiers,
+            }),
+        )
+        .unwrap();
+
+    for x in [16.0, 17.0, 30.0, 81.0] {
+        driver
+            .dispatch(window, Input::Interaction(InteractionEvent::PointerMove { id: pointer, pos: Point::new(x, 12.0), mods: modifiers }))
+            .unwrap();
+        if x == 16.0 {
+            assert_eq!(calls.get(), 0);
+            assert!(driver.take_host_commands().is_empty());
+        }
+    }
+    assert_eq!(calls.get(), 1);
+    let commands = driver.take_host_commands();
+    assert!(matches!(commands.as_slice(), [HostCommand::StartDragOut { window: id, contact: Some(source), items: offered }]
+        if *id == window && *source == pointer && *offered == items));
+    let debug = format!("{commands:?}");
+    assert_eq!(debug.matches("<redacted>").count(), 3);
+    assert!(!debug.contains("private") && !debug.contains("211"));
 }

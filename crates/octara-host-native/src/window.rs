@@ -78,6 +78,7 @@ pub(crate) struct HostWindow {
     pub id: WindowId,
     pub native_mounts: NativeViewMounts,
     pending_module_views: PendingNativeViews<Box<dyn NativeViewInstance>>,
+    module_dispatcher: Option<ModuleDispatcher>,
     // Drop the surface before releasing the native handles it borrows.
     surface: Arc<wgpu::Surface<'static>>,
     pub os: Box<dyn OsWindow>,
@@ -112,6 +113,7 @@ impl HostWindow {
             id,
             native_mounts: NativeViewMounts::default(),
             pending_module_views: PendingNativeViews::default(),
+            module_dispatcher: None,
             os,
             accessibility_active: false,
             publication,
@@ -264,10 +266,23 @@ impl HostWindow {
     }
 
     pub fn synchronize_native(&mut self, runtime: &mut AppRuntime, dispatcher: &ModuleDispatcher) {
+        self.module_dispatcher.get_or_insert_with(|| dispatcher.clone());
         let changes = self.publication.take_native_changes();
-        if changes.is_empty() {
-            return;
+        if !changes.is_empty() {
+            self.apply_native_changes(changes, runtime, dispatcher);
         }
+        if let Some(frame) = self.publication.latest() {
+            for (id, hidden) in self.native_mounts.snapshot_visibility_changes(|id| frame.contains_native_snapshot(id)) {
+                self.pending_module_views.set_snapshot_visibility(id, hidden);
+                if hidden {
+                    self.publication.retain_native_snapshot(id);
+                }
+            }
+        }
+        self.capture_native_airspace();
+    }
+
+    fn apply_native_changes(&mut self, changes: Vec<NativeChange>, runtime: &mut AppRuntime, dispatcher: &ModuleDispatcher) {
         let surface = self.os.host_surface();
         let mut built_in = Vec::new();
         for change in changes {
@@ -282,6 +297,7 @@ impl HostWindow {
                     continue;
                 }
                 NativeChange::Destroy { id } => {
+                    self.publication.forget_native_snapshot(*id);
                     if let Some((view, placed)) = self.native_mounts.retire(*id) {
                         self.pending_module_views.retire(*id, view, placed);
                     } else {
@@ -301,6 +317,14 @@ impl HostWindow {
             && let Some(native) = self.os.native_views()
         {
             native.sync_native_views(&built_in);
+        }
+    }
+
+    fn capture_native_airspace(&mut self) {
+        if !self.suspended
+            && let Some(dispatcher) = &self.module_dispatcher
+        {
+            self.publication.capture_native_airspace(&mut self.native_mounts, dispatcher);
         }
     }
 
@@ -452,11 +476,24 @@ impl HostWindow {
         let progress = frame.progress();
         self.os.pre_present_notify();
         let mut commit_native_views = || {
-            self.pending_module_views.commit(frame.stamp.native_rev, |placement, retired| {
+            self.pending_module_views.commit(frame.stamp.native_rev, |id, change, retired| {
                 if let Some(view) = retired {
-                    view.place(&placement);
+                    if let Some(placement) = change.placement {
+                        view.place(&placement);
+                    }
+                    if let Some(hidden) = change.snapshot_hidden {
+                        view.set_occluded_by_snapshot(hidden);
+                    }
                 } else {
-                    self.native_mounts.place(&placement);
+                    if let Some(placement) = change.placement {
+                        self.native_mounts.place(&placement);
+                    }
+                    if let Some(hidden) = change.snapshot_hidden {
+                        self.native_mounts.set_occluded_by_snapshot(id, hidden);
+                        if !hidden {
+                            self.publication.did_restore_native_snapshot(id);
+                        }
+                    }
                 }
             });
         };
@@ -485,6 +522,7 @@ impl HostWindow {
                 self.os.set_window_geometry(WindowGeometryRequest { fullscreen: Some(true), ..Default::default() });
             }
         }
+        self.capture_native_airspace();
         if suboptimal {
             self.invalidate_surface(false);
         }

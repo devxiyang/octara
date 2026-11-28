@@ -236,6 +236,7 @@ pub(super) fn plan_frame_spatial(
                 clips.pop();
                 continue;
             }
+            Item::Native { cut: false, .. } => continue,
             _ => return None,
         };
         instance.spatial = spatial;

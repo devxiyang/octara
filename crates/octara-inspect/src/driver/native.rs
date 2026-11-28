@@ -62,6 +62,9 @@ impl NativeHost {
             views.frame = Some(frame.number);
             let surface = HostSurface::new(HostSurfaceKind::Headless, Some(id));
             for change in publication.take_native_changes() {
+                if let NativeChange::Destroy { id } = change {
+                    publication.forget_native_snapshot(id);
+                }
                 let placed = matches!(&change, NativeChange::Place { placements }
                     if placements.iter().any(|placement| views.mounts.contains(placement.id)));
                 match views.mounts.apply_change(&change, surface, runtime.native_views_mut(), &dispatcher) {
@@ -69,6 +72,12 @@ impl NativeHost {
                     Err(error) => runtime.report_native_view_mount_error(&error),
                 }
             }
+            let visibility: Vec<_> = views.mounts.snapshot_visibility_changes(|id| frame.contains_native_snapshot(id)).collect();
+            called_view |= !visibility.is_empty();
+            for (id, hidden) in visibility {
+                views.mounts.set_occluded_by_snapshot(id, hidden);
+            }
+            called_view |= publication.capture_native_airspace(&mut views.mounts, &dispatcher);
             let window = runtime.window(id).expect("live headless window");
             replies.extend(views.live_replies(window).map(|reply| (id, reply)));
             for request in &frame.measurements {

@@ -24,6 +24,10 @@ harness = false
 name = "macos_input"
 harness = false
 
+[[test]]
+name = "macos_drag_panel"
+harness = false
+
 [dependencies]
 accesskit.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
@@ -49,19 +53,18 @@ async-channel = "2.5.0"
 clipboard-rs = { version = "0.3.5", default-features = false }
 futures-lite = "2.6.1"
 wl-clipboard-rs = "0.9.5"
-x11rb = "0.13.2"
-zbus = { version = "5.19.0", default-features = false, features = ["async-io"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
-
-[target.'cfg(not(any(target_os = "ios", target_os = "macos")))'.dependencies]
-accesskit_winit.workspace = true
+x11rb = { version = "0.13.2", features = ["cursor", "dl-libxcb", "xkb"] }
+x11-dl = "2.21.0"
+xkbcommon-dl = { version = "0.4.2", features = ["x11"] }
+accesskit_unix = "0.24.1"
+calloop = "0.13.0"
+smithay-client-toolkit = { version = "0.19.2", default-features = false, features = ["calloop"] }
+wayland-client = { version = "0.31.15", features = ["system", "dlopen"] }
+wayland-cursor = "0.31.14"
+wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
+url = "2.5.8"
 open.workspace = true
-winit.workspace = true
-
-[target.'cfg(not(any(target_os = "ios", target_os = "linux", target_os = "macos")))'.dependencies]
-arboard = { workspace = true, features = ["image-data"] }
+zbus = { version = "5.19.0", default-features = false, features = ["async-io"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 accesskit_consumer = "0.39.2"

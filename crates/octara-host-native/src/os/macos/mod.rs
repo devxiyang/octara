@@ -4,6 +4,7 @@ mod acquisition;
 mod application;
 mod asks;
 mod chrome;
+mod drag;
 mod editor;
 mod input;
 mod menus;
@@ -16,7 +17,7 @@ mod window;
 
 use super::apple_frame_clock::{DisplayClock, retry_on_clock};
 use super::{
-    Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowInit, PlatformEvent, PlatformSender,
+    Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent, PlatformSender,
     ServiceCleanup, ShellDriver, WindowAccessibility, WindowAsks, WindowHostEvent, WindowNativeViews, WindowPresentation, WindowTextInput,
     reply, surface_drawable,
 };
@@ -25,7 +26,7 @@ use objc2::rc::Retained;
 use objc2::{ClassType, MainThreadMarker};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSColor,
-    NSRequestUserAttentionType, NSView, NSWindow, NSWorkspace,
+    NSRequestUserAttentionType, NSView, NSWindow, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{NSPoint, NSRect, NSString, NSURL};
 use objc2_quartz_core::CATransaction;
@@ -35,11 +36,11 @@ use octara::{StatusBarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::{Size, WindowViewport};
 use octara_model::identity::NativeId;
-use octara_model::input::{CursorStyle, HostReply, InteractionEvent, PasteEvent};
+use octara_model::input::{CursorStyle, DragItem, HostReply, InteractionEvent, PasteEvent};
 use octara_model::native::{NativeChange, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::theme::ColorScheme;
-use octara_model::window::UserAttention;
+use octara_model::window::{UserAttention, WindowLevel};
 use octara_render::{gpu::OutputColor, wgpu};
 use raw_window_handle::{AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle};
 use std::cell::{Cell, RefCell};
@@ -59,6 +60,7 @@ struct MacHost {
     queue: EventQueue,
     launch: Rc<Launch>,
     application: Weak<Application>,
+    activate_on_first_regular_window: bool,
 }
 
 pub(super) fn create() -> Box<dyn OsHost> {
@@ -80,7 +82,7 @@ pub(super) fn create() -> Box<dyn OsHost> {
         };
         reply(&sender, window, response);
     });
-    Box::new(MacHost { menu_bar, routing, queue, launch: Rc::default(), application: Weak::new() })
+    Box::new(MacHost { menu_bar, routing, queue, launch: Rc::default(), application: Weak::new(), activate_on_first_regular_window: true })
 }
 
 impl OsHost for MacHost {
@@ -120,20 +122,20 @@ impl OsHost for MacHost {
         true
     }
 
-    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowInit<'_>) -> Result<Box<dyn OsWindow>, String> {
+    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String> {
         let mtm = MainThreadMarker::new().ok_or("AppKit windows must be created on the main thread")?;
-        let OsWindowInit { backend, config, sender, transparent } = context;
+        let OsWindowContext { backend, config, sender, transparent } = context;
         let window = window::create(mtm, options);
         let content_size = window.contentRectForFrameRect(window.frame()).size;
         let application = self.application.clone();
         let input_sender = sender.clone();
-        let dispatch = Rc::new(move |event| {
+        let dispatch: Rc<view::Dispatch> = Rc::new(move |event, drag| {
             if matches!(event, PlatformEvent::CursorMoved { .. } | PlatformEvent::Interaction { event: InteractionEvent::Wheel { .. }, .. })
             {
                 input_sender.send_event(event);
                 return false;
             }
-            application.upgrade().is_some_and(|app| app.dispatch(event))
+            application.upgrade().is_some_and(|app| app.dispatch(event, drag))
         });
         let view = view::OctaraView::new(mtm, NSRect::new(NSPoint::ZERO, content_size), id, dispatch, sender.wake());
         let container = window::attach(&window, &view);
@@ -181,6 +183,7 @@ impl OsHost for MacHost {
             clock,
             acquisition,
             transactional: false,
+            activate_on_show: !options.non_activating_panel && std::mem::take(&mut self.activate_on_first_regular_window),
         };
         window.set_transparent(transparent);
         Ok(Box::new(window))
@@ -254,6 +257,7 @@ struct MacWindow {
     clock: Option<DisplayClock>,
     acquisition: Option<acquisition::Acquisition>,
     transactional: bool,
+    activate_on_show: bool,
 }
 
 // SAFETY: MacWindow retains the NSWindow, content container, and render view on AppKit's
@@ -313,8 +317,16 @@ unsafe impl OsWindow for MacWindow {
         self.chrome.configure(options);
     }
 
-    fn apply_presentation(&mut self, title: &str, color_scheme: ColorScheme, material: WindowMaterial, _status_bar: StatusBarStyle) {
+    fn apply_presentation(
+        &mut self,
+        title: &str,
+        color_scheme: ColorScheme,
+        material: WindowMaterial,
+        _status_bar: StatusBarStyle,
+        level: WindowLevel,
+    ) {
         self.window.setTitle(&NSString::from_str(title));
+        window::set_level(&self.window, level);
         // SAFETY: These are process-lifetime AppKit appearance names.
         let name = unsafe {
             match color_scheme {
@@ -361,6 +373,10 @@ unsafe impl OsWindow for MacWindow {
         self.chrome.start_drag();
     }
 
+    fn start_drag_out(&mut self, items: Vec<DragItem>) -> bool {
+        self.view.start_drag_out(&items)
+    }
+
     fn focus(&mut self) {
         if self.window.isMiniaturized() {
             self.window.deminiaturize(None);
@@ -392,7 +408,14 @@ unsafe impl OsWindow for MacWindow {
     }
 
     fn show(&mut self) {
-        self.focus();
+        if self.window.styleMask().contains(NSWindowStyleMask::NonactivatingPanel) {
+            self.window.orderFrontRegardless();
+        } else {
+            if std::mem::take(&mut self.activate_on_show) {
+                NSApplication::sharedApplication(MainThreadMarker::from(&*self.window)).activate();
+            }
+            self.focus();
+        }
         self.chrome.did_show();
         if let Some(acquisition) = &mut self.acquisition {
             acquisition.did_show();

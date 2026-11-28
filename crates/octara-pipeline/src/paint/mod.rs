@@ -126,6 +126,7 @@ struct DrawKey {
     text: Option<PaintKey>,
     window_active: bool,
     images: ImageVersions,
+    native_snapshot: Option<u64>,
 }
 
 type ImageVersions = SmallVec<[(u64, u64); 2]>;
@@ -185,6 +186,7 @@ struct Stage {
     window_active: bool,
     image_generation: u64,
     reduced_motion: bool,
+    native_snapshots: FxHashMap<NodeId, Sample>,
 }
 
 #[derive(Default)]
@@ -208,6 +210,7 @@ pub(crate) struct PaintCompiler {
     finished_exits: FrameArena<ExitTicket>,
     last_scene: Option<Arc<PaintScene>>,
     resting_draw: Option<Arc<DisplayList>>,
+    native_snapshots: FxHashMap<NodeId, Sample>,
 }
 
 pub(crate) struct PaintFrame {
@@ -217,13 +220,14 @@ pub(crate) struct PaintFrame {
     pub next_deadline: Option<Duration>,
 }
 
-pub(crate) struct CompileOptions {
+pub(crate) struct CompileOptions<'a> {
     pub viewport: WindowViewport,
     pub now: f64,
     pub reduced_motion: bool,
     pub window_active: bool,
     pub verify: bool,
     pub transparent_window: bool,
+    pub native_snapshots: &'a FxHashMap<NodeId, Sample>,
 }
 
 impl PaintCompiler {
@@ -233,7 +237,7 @@ impl PaintCompiler {
         delta: &TreeDelta,
         layout: &LayoutEngine,
         text: &mut TextEngine,
-        options: CompileOptions,
+        options: CompileOptions<'_>,
     ) -> PaintFrame {
         if self.stage.is_none() {
             self.stage = Some(Stage {
@@ -242,6 +246,7 @@ impl PaintCompiler {
                 window_active: self.window_active,
                 image_generation: self.image_generation,
                 reduced_motion: self.reduced_motion,
+                native_snapshots: self.native_snapshots.clone(),
                 ..Stage::default()
             });
         }
@@ -251,6 +256,15 @@ impl PaintCompiler {
         local.union_with(layout.changed());
         local.union_with(text.changed());
         local.extend(delta.created.iter().copied());
+        if self.native_snapshots != *options.native_snapshots {
+            local.extend(
+                self.native_snapshots
+                    .keys()
+                    .chain(options.native_snapshots.keys())
+                    .filter_map(|&node| (self.native_snapshots.get(&node) != options.native_snapshots.get(&node)).then_some(node)),
+            );
+            self.native_snapshots.clone_from(options.native_snapshots);
+        }
         let mut scroll_updates = std::mem::take(&mut self.scroll_dirty);
         scroll_updates.union_with(layout.scroll_changed());
         let scrollbar_deadline = self.scrollbars.step(tree, layout, &options, &mut scroll_updates);
@@ -566,6 +580,7 @@ impl PaintCompiler {
         self.window_active = stage.window_active;
         self.image_generation = stage.image_generation;
         self.reduced_motion = stage.reduced_motion;
+        self.native_snapshots = stage.native_snapshots;
         // The tree retains speculative writes. Completed local drawings remain usable by key on retry.
     }
 
@@ -601,7 +616,7 @@ struct Compile<'a> {
     tree: &'a Tree,
     layout: &'a LayoutEngine,
     text: &'a mut TextEngine,
-    options: &'a CompileOptions,
+    options: &'a CompileOptions<'a>,
     local: DirtyBitmap,
     branches: DirtyBitmap,
     changed_children: FxHashMap<NodeId, SmallVec<[NodeId; 4]>>,
@@ -771,6 +786,7 @@ impl Compile<'_> {
             text: self.text.paint_key(node),
             window_active: self.options.window_active,
             images: images.iter().map(|sample| (sample.source().id(), sample.frame().version)).collect(),
+            native_snapshot: self.options.native_snapshots.get(&node).map(|image| image.source().id()),
         }
     }
 
@@ -867,13 +883,24 @@ impl Compile<'_> {
             if !native.live {
                 out.push(Item::Quad(solid(node, rect, self.tree.theme_at(node).get(ColorToken::Surface))));
             }
-            out.push(Item::Native {
-                source: node,
-                rect,
-                radius: radius(visual, rect),
-                slot: native.slot,
-                cut: native.live && native.slot == NativeSlot::Underlay,
-            });
+            if let Some(image) = self.options.native_snapshots.get(&node) {
+                out.push(Item::Image(ImagePaint {
+                    source: node,
+                    image: image.clone(),
+                    rect,
+                    bounds: rect,
+                    radius: radius(visual, rect),
+                    opacity: 1.0,
+                }));
+            } else {
+                out.push(Item::Native {
+                    source: node,
+                    rect,
+                    radius: radius(visual, rect),
+                    slot: native.slot,
+                    cut: native.live && native.slot == NativeSlot::Underlay,
+                });
+            }
         }
         if let Some(ops) = self.tree.canvas(node) {
             self.canvas(node, ops, content, visual, &mut images, out);

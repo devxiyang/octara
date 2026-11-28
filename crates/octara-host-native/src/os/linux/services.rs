@@ -1,4 +1,3 @@
-use super::Reply;
 use crate::os::ServiceCleanup;
 use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
@@ -9,6 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::thread;
 
+type Reply = Arc<dyn Fn(HostReply) + Send + Sync>;
+
 type ClipboardJob = Box<dyn FnOnce(&Mutex<ClipboardState>) + Send>;
 
 pub(super) struct Clipboard {
@@ -18,19 +19,14 @@ pub(super) struct Clipboard {
 
 struct ClipboardState {
     native: arboard::Clipboard,
-    #[cfg(target_os = "linux")]
     mixed: super::linux_clipboard::MixedClipboard,
 }
 
 impl Clipboard {
     pub(super) fn new() -> Self {
-        let state = arboard::Clipboard::new().ok().map(|native| {
-            Arc::new(Mutex::new(ClipboardState {
-                native,
-                #[cfg(target_os = "linux")]
-                mixed: super::linux_clipboard::MixedClipboard::new(),
-            }))
-        });
+        let state = arboard::Clipboard::new()
+            .ok()
+            .map(|native| Arc::new(Mutex::new(ClipboardState { native, mixed: super::linux_clipboard::MixedClipboard::new() })));
         Self { state, worker: OnceCell::new() }
     }
 
@@ -126,10 +122,7 @@ impl ClipboardState {
             [ClipboardItem::Text(text)] => self.native.set_text(text.as_str()),
             [ClipboardItem::Image { media_type, bytes }] if media_type == "image/png" => self.native.set_image(decode_png(bytes)?),
             [ClipboardItem::Files(paths)] if !paths.is_empty() => self.native.set().file_list(paths),
-            #[cfg(target_os = "linux")]
             _ => return self.mixed.write(items),
-            #[cfg(not(target_os = "linux"))]
-            _ => return Err(ServiceError::Unavailable),
         };
         result.map_err(clipboard_error)
     }
@@ -204,7 +197,6 @@ mod tests {
         assert!(matches!(decode_png(&bytes[..8]), Err(ServiceError::Failed)));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires an isolated X11 or Wayland data-control session and writes its clipboard"]
     fn linux_clipboard_service_reads_both_formats_after_one_write() {

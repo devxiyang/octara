@@ -12,7 +12,7 @@ mod view;
 use super::apple_frame_clock::{DisplayClock, retry_on_clock};
 use super::apple_metal::set_transactional;
 use crate::os::{
-    ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowInit, PlatformEvent,
+    ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent,
     PlatformKey, PlatformSender, ServiceCleanup, ShellDriver, WindowAccessibility, WindowHostEvent, WindowPresentation, WindowScene,
     WindowTextInput, reply, surface_drawable,
 };
@@ -39,7 +39,7 @@ use octara_model::geometry::WindowViewport;
 use octara_model::identity::TargetGuard;
 use octara_model::input::{HostReply, Key, Modifiers};
 use octara_model::theme::ColorScheme;
-use octara_model::window::{StatusBarStyle, WindowGeometry, WindowMaterial};
+use octara_model::window::{StatusBarStyle, WindowGeometry, WindowLevel, WindowMaterial};
 use octara_render::{gpu::OutputColor, wgpu};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
 use scene::AreaConnection;
@@ -157,9 +157,9 @@ impl OsHost for IosHost {
         unsafe { NSLog(&*format, &*message as *const NSString) };
     }
 
-    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowInit<'_>) -> Result<Box<dyn OsWindow>, String> {
+    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String> {
         let main = MainThreadMarker::new().ok_or("UIKit requires the application main thread")?;
-        let OsWindowInit { config, backend, sender, transparent } = context;
+        let OsWindowContext { config, backend, sender, transparent } = context;
         let scene = scene::current();
         if !scene::ready() {
             return Err("The UIKit scene is disconnected".into());
@@ -303,7 +303,14 @@ unsafe impl OsWindow for IosWindow {
         WindowGeometry { size: viewport.size, scale: viewport.scale, fullscreen: true, ..Default::default() }
     }
 
-    fn apply_presentation(&mut self, title: &str, color_scheme: ColorScheme, _material: WindowMaterial, status_bar: StatusBarStyle) {
+    fn apply_presentation(
+        &mut self,
+        title: &str,
+        color_scheme: ColorScheme,
+        _material: WindowMaterial,
+        status_bar: StatusBarStyle,
+        _level: WindowLevel,
+    ) {
         self.window.setOverrideUserInterfaceStyle(match color_scheme {
             ColorScheme::Light => UIUserInterfaceStyle::Light,
             ColorScheme::Dark => UIUserInterfaceStyle::Dark,

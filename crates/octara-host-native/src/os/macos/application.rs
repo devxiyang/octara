@@ -1,6 +1,7 @@
 //! AppKit application delegate and main run-loop integration.
 
 use super::MacHost;
+use super::view::DragEvent;
 use crate::os::{HostWake, LoopState, OsHost, PlatformEvent, PlatformSender, ShellDriver};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
@@ -165,7 +166,6 @@ define_class!(
         fn did_finish_launching(&self, _: &NSNotification) {
             APPKIT_LAUNCHED.store(true, Ordering::Relaxed);
             self.ivars().launched();
-            NSApplication::sharedApplication(self.mtm()).activate();
         }
 
         #[unsafe(method(application:openURLs:))]
@@ -247,16 +247,16 @@ pub(super) struct Application {
 }
 
 impl Application {
-    pub(super) fn dispatch(&self, event: PlatformEvent) -> bool {
-        self.process(Some(event))
+    pub(super) fn dispatch(&self, event: PlatformEvent, drag: Option<DragEvent<'_>>) -> bool {
+        self.process(Some((event, drag)))
     }
 
-    fn process(&self, synchronous: Option<PlatformEvent>) -> bool {
+    fn process(&self, synchronous: Option<(PlatformEvent, Option<DragEvent<'_>>)>) -> bool {
         if self.stopped.get() {
             return false;
         }
         if !self.launch.ready.get() {
-            if let Some(event) = synchronous {
+            if let Some((event, _)) = synchronous {
                 self.queue.push(event);
             }
             return false;
@@ -264,7 +264,7 @@ impl Application {
         let session = self.session.borrow_mut().take();
         let Some(mut session) = session else {
             // AppKit can reenter from modal loops or synchronous delegate calls during the shell.
-            if let Some(event) = synchronous {
+            if let Some((event, _)) = synchronous {
                 self.queue.push(event);
             }
             return false;
@@ -295,7 +295,11 @@ impl Application {
         }
     }
 
-    fn cycle(&self, session: &mut Session, synchronous: Option<PlatformEvent>) -> Result<(bool, LoopState), String> {
+    fn cycle(
+        &self,
+        session: &mut Session,
+        synchronous: Option<(PlatformEvent, Option<DragEvent<'_>>)>,
+    ) -> Result<(bool, LoopState), String> {
         let Session { host, driver, started } = session;
         let host = host.as_mut();
         if !*started {
@@ -303,9 +307,15 @@ impl Application {
             driver.start(host, self.queue.sender())?;
         }
         let mut consumed = false;
-        for (event, direct) in self.queue.take().into_iter().map(|event| (event, false)).chain(synchronous.map(|event| (event, true))) {
+        let queued = self.queue.take().into_iter().map(|event| (event, None, false));
+        let direct = synchronous.map(|(event, drag)| (event, drag, true));
+        for (event, drag, direct) in queued.chain(direct) {
             let terminating = matches!(event, PlatformEvent::WillTerminate);
-            let handled = driver.event(host, event)?;
+            let deliver = || driver.event(host, event);
+            let handled = match drag {
+                Some(drag) => drag.dispatch(deliver),
+                None => deliver(),
+            }?;
             if terminating {
                 return Ok((false, LoopState { exit: true, deadline: None }));
             }
@@ -440,7 +450,6 @@ pub(super) fn run(mut host: Box<MacHost>, driver: Box<dyn ShellDriver>) -> Resul
     application.session.borrow_mut().as_mut().unwrap().host.set_menus(&[]);
     if APPKIT_LAUNCHED.load(Ordering::Relaxed) {
         delegate.ivars().launched();
-        app.activate();
     }
     app.run();
     application.stopped.set(true);

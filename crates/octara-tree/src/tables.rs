@@ -244,6 +244,7 @@ pub enum HandlerKind {
     Gesture,
     Toggle,
     Drag,
+    DragStart,
     Drop,
     DropHover,
     FileDrop,

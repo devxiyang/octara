@@ -102,7 +102,11 @@ impl NativeViewFactory for Factory {
     }
 
     fn airspace_policy(&self) -> AirspacePolicy {
-        if cfg!(target_os = "ios") { AirspacePolicy::SnapshotOnOcclude } else { AirspacePolicy::UnderlayPreferred }
+        if cfg!(any(target_os = "macos", target_os = "ios")) && !self.mock {
+            AirspacePolicy::SnapshotOnOcclude
+        } else {
+            AirspacePolicy::UnderlayPreferred
+        }
     }
 
     fn supports_slot(&self, surface: HostSurfaceKind, slot: NativeSlot) -> bool {

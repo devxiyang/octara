@@ -5,7 +5,7 @@ use crate::{BuildCx, ReactiveId, ReactiveWorld, ReadCx, ReadSignal, ScopeId, Wri
 use octara_model::ask::Menu;
 use octara_model::input::{Chord, KeyEvent, Modifiers};
 use octara_model::theme::Theme;
-use octara_model::window::{StatusBarStyle, WindowMaterial, WindowPresentation};
+use octara_model::window::{StatusBarStyle, WindowLevel, WindowMaterial, WindowPresentation};
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -87,6 +87,11 @@ impl BuildCx<'_> {
     #[doc(hidden)]
     pub fn bind_window_status_bar(&mut self, source: impl FnMut(&mut ReadCx<'_>) -> StatusBarStyle + 'static) {
         self.bind_presentation(source, PresentationUpdate::StatusBar);
+    }
+
+    #[doc(hidden)]
+    pub fn bind_window_level(&mut self, source: impl FnMut(&mut ReadCx<'_>) -> WindowLevel + 'static) {
+        self.bind_presentation(source, PresentationUpdate::Level);
     }
 
     fn bind_presentation<T: Clone + PartialEq + 'static>(

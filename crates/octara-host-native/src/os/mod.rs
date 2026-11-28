@@ -9,13 +9,15 @@ use octara_gpu::DrawTarget;
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceRequest};
 use octara_model::geometry::{Rect, Size, WindowViewport};
 use octara_model::identity::{EditorSessionId, NativeId, TargetGuard};
-use octara_model::input::{CursorStyle, HostReply};
+use octara_model::input::{CursorStyle, DragItem, HostReply};
 use octara_model::native::{NativeChange, NativeCommand, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::semantics::A11yAction;
 use octara_model::text::TextGeometry;
 use octara_model::theme::ColorScheme;
-use octara_model::window::{StatusBarStyle, UserAttention, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial};
+use octara_model::window::{
+    StatusBarStyle, UserAttention, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowLevel, WindowMaterial,
+};
 use octara_pipeline::NativePublication;
 use octara_render::{gpu::OutputColor, wgpu};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
@@ -36,21 +38,25 @@ mod apple_metal;
 mod apple_preferences;
 #[cfg(target_os = "macos")]
 mod corners;
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-mod desktop;
 #[cfg(target_os = "ios")]
 mod ios;
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod scheduling;
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+mod windows;
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-use desktop as platform;
 #[cfg(target_os = "ios")]
 use ios as platform;
+#[cfg(target_os = "linux")]
+use linux as platform;
 #[cfg(target_os = "macos")]
 use macos as platform;
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+use windows as platform;
 
 pub fn create_os_host() -> Box<dyn OsHost> {
     platform::create()
@@ -66,7 +72,7 @@ pub(crate) fn decode_avif(_: &[u8]) -> Result<Image, &'static str> {
     Err("The built-in decoder on this platform does not support AVIF")
 }
 
-pub struct OsWindowInit<'a> {
+pub struct OsWindowContext<'a> {
     pub backend: wgpu::Backends,
     pub config: &'a ShellConfig,
     pub sender: PlatformSender,
@@ -140,7 +146,7 @@ pub trait OsHost {
     fn report_error(&self, error: &str) {
         eprintln!("Octara: {error}");
     }
-    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowInit<'_>) -> Result<Box<dyn OsWindow>, String>;
+    fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String>;
     fn set_menus(&mut self, _menus: &[Menu]) {}
     fn set_app_badge(&mut self, _badge: Option<&str>) {}
     fn request_user_attention(&mut self, window: Option<&mut dyn OsWindow>, attention: UserAttention) {
@@ -218,11 +224,22 @@ pub unsafe trait OsWindow {
         WindowGeometry { size: viewport.size, scale: viewport.scale, ..WindowGeometry::default() }
     }
     fn set_window_geometry(&mut self, _geometry: WindowGeometryRequest) {}
-    fn apply_presentation(&mut self, _title: &str, _color_scheme: ColorScheme, _material: WindowMaterial, _status_bar: StatusBarStyle) {}
+    fn apply_presentation(
+        &mut self,
+        _title: &str,
+        _color_scheme: ColorScheme,
+        _material: WindowMaterial,
+        _status_bar: StatusBarStyle,
+        _level: WindowLevel,
+    ) {
+    }
     fn focus(&mut self) {}
     fn minimize(&mut self) {}
     fn toggle_maximize(&mut self) {}
     fn start_window_drag(&mut self) {}
+    fn start_drag_out(&mut self, _items: Vec<DragItem>) -> bool {
+        false
+    }
     fn show(&mut self) {}
     fn close(&mut self) {}
 }

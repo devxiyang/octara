@@ -525,6 +525,23 @@ impl Tree {
         self.tables.handlers.get(node)
     }
 
+    /// Find the live authoring callback for an outbound drag from this hit.
+    pub fn drag_out_source(&self, hit: NodeId) -> Option<NodeId> {
+        let modal = self.front_modal();
+        for node in self.logical_ancestors(hit) {
+            if !self.interactive_in(node, modal) || self.editor(node).is_some() {
+                return None;
+            }
+            if self.handler(node, HandlerKind::Drag).is_some() || self.drag_drop(node).is_some_and(|slot| slot.source.is_some()) {
+                return None;
+            }
+            if self.handler(node, HandlerKind::DragStart).is_some() {
+                return Some(node);
+            }
+        }
+        None
+    }
+
     pub fn handler(&self, node: NodeId, kind: HandlerKind) -> Option<HandlerId> {
         self.handler_slot(node)?.callbacks.iter().find_map(|(candidate, handler)| (*candidate == kind).then_some(*handler))
     }

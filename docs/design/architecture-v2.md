@@ -86,7 +86,7 @@ flowchart TB
         Pipeline["octara-pipeline<br/>NativeEngine (HostEngine): Taffy · Parley Text Geometry<br/>MotionEngine · PaintCompiler · AccessKitProjector"]
         Render["octara-render (Thread-Agnostic: Native + WebGPU)<br/>RenderGraph(plan) · Batch · Atlas · wgpu Encode<br/>Custom Shaders · CPU Reference Oracle"]
         Gpu["octara-gpu (Native Only)<br/>Event-Driven DeviceExecutor · Surface/Readback Leases<br/>Async Background PNG Writer"]
-        HostNative["octara-host-native<br/>Platform-neutral shell + OsHost/OsWindow SPI<br/>os/{macos, ios, desktop}"]
+        HostNative["octara-host-native<br/>Platform-neutral shell + OsHost/OsWindow SPI<br/>os/{macos, ios, linux, windows}"]
     end
 
     subgraph L3W["Layer 3b: Web Pipeline & Host"]
@@ -337,7 +337,7 @@ Replaces v1's 25-variant flat `InputEvent` and eliminates the Native vs Hosted p
    - `Wheel { pos, delta, phase, mods }` / `Key(KeyEvent)` / `BackGesture { id, phase }` / `WindowActive(bool)`
    - *Native hit-test and Web `WeakMap` lookup both emit `ContactTarget { hit: TargetGuard, action: Option<TargetGuard> }`. `InteractionArbiter` is the single state machine for press capture, outside-dismiss, modal scope, iOS keyboard-dismiss re-verification, and focus handoff.*
 2. **`EditorEvent`**:
-   - `ProposeEdit { session, expected_rev, edit }`, `ProposeSelection`, `Composition`, `Commit`, `CancelComposition`, `KeyIntercept` — shared by macOS AppKit, iOS UIKit, winit IME, and Web `<input>`/`<textarea>`.
+   - `ProposeEdit { session, expected_rev, edit }`, `ProposeSelection`, `Composition`, `Commit`, `CancelComposition`, `KeyIntercept` — shared by macOS AppKit, iOS UIKit, Linux input methods, and Web `<input>`/`<textarea>`.
 3. **`HostReply`**:
    - `ViewportChanged`, `ChromeChanged`, `GeometryChanged`, `MenuCommand`, `AskAnswer`, `ServiceReply`, `NativeEvent`, `NativeMeasurement`, `NativeSnapshot`, `ExitFinished(ExitTicket)`, `AccessibilityAction`.
 4. **`AgentCommand`** (isolated in `octara-inspect`):
@@ -377,7 +377,8 @@ pub trait HostEngine {
   - Apple hosts share a `CADisplayLink` driver with on-demand drawable acquisition.
     - `os/macos/`: AppKit application and window delegates, an `NSView` implementing `NSTextInputClient`, direct AccessKit, and AppKit menus and asks.
     - `os/ios/`: UIKit application and scene delegates, a `UIViewController` for presentation, and a `UIView` implementing `UITextInput` with VoiceOver support.
-    - `os/desktop/`: The transitional Winit adapter handles Linux and Windows windowing, IME, and accessibility. See [Direct native platform hosts](v2/17-native-platform-hosts-without-winit.md) for the remaining migration.
+    - `os/linux/`: Wayland windowing and input, an X11 fallback, XDG Portal preferences, and demand-driven AT-SPI accessibility.
+    - `os/windows/`: The host reports that direct Win32 support is scheduled for 0.2.0.
 
 ### 7.2 Web Stack (`octara-host-web`)
 - **`DomEngine`**:

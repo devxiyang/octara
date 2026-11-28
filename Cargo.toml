@@ -42,7 +42,6 @@ keywords = ["gui", "ui", "reactive", "native", "wasm"]
 categories = ["gui"]
 
 [workspace.dependencies]
-accesskit_winit = "0.34.2"
 arboard = { version = "3.7.0", default-features = false }
 block2 = "0.6.2"
 objc2-map-kit = "0.3.2"
@@ -55,7 +54,6 @@ objc2-ui-kit = { version = "0.3.2", default-features = false }
 objc2-web-kit = "0.3.2"
 open = "5.4.5"
 rfd = "0.18.0"
-winit = "0.30.13"
 accesskit = { version = "0.25.2", features = ["serde"] }
 linebender_resource_handle = "0.1.1"
 icu_locale = { version = "~2.3.0", default-features = false, features = ["compiled_data"] }

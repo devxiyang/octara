@@ -47,6 +47,8 @@ pub struct WindowOptions {
     pub resizable: bool,
     pub maximized: bool,
     pub titlebar: TitlebarStyle,
+    /// Create a panel that can take keyboard focus without activating the application.
+    pub non_activating_panel: bool,
     pub persistence_key: Option<String>,
 }
 
@@ -62,6 +64,7 @@ impl Default for WindowOptions {
             resizable: true,
             maximized: false,
             titlebar: TitlebarStyle::default(),
+            non_activating_panel: false,
             persistence_key: None,
         }
     }

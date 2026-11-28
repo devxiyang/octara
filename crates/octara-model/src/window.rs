@@ -71,6 +71,16 @@ pub enum StatusBarStyle {
     Hidden,
 }
 
+/// The desktop stacking priority of a window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowLevel {
+    #[default]
+    Normal,
+    Floating,
+    AlwaysOnTop,
+}
+
 /// The presentation shared by the retained tree, renderer and host window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowPresentation {
@@ -78,11 +88,18 @@ pub struct WindowPresentation {
     pub theme: Theme,
     pub material: WindowMaterial,
     pub status_bar: StatusBarStyle,
+    pub level: WindowLevel,
 }
 
 impl Default for WindowPresentation {
     fn default() -> Self {
-        Self { title: "Octara".into(), theme: Theme::default(), material: WindowMaterial::default(), status_bar: StatusBarStyle::default() }
+        Self {
+            title: "Octara".into(),
+            theme: Theme::default(),
+            material: WindowMaterial::default(),
+            status_bar: StatusBarStyle::default(),
+            level: WindowLevel::default(),
+        }
     }
 }
 

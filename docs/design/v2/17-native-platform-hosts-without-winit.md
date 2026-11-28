@@ -46,7 +46,7 @@
 - **`OsHost`**:
   - `fn run(self: Box<Self>, driver: Box<dyn ShellDriver>) -> Result<(), String>;` — enters the native run loop (`NSApplication::run`, `UIApplicationMain`, Wayland/X11 `calloop`/poll loop).
   - `fn wake(&self) -> HostWake;`
-  - `fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowInit) -> Result<Box<dyn OsWindow>, String>;`
+  - `fn create_window(&mut self, id: WindowId, options: &WindowOptions, context: OsWindowContext) -> Result<Box<dyn OsWindow>, String>;`
   - Global services: `set_menus`, `set_app_badge`, `request_user_attention`, `open_url`, `read_clipboard`, `write_clipboard`, `system_preferences`, thread QoS setup hooks.
 - **`OsWindow`** (owns the native window handle directly — no `Arc<winit::window::Window>`):
   - `fn raw_handles(&self) -> Result<(RawDisplayHandle, RawWindowHandle), String>;` (via `raw-window-handle` 0.6 for `wgpu::SurfaceTargetUnsafe::RawHandle`)

@@ -66,7 +66,10 @@ impl PlatformView {
         self.view.setFrame(video_frame(placement));
         apply_corners(&self.view.layer(), placement.radius, true);
         self.clip.setAlpha(placement.opacity.into());
-        self.clip.setHidden(!placement.visible);
+    }
+
+    pub(super) fn set_hidden(&self, hidden: bool) {
+        self.clip.setHidden(hidden);
     }
 }
 
