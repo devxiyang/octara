@@ -372,6 +372,7 @@ impl HostWindow {
         let editor = EditorSession::active(runtime.tree());
         let active = editor.as_ref().map(|session| {
             let editor = session.editor();
+            let frame = frame.as_ref().filter(|frame| frame.editor_stamp.is_some_and(|(id, _)| id == session.id()));
             ActiveEditorView {
                 session: session.id(),
                 document_rev: editor.document_rev(),
@@ -381,8 +382,10 @@ impl HostWindow {
                 editor,
                 multiline: editor.multiline,
                 secure: editor.is_secure(),
-                caret: frame.as_ref().and_then(|frame| frame.editor_caret),
-                geometry: frame.as_ref().and_then(|frame| frame.editor_geometry.as_ref()),
+                caret: frame.and_then(|frame| frame.editor_caret),
+                geometry: frame
+                    .filter(|frame| frame.editor_stamp == Some((session.id(), editor.document_rev())))
+                    .and_then(|frame| frame.editor_geometry.as_ref()),
             }
         });
         self.os.text_input().sync_text_input(active.as_ref());

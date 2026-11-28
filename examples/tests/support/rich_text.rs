@@ -1,8 +1,11 @@
 //! Shared rich-text fixtures and reference pixel assertions.
 
 use octara::model::geometry::{Point, Rect, Size, WindowViewport};
+use octara::model::input::{EditorEvent, TextEdit};
 use octara::model::paint::{DisplayList, GlyphRun, Item, Picture};
+use octara::model::text::{ClauseStyle, MarkedClause};
 use octara::prelude::*;
+use octara::tree::editor::EditorSession;
 use octara_pipeline::{NativeEngine, NativeEngineConfig};
 use octara_render::CpuRenderer;
 
@@ -150,6 +153,47 @@ pub fn inline_pill(compare: impl FnMut(&DisplayList, &Picture, f32)) {
         },
         compare,
     );
+}
+
+pub fn marked_clauses(mut compare: impl FnMut(&DisplayList, &Picture, f32)) {
+    let mut app = App::new(|_, _| Box::new(NativeEngine::new(NativeEngineConfig::default())));
+    let viewport = WindowViewport { size: Size::new(180.0, 64.0), ..Default::default() };
+    let options = WindowOptions { viewport, ..Default::default() };
+    let window = app.open_window(options, |_| input().value("A".to_owned()).w(160).h(40).autofocus().test_id("clauses")).unwrap();
+    for styles in [[ClauseStyle::Clause, ClauseStyle::ActiveClause], [ClauseStyle::ActiveClause, ClauseStyle::Clause]] {
+        let active = EditorSession::active(app.runtime().window(window).unwrap().tree()).unwrap();
+        let event = EditorEvent::Edit {
+            session: active.id(),
+            expected_rev: active.editor().document_rev(),
+            edit: TextEdit::Mark {
+                text: "日本語".into(),
+                replacement: active.editor().composition().is_none().then_some(1..1),
+                selection: None,
+                clauses: [MarkedClause { range: 0..3, style: styles[0] }, MarkedClause { range: 3..9, style: styles[1] }]
+                    .into_iter()
+                    .collect(),
+            },
+        };
+        assert!(app.dispatch(window, octara::runtime::Input::Editor(event)).unwrap().handled);
+        let window = app.runtime().window(window).unwrap();
+        let node = window.tree().test_ids("clauses")[0];
+        let editor = window.tree().editor(node).unwrap();
+        assert_eq!(editor.value(), "A");
+        let drawing = window.last_commit().unwrap().draw.as_ref().unwrap();
+        let foreground = window.tree().visual(node).text;
+        let mut underlines: Vec<_> = drawing
+            .quads()
+            .filter(|quad| quad.source == node && quad.fill == Some(foreground) && matches!(quad.rect.h, 1.0 | 2.0))
+            .map(|quad| quad.rect)
+            .collect();
+        underlines.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let [first, second] = underlines.as_slice() else { panic!("one underline per clause") };
+        assert_eq!(first.h, if styles[0] == ClauseStyle::Clause { 1.0 } else { 2.0 });
+        assert_eq!(second.h, 3.0 - first.h);
+        assert!((first.right() - second.x).abs() < 0.01);
+        assert!((first.bottom() - second.bottom()).abs() < 0.01);
+        assert_render(drawing, |_, _| {}, &mut compare);
+    }
 }
 
 fn assert_render(drawing: &DisplayList, inspect_cpu: impl Fn(&Picture, f32), mut compare: impl FnMut(&DisplayList, &Picture, f32)) {

@@ -106,6 +106,7 @@ fn file_row(id: u32, file: RowSignal<File>, model: Directory) -> El {
                         .border(1)
                         .value(move |r: &mut ReadCx<'_>| r.with(draft, |file| file.name.clone()))
                         .autofocus()
+                        .submit_on_enter()
                         .on_input(move |w, name| {
                             w.update(model.edits, |n| *n += 1);
                             w.update(draft, |file| file.name = name.to_owned());

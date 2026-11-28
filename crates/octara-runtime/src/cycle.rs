@@ -344,15 +344,18 @@ impl AppRuntime {
                     return true;
                 }
                 if let InteractionEvent::Key(key) = event
+                    && let Some(session) = EditorSession::active(&self.windows[&id].tree)
+                {
+                    if session.editor().composition().is_some() {
+                        return false;
+                    }
+                    let event = EditorEvent::KeyIntercept { session: session.id(), expected_rev: session.editor().document_rev(), key };
+                    return self.route_editor(id, event, routed) || self.editor_key_default(id, key, routed);
+                }
+                if let InteractionEvent::Key(key) = event
                     && self.route_transfer_key(id, key, routed)
                 {
                     return true;
-                }
-                if let InteractionEvent::Key(key) = event
-                    && let Some(session) = EditorSession::active(&self.windows[&id].tree)
-                {
-                    let event = EditorEvent::KeyIntercept { session: session.id(), expected_rev: session.editor().document_rev(), key };
-                    return self.route_editor(id, event, routed) || self.editor_key_default(id, key, false, routed);
                 }
                 if let InteractionEvent::Key(key) = event
                     && (self.windows[&id]
@@ -481,20 +484,22 @@ impl AppRuntime {
 
     fn route_editor(&mut self, id: WindowId, event: EditorEvent, routed: &mut VecDeque<Routed>) -> bool {
         let node = event.session().node;
-        let Some(action) = EditorSession::active(&self.windows[&id].tree).and_then(|session| session.route(event).ok()) else {
+        let window = &self.windows[&id];
+        let geometry = if matches!(event, EditorEvent::Command { .. }) { window.engine.text_geometry(&window.tree, node) } else { None };
+        let Some(action) =
+            EditorSession::active(&window.tree).and_then(|session| session.route_with_geometry(event, geometry.as_ref()).ok())
+        else {
             return false;
         };
         match action {
             EditorAction::Apply(update) => {
                 let window = self.windows.get_mut(&id).expect("known window");
-                window.text.reset_column();
                 window.apply(RuntimeOp::EditorApply { node, update });
                 true
             }
             EditorAction::Propose(proposal) => {
                 self.invoke_editor_input(id, node, &proposal);
                 if let Some(window) = self.windows.get_mut(&id) {
-                    window.text.reset_column();
                     window.propose_edit(node, proposal);
                 }
                 true
@@ -503,9 +508,6 @@ impl AppRuntime {
                 if self.route_transfer_key(id, key, routed) {
                     return true;
                 }
-                if self.windows[&id].tree.editor(node).is_some_and(|editor| editor.composition().is_some()) {
-                    return false;
-                }
                 if key.requests_context_menu() && self.context_menu(id, node, None) {
                     return true;
                 }
@@ -513,18 +515,6 @@ impl AppRuntime {
                     return true;
                 }
                 let tree = &self.windows[&id].tree;
-                if matches!(key.key, Key::Char('z' | 'Z'))
-                    && key.modifiers.intersects(Modifiers::META | Modifiers::CTRL)
-                    && !key.modifiers.contains(Modifiers::ALT)
-                    && let Some(session) = EditorSession::active(tree)
-                {
-                    let proposal = if key.modifiers.contains(Modifiers::SHIFT) { session.redo() } else { session.undo() };
-                    if let Some(proposal) = proposal {
-                        self.invoke_editor_input(id, node, &proposal);
-                        self.windows.get_mut(&id).expect("known window").propose_edit(node, proposal);
-                    }
-                    return true;
-                }
                 if key.key == Key::Enter
                     && key.modifiers.is_empty()
                     && tree.editor(node).is_some_and(|editor| editor.submit_on_enter && editor.composition().is_none())
@@ -542,7 +532,9 @@ impl AppRuntime {
                 }
                 false
             }
-            EditorAction::KeyFallback(key) => self.editor_key_default(id, key, true, routed),
+            EditorAction::Clipboard(command) => self.editor_clipboard(id, command),
+            EditorAction::Handled => true,
+            EditorAction::Unhandled => false,
         }
     }
 
@@ -623,7 +615,14 @@ impl AppRuntime {
                 true
             }
             HostReply::Paste(event) => self.deliver_paste(id, None, event, routed),
-            HostReply::MenuCommand { name, .. } => self.invoke_command(id, &name),
+            HostReply::MenuCommand { name, chord } => {
+                if chord.is_some()
+                    && EditorSession::active(&self.windows[&id].tree).is_some_and(|session| session.editor().composition().is_some())
+                {
+                    return true;
+                }
+                self.invoke_command(id, &name)
+            }
             HostReply::AskAnswer { id: ask, answer } => {
                 let Some(pending) = self.asks.get(&ask.0) else { return false };
                 if id != pending.window || !self.world.is_scope_alive(pending.scope) || !answer.fits(&pending.ask) {
@@ -705,7 +704,7 @@ impl AppRuntime {
                         if let Some(session) = EditorSession::active(tree)
                             && [node, anchor.node, focus.node].into_iter().all(|target| target == session.id().node)
                         {
-                            let event = EditorEvent::ProposeSelection {
+                            let event = EditorEvent::Select {
                                 session: session.id(),
                                 expected_rev: session.editor().document_rev(),
                                 selection: (anchor.offset, focus.offset),

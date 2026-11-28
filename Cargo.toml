@@ -42,7 +42,6 @@ keywords = ["gui", "ui", "reactive", "native", "wasm"]
 categories = ["gui"]
 
 [workspace.dependencies]
-arboard = { version = "3.7.0", default-features = false }
 block2 = "0.6.2"
 objc2-map-kit = "0.3.2"
 objc2-core-foundation = "0.3.2"

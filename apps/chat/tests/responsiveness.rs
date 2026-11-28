@@ -26,7 +26,7 @@ fn long_paragraphs_and_fences_keep_the_same_focused_composer_and_selection() {
             .driver
             .dispatch(
                 fixture.window,
-                Input::Editor(EditorEvent::ProposeEdit {
+                Input::Editor(EditorEvent::Edit {
                     session: editor.session,
                     expected_rev: editor.document_rev,
                     edit: TextEdit::Insert { text: draft.into(), replacement: None },
@@ -38,7 +38,7 @@ fn long_paragraphs_and_fences_keep_the_same_focused_composer_and_selection() {
             .driver
             .dispatch(
                 fixture.window,
-                Input::Editor(EditorEvent::ProposeSelection {
+                Input::Editor(EditorEvent::Select {
                     session: editor.session,
                     expected_rev: editor.document_rev,
                     selection: (draft.len(), 2),
@@ -67,7 +67,7 @@ fn four_mib_of_streamed_text_keeps_the_editor_and_virtual_transcript_responsive(
         .driver
         .dispatch(
             fixture.window,
-            Input::Editor(EditorEvent::ProposeEdit {
+            Input::Editor(EditorEvent::Edit {
                 session: editor.session,
                 expected_rev: editor.document_rev,
                 edit: TextEdit::Insert { text: draft.into(), replacement: None },

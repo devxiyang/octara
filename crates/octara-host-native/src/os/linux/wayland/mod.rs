@@ -6,8 +6,9 @@ mod input;
 mod keyboard;
 mod window;
 
+use super::compose::KeySymbol;
 use super::preferences::{self, Observer};
-use crate::os::{HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent, PlatformSender, ShellDriver};
+use crate::os::{HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent, PlatformKey, PlatformSender, ShellDriver};
 use calloop::EventLoop;
 use calloop::channel::{self, Event};
 use octara::WindowOptions;
@@ -25,7 +26,7 @@ use smithay_client_toolkit::{
     delegate_compositor, delegate_output, delegate_registry, delegate_seat, delegate_shm, delegate_xdg_shell, delegate_xdg_window,
     registry_handlers,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -78,6 +79,7 @@ struct Shared {
     seats: RefCell<HashMap<ObjectId, Rc<RefCell<input::Seat>>>>,
     sender: PlatformSender,
     events: RefCell<VecDeque<NativeEvent>>,
+    pending_keysym: Cell<Option<(WindowId, KeySymbol)>>,
     dispatch_grab: RefCell<Option<input::GrabOrigin>>,
     cursor_shm: Option<wl_shm::WlShm>,
     cursors: RefCell<input::Cursors>,
@@ -94,6 +96,8 @@ struct Protocol {
 enum NativeEvent {
     Platform(PlatformEvent),
     Grab(PlatformEvent, input::GrabOrigin),
+    Key { window: WindowId, symbol: KeySymbol, key: PlatformKey },
+    ResetCompose(wl_surface::WlSurface),
     Ime(ime::Update),
     Drag(data::DragUpdate),
 }
@@ -140,6 +144,7 @@ impl OsHost for WaylandHost {
             seats: RefCell::default(),
             sender: self.sender.clone(),
             events: RefCell::default(),
+            pending_keysym: Cell::new(None),
             dispatch_grab: RefCell::default(),
         });
         let mut protocol = Protocol {
@@ -188,6 +193,19 @@ impl OsHost for WaylandHost {
                             let result = driver.event(self.as_mut(), event);
                             shared.dispatch_grab.take();
                             result?;
+                        }
+                        Some(NativeEvent::Key { window, symbol, key }) => {
+                            shared.pending_keysym.set(Some((window, symbol)));
+                            let result = driver.event(self.as_mut(), PlatformEvent::Key { window, event: key });
+                            shared.pending_keysym.take();
+                            result?;
+                        }
+                        Some(NativeEvent::ResetCompose(surface)) => {
+                            if let Some(window) = shared.window(&surface)
+                                && let Some(compose) = &window.compose
+                            {
+                                compose.reset();
+                            }
                         }
                         Some(NativeEvent::Ime(update)) => {
                             update.apply(&shared, self.as_mut(), driver.as_mut())?;

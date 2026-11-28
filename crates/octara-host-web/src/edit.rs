@@ -14,7 +14,7 @@ use octara::tree::{
 };
 use octara_model::ask::ClipboardItem;
 use octara_model::identity::{EditorSessionId, NodeId};
-use octara_model::input::{EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, Modifiers, PasteEvent};
+use octara_model::input::{EditorCommand, EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, Modifiers, PasteEvent};
 use octara_model::overlay::FocusTrapFeatures;
 use octara_model::semantics::TextPosition;
 use octara_model::text::{CommitKind, InlineAttachment, TextEdit};
@@ -206,11 +206,12 @@ impl Driver {
         self.listen(self.mount.as_ref(), "beforeinput", false, |driver, event| {
             let Some(field) = driver.event_field(&event) else { return };
             let Some(input) = event.dyn_ref::<BrowserInput>() else { return };
-            if input.is_composing() || is_composition_input(&input.input_type()) || driver.editor.ending.get().is_some() {
+            let kind = input.input_type();
+            if input.is_composing() || is_composition_input(&kind) || driver.editor.composing() {
                 return;
             }
             driver.editor.before.set(None);
-            if input.input_type() == "insertFromPaste"
+            if kind == "insertFromPaste"
                 && input.cancelable()
                 && let Some(text) = input.data_transfer().and_then(|data| data.get_data("text/plain").ok()).or_else(|| input.data())
             {
@@ -223,6 +224,15 @@ impl Driver {
                 }) {
                     driver.report_error(error);
                 }
+                return;
+            }
+            if let Some(command) = beforeinput_command(&kind)
+                && (input.cancelable() || matches!(command, EditorCommand::Undo | EditorCommand::Redo))
+            {
+                if input.cancelable() {
+                    event.prevent_default();
+                }
+                driver.editor_command(&field, command);
                 return;
             }
             if field.rich() && input.cancelable() && driver.rich_edit(&field, input) {
@@ -243,23 +253,26 @@ impl Driver {
         self.listen(self.mount.as_ref(), "input", false, |driver, event| {
             let Some(field) = driver.event_field(&event) else { return };
             let Some(input) = event.dyn_ref::<BrowserInput>() else { return };
-            if input.is_composing() || is_composition_input(&input.input_type()) || driver.editor.composing() {
+            let kind = input.input_type();
+            if input.is_composing() || is_composition_input(&kind) || driver.editor.composing() {
                 return;
             }
             let before = driver.editor.before.take();
-            let Some(observed) = field.read() else { return };
             if let Err(error) = driver.cycle(|app, window| {
-                if let Some(stamp) = before.filter(|stamp| stamp.session.node == field.node && stamp.current(app, window)) {
-                    let kind = match input.input_type().as_str() {
+                // A native history mutation is reconciled with the retained command handled in beforeinput.
+                if !matches!(kind.as_str(), "historyUndo" | "historyRedo")
+                    && let Some(stamp) = before.filter(|stamp| stamp.session.node == field.node && stamp.current(app, window))
+                    && let Some(observed) = field.read()
+                {
+                    let kind = match kind.as_str() {
                         "insertText" => CommitKind::Typing,
-                        "deleteContentBackward" | "deleteContentForward" => CommitKind::Deleting,
+                        "deleteContentBackward" | "deleteContentForward" | "deleteSoftLineBackward" | "deleteSoftLineForward" => {
+                            CommitKind::Deleting
+                        }
                         _ => CommitKind::Other,
                     };
                     let edit = TextEdit::Commit { text: observed.text, selection: observed.selection, kind };
-                    app.dispatch(
-                        window,
-                        Input::Editor(EditorEvent::ProposeEdit { session: stamp.session, expected_rev: stamp.rev, edit }),
-                    )?;
+                    app.dispatch(window, Input::Editor(EditorEvent::Edit { session: stamp.session, expected_rev: stamp.rev, edit }))?;
                 }
                 if let Some(tree) = editor_tree(app, window) {
                     field.restore(tree);
@@ -292,12 +305,10 @@ impl Driver {
                     let end = text.len();
                     app.dispatch(
                         window,
-                        Input::Editor(EditorEvent::Composition {
+                        Input::Editor(EditorEvent::Edit {
                             session: stamp.session,
                             expected_rev: stamp.rev,
-                            text,
-                            selection: Some((end, end)),
-                            replacement: None,
+                            edit: TextEdit::Mark { text, selection: Some(end..end), replacement: None, clauses: Default::default() },
                         }),
                     )?;
                     driver.update_composition(app, window, stamp);
@@ -356,7 +367,7 @@ impl Driver {
                     if a != b && clipboard.set_data("text/plain", &observed.text[a.min(b)..a.max(b)]).is_ok() {
                         event.prevent_default();
                         if name == "cut" {
-                            driver.rich_key(&field, KeyEvent::new(Key::Delete, Modifiers::empty()));
+                            driver.editor_command(&field, EditorCommand::DeleteForward);
                         }
                     }
                     return;
@@ -440,11 +451,6 @@ impl Driver {
 
     fn rich_edit(&self, field: &Field, input: &BrowserInput) -> bool {
         match input.input_type().as_str() {
-            "deleteContentBackward" => self.rich_key(field, KeyEvent::new(Key::Backspace, Modifiers::empty())),
-            "deleteContentForward" => self.rich_key(field, KeyEvent::new(Key::Delete, Modifiers::empty())),
-            "deleteWordBackward" => self.rich_key(field, KeyEvent::new(Key::Backspace, Modifiers::ALT)),
-            "deleteWordForward" => self.rich_key(field, KeyEvent::new(Key::Delete, Modifiers::ALT)),
-            "insertParagraph" | "insertLineBreak" => self.rich_insert(field, "\n".to_owned()),
             "insertFromPaste" => {}
             "insertFromDrop" => {
                 if let Some(text) = input.data_transfer().and_then(|data| data.get_data("text/plain").ok()).or_else(|| input.data()) {
@@ -457,11 +463,11 @@ impl Driver {
         true
     }
 
-    fn rich_key(&self, field: &Field, key: KeyEvent) {
+    fn editor_command(&self, field: &Field, command: EditorCommand) {
         if let Err(error) = self.cycle(|app, window| {
             self.sync_selection(app, window, field)?;
             if let Some(stamp) = Stamp::read(app, window, field.node) {
-                app.dispatch(window, Input::Editor(EditorEvent::KeyFallback { session: stamp.session, expected_rev: stamp.rev, key }))?;
+                app.dispatch(window, Input::Editor(EditorEvent::Command { session: stamp.session, expected_rev: stamp.rev, command }))?;
             }
             Ok(())
         }) {
@@ -483,7 +489,7 @@ impl Driver {
                     return Ok(());
                 }
                 let edit = TextEdit::Insert { text, replacement: None };
-                app.dispatch(window, Input::Editor(EditorEvent::ProposeEdit { session: stamp.session, expected_rev: stamp.rev, edit }))?;
+                app.dispatch(window, Input::Editor(EditorEvent::Edit { session: stamp.session, expected_rev: stamp.rev, edit }))?;
             }
             Ok(())
         }) {
@@ -525,7 +531,7 @@ impl Driver {
     }
 
     fn keydown(&self, event: &Event) {
-        if event.default_prevented() {
+        if event.default_prevented() || self.editor.composing() {
             return;
         }
         let Some(key) = event.dyn_ref::<KeyboardEvent>().filter(|key| !key.is_composing()) else { return };
@@ -546,9 +552,8 @@ impl Driver {
         {
             let foreign = native || self.dom.node(&active).is_none();
             let forward = !key.modifiers.contains(Modifiers::SHIFT);
-            let can_enter_native = !self.editor.composing()
-                && self.mount.query_selector("[data-octara-native-view]").ok().flatten().is_some()
-                && !self.has_tab_handler(owner, key);
+            let can_enter_native =
+                self.mount.query_selector("[data-octara-native-view]").ok().flatten().is_some() && !self.has_tab_handler(owner, key);
             let next = if foreign || can_enter_native {
                 self.dom_tab_target(&active, forward, foreign).or_else(|| {
                     if !foreign {
@@ -571,44 +576,21 @@ impl Driver {
             }
         }
         let field = self.event_field(event);
-        let shortcut_key = key.modifiers.intersects(Modifiers::META | Modifiers::CTRL | Modifiers::ALT);
         let shortcut = self.services.borrow().shortcut(key);
         let handled = self.cycle(|app, window| {
             let authored_shortcut = app.runtime().window(window).is_some_and(|window| window.has_shortcut(key));
             let managed_tab = app.runtime().window(window).is_some_and(|window| window.tree().manages_tab());
             if let Some(field) = field.as_ref() {
-                if self.editor.composing() {
-                    return Ok(false);
-                }
-                if shortcut_key
-                    || key.requests_context_menu()
-                    || authored_shortcut
-                    || matches!(
-                        key.key,
-                        Key::Tab
-                            | Key::Enter
-                            | Key::Escape
-                            | Key::Up
-                            | Key::Down
-                            | Key::Left
-                            | Key::Right
-                            | Key::Home
-                            | Key::End
-                            | Key::PageUp
-                            | Key::PageDown
-                    )
+                self.sync_selection(app, window, field)?;
+                if let Some(stamp) = Stamp::read(app, window, field.node)
+                    && app
+                        .dispatch(
+                            window,
+                            Input::Editor(EditorEvent::KeyIntercept { session: stamp.session, expected_rev: stamp.rev, key }),
+                        )?
+                        .handled
                 {
-                    self.sync_selection(app, window, field)?;
-                    if let Some(stamp) = Stamp::read(app, window, field.node)
-                        && app
-                            .dispatch(
-                                window,
-                                Input::Editor(EditorEvent::KeyIntercept { session: stamp.session, expected_rev: stamp.rev, key }),
-                            )?
-                            .handled
-                    {
-                        return Ok(true);
-                    }
+                    return Ok(true);
                 }
             }
             if field.is_none()
@@ -621,6 +603,13 @@ impl Driver {
             if let Some((name, chord)) = shortcut
                 && app.dispatch(window, Input::Host(HostReply::MenuCommand { name, chord: Some(chord) }))?.handled
             {
+                return Ok(true);
+            }
+            if let Some(field) = field.as_ref()
+                && let Some(command @ (EditorCommand::Undo | EditorCommand::Redo)) = octara::tree::editor::command_for_key(key)
+                && let Some(stamp) = Stamp::read(app, window, field.node)
+            {
+                app.dispatch(window, Input::Editor(EditorEvent::Command { session: stamp.session, expected_rev: stamp.rev, command }))?;
                 return Ok(true);
             }
             Ok(field.is_none()
@@ -832,11 +821,7 @@ impl Driver {
         if observed.text == text && Some(observed.selection) != selection {
             app.dispatch(
                 window,
-                Input::Editor(EditorEvent::ProposeSelection {
-                    session: stamp.session,
-                    expected_rev: stamp.rev,
-                    selection: observed.selection,
-                }),
+                Input::Editor(EditorEvent::Select { session: stamp.session, expected_rev: stamp.rev, selection: observed.selection }),
             )?;
             if self.editor.composition.get() == Some(stamp) {
                 self.update_composition(app, window, stamp);
@@ -884,17 +869,17 @@ impl Driver {
                 let session = stamp.session;
                 let expected_rev = stamp.rev;
                 let event = if text.is_empty() {
-                    EditorEvent::CancelComposition { session, expected_rev }
+                    EditorEvent::Edit { session, expected_rev, edit: TextEdit::Cancel }
                 } else if let Some(observed) = field.read()
                     && editor_slot(app, window, field.node).is_some_and(|editor| matches_commit(editor, &text, &observed.text))
                 {
-                    EditorEvent::ProposeEdit {
+                    EditorEvent::Edit {
                         session,
                         expected_rev,
                         edit: TextEdit::Commit { text: observed.text, selection: observed.selection, kind: CommitKind::Other },
                     }
                 } else {
-                    EditorEvent::Commit { session, expected_rev, text }
+                    EditorEvent::Edit { session, expected_rev, edit: TextEdit::Insert { text, replacement: None } }
                 };
                 app.dispatch(window, Input::Editor(event))?;
             }
@@ -956,6 +941,20 @@ fn byte_offset(text: &str, mut offset: u32) -> usize {
         offset -= width;
     }
     text.len()
+}
+
+fn beforeinput_command(kind: &str) -> Option<EditorCommand> {
+    // The browser owns soft-line deletion because it knows where the field wraps.
+    Some(match kind {
+        "deleteContentBackward" => EditorCommand::DeleteBackward,
+        "deleteContentForward" => EditorCommand::DeleteForward,
+        "deleteWordBackward" => EditorCommand::DeleteWordBackward,
+        "deleteWordForward" => EditorCommand::DeleteWordForward,
+        "insertParagraph" | "insertLineBreak" => EditorCommand::InsertNewline,
+        "historyUndo" => EditorCommand::Undo,
+        "historyRedo" => EditorCommand::Redo,
+        _ => return None,
+    })
 }
 
 fn is_composition_input(kind: &str) -> bool {

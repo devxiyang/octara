@@ -390,14 +390,17 @@ fn ime_reorder(seed: u64) -> Vec<Sample> {
     let mut before = "File 05";
     for step in 0..24 {
         sim.advance(3 * step + 1);
-        sim.editor_event(|session, expected_rev| EditorEvent::ProposeSelection { session, expected_rev, selection: (before.len(), 0) });
+        sim.editor_event(|session, expected_rev| EditorEvent::Select { session, expected_rev, selection: (before.len(), 0) });
         let (preedit, committed) = PHRASES[pick(&mut rng, PHRASES.len())];
-        sim.editor_event(|session, expected_rev| EditorEvent::Composition {
+        sim.editor_event(|session, expected_rev| EditorEvent::Edit {
             session,
             expected_rev,
-            text: preedit.into(),
-            selection: Some((6, 3)),
-            replacement: None,
+            edit: octara::TextEdit::Mark {
+                text: preedit.into(),
+                selection: Some(std::ops::Range { start: 6, end: 3 }),
+                replacement: None,
+                clauses: Default::default(),
+            },
         });
         let composed = editor_state(&sim);
         assert_eq!(composed.session, original);
@@ -416,7 +419,11 @@ fn ime_reorder(seed: u64) -> Vec<Sample> {
         assert_eq!(editor_state(&sim), composed);
 
         sim.advance(3 * step + 3);
-        sim.editor_event(|session, expected_rev| EditorEvent::Commit { session, expected_rev, text: committed.into() });
+        sim.editor_event(|session, expected_rev| EditorEvent::Edit {
+            session,
+            expected_rev,
+            edit: octara::TextEdit::Insert { text: committed.into(), replacement: None },
+        });
         let state = editor_state(&sim);
         assert_eq!(state.session, original);
         assert_eq!(state.value, committed);

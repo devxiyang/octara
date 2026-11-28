@@ -11,7 +11,6 @@ pub use crate::text::{CommitKind, TextEdit};
 use crate::window::{SystemPreferences, WindowChrome, WindowGeometry};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::ops::Range;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -414,47 +413,67 @@ pub enum BackPhase {
     Completed,
 }
 
+/// A semantic editing operation, independent of platform key bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditorCommand {
+    MoveLeft,
+    MoveRight,
+    MoveUp,
+    MoveDown,
+    MoveWordLeft,
+    MoveWordRight,
+    MoveLineStart,
+    MoveLineEnd,
+    MoveDocumentStart,
+    MoveDocumentEnd,
+    SelectLeft,
+    SelectRight,
+    SelectUp,
+    SelectDown,
+    SelectWordLeft,
+    SelectWordRight,
+    SelectLineStart,
+    SelectLineEnd,
+    SelectDocumentStart,
+    SelectDocumentEnd,
+    SelectAll,
+    DeleteBackward,
+    DeleteForward,
+    DeleteWordBackward,
+    DeleteWordForward,
+    DeleteToLineStart,
+    DeleteToLineEnd,
+    InsertNewline,
+    Undo,
+    Redo,
+    Copy,
+    Cut,
+    Paste,
+}
+
 /// Proposals from the host editor against one session and a known document revision.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditorEvent {
-    ProposeEdit {
+    Edit {
         session: EditorSessionId,
         expected_rev: u64,
         edit: TextEdit,
     },
     /// A directional anchor and focus in UTF-8 bytes of the displayed document.
-    ProposeSelection {
+    Select {
         session: EditorSessionId,
         expected_rev: u64,
         selection: (usize, usize),
     },
-    /// Preedit text and an optional UTF-8 selection within that text.
-    Composition {
+    Command {
         session: EditorSessionId,
         expected_rev: u64,
-        text: String,
-        selection: Option<(usize, usize)>,
-        replacement: Option<Range<usize>>,
+        command: EditorCommand,
     },
-    /// Commit the host's text as the active composition's replacement.
-    Commit {
-        session: EditorSessionId,
-        expected_rev: u64,
-        text: String,
-    },
-    CancelComposition {
-        session: EditorSessionId,
-        expected_rev: u64,
-    },
-    /// Offer an editor key to app handlers before the host performs its default behavior.
+    /// Offer a non-composing editor key to app handlers before platform editing.
     KeyIntercept {
-        session: EditorSessionId,
-        expected_rev: u64,
-        key: KeyEvent,
-    },
-    /// Apply the engine default after a host declines its own editor command.
-    KeyFallback {
         session: EditorSessionId,
         expected_rev: u64,
         key: KeyEvent,
@@ -462,42 +481,33 @@ pub enum EditorEvent {
 }
 
 impl fmt::Debug for EditorEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let kind = match self {
-            Self::ProposeEdit { .. } => "ProposeEdit",
-            Self::ProposeSelection { .. } => "ProposeSelection",
-            Self::Composition { .. } => "Composition",
-            Self::Commit { .. } => "Commit",
-            Self::CancelComposition { .. } => "CancelComposition",
+            Self::Edit { .. } => "Edit",
+            Self::Select { .. } => "Select",
+            Self::Command { .. } => "Command",
             Self::KeyIntercept { .. } => "KeyIntercept",
-            Self::KeyFallback { .. } => "KeyFallback",
         };
-        f.debug_struct(kind).field("session", &self.session()).field("expected_rev", &self.expected_rev()).finish_non_exhaustive()
+        formatter.debug_struct(kind).field("session", &self.session()).field("expected_rev", &self.expected_rev()).finish_non_exhaustive()
     }
 }
 
 impl EditorEvent {
     pub fn session(&self) -> EditorSessionId {
         match *self {
-            Self::ProposeEdit { session, .. }
-            | Self::ProposeSelection { session, .. }
-            | Self::Composition { session, .. }
-            | Self::Commit { session, .. }
-            | Self::CancelComposition { session, .. }
-            | Self::KeyIntercept { session, .. }
-            | Self::KeyFallback { session, .. } => session,
+            Self::Edit { session, .. }
+            | Self::Select { session, .. }
+            | Self::Command { session, .. }
+            | Self::KeyIntercept { session, .. } => session,
         }
     }
 
     pub fn expected_rev(&self) -> u64 {
         match *self {
-            Self::ProposeEdit { expected_rev, .. }
-            | Self::ProposeSelection { expected_rev, .. }
-            | Self::Composition { expected_rev, .. }
-            | Self::Commit { expected_rev, .. }
-            | Self::CancelComposition { expected_rev, .. }
-            | Self::KeyIntercept { expected_rev, .. }
-            | Self::KeyFallback { expected_rev, .. } => expected_rev,
+            Self::Edit { expected_rev, .. }
+            | Self::Select { expected_rev, .. }
+            | Self::Command { expected_rev, .. }
+            | Self::KeyIntercept { expected_rev, .. } => expected_rev,
         }
     }
 }
@@ -619,8 +629,16 @@ mod tests {
             mods: Modifiers::SHIFT,
         });
         let session = EditorSessionId { tree, node, session_gen: 7 };
-        let event =
-            EditorEvent::Composition { session, expected_rev: 8, text: "漢字".into(), selection: Some((6, 3)), replacement: Some(0..3) };
+        let event = EditorEvent::Edit {
+            session,
+            expected_rev: 8,
+            edit: TextEdit::Mark {
+                text: "漢字".into(),
+                selection: Some(std::ops::Range { start: 6, end: 3 }),
+                replacement: Some(0..3),
+                clauses: Default::default(),
+            },
+        };
         assert_eq!(event.session(), session);
         assert_eq!(event.expected_rev(), 8);
         assert!(!format!("{event:?}").contains("漢字"));

@@ -62,7 +62,7 @@ impl Session {
     }
 
     pub fn text(&self, value: &str) {
-        self.edit(|session, expected_rev| EditorEvent::ProposeEdit {
+        self.edit(|session, expected_rev| EditorEvent::Edit {
             session,
             expected_rev,
             edit: TextEdit::Insert { text: value.into(), replacement: None },
@@ -72,7 +72,7 @@ impl Session {
     pub fn edit(&self, event: impl FnOnce(EditorSessionId, u64) -> EditorEvent) {
         let snapshot = self.snapshot();
         let editor = snapshot.editor.expect("focus must own an editor");
-        self.act(snapshot.focus.unwrap(), AgentAction::Editor { event: event(editor.session, editor.document_rev) });
+        self.act(snapshot.focus.unwrap(), AgentAction::Editor { event: event(editor.session, editor.document_rev).into() });
     }
 
     pub fn key(&self, key: Key, modifiers: Modifiers) {
@@ -82,7 +82,7 @@ impl Session {
             self.act(
                 snapshot.focus.unwrap(),
                 AgentAction::Editor {
-                    event: EditorEvent::KeyIntercept { session: editor.session, expected_rev: editor.document_rev, key: event },
+                    event: EditorEvent::KeyIntercept { session: editor.session, expected_rev: editor.document_rev, key: event }.into(),
                 },
             );
         } else {

@@ -308,11 +308,7 @@ fn rich_editor_binding_settles_value_and_ranges_in_the_same_revision() {
     let (session, expected_rev) = (active.id(), active.editor().document_rev());
     app.dispatch(
         id,
-        Input::Editor(EditorEvent::ProposeEdit {
-            session,
-            expected_rev,
-            edit: TextEdit::Insert { text: "!".into(), replacement: Some(3..3) },
-        }),
+        Input::Editor(EditorEvent::Edit { session, expected_rev, edit: TextEdit::Insert { text: "!".into(), replacement: Some(3..3) } }),
     )
     .unwrap();
 

@@ -1,9 +1,12 @@
+use super::clipboard::Clipboard;
 use super::{Native, XResult, drag, input};
 use crate::os::linux::accessibility::Accessibility;
-use crate::os::linux::services::{Clipboard, Services};
+use crate::os::linux::compose::Compose;
 use crate::os::{
-    ActiveEditorView, OsWindow, OsWindowContext, PlatformEvent, PlatformSender, ServiceCleanup, WindowAccessibility, WindowTextInput,
+    ActiveEditorView, OsWindow, OsWindowContext, PlatformEvent, PlatformSender, ServiceCleanup, WindowAccessibility, WindowHostEvent,
+    WindowTextInput,
 };
+use crate::text_bridge::HostTextBridge;
 use octara::WindowOptions;
 use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
 use octara::runtime::WindowId;
@@ -129,13 +132,14 @@ pub(super) struct X11Window {
     native: Rc<Native>,
     state: Rc<WindowState>,
     sender: PlatformSender,
-    services: Services,
+    clipboard: Rc<Clipboard>,
     visual: Visualid,
     colormap: Colormap,
     cursor: Cursor,
     cursor_style: CursorStyle,
     level: Option<WindowLevel>,
-    editor: bool,
+    editor: HostTextBridge,
+    compose: Option<Compose>,
     shown: bool,
     closed: bool,
 }
@@ -175,19 +179,18 @@ impl X11Window {
             urgent: Cell::new(false),
             options: options.clone(),
         });
-        let reply_sender = sender.clone();
-        let services = Services::new(clipboard, move |reply| reply_sender.send_event(PlatformEvent::HostReply { window: id, reply }));
         let mut window = Self {
             native,
             state,
             sender,
-            services,
+            clipboard,
             visual,
             colormap,
             cursor: x11rb::NONE,
             cursor_style: CursorStyle::Arrow,
             level: None,
-            editor: false,
+            editor: HostTextBridge::default(),
+            compose: Compose::new(),
             shown: false,
             closed: false,
         };
@@ -554,17 +557,43 @@ unsafe impl OsWindow for X11Window {
     }
 
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup> {
-        self.services.request(id, request)
+        let sender = self.sender.clone();
+        let window = self.state.id;
+        self.clipboard.request(id, request, move |reply| crate::os::reply(&sender, window, reply))
     }
 }
 
 impl WindowTextInput for X11Window {
     fn sync_text_input(&mut self, session: Option<&ActiveEditorView<'_>>) {
-        self.editor = session.is_some();
+        let outcome = self.editor.sync(session);
+        if (outcome.session_changed || outcome.rejected)
+            && let Some(compose) = &self.compose
+        {
+            compose.reset();
+        }
+    }
+
+    fn is_composing(&self) -> bool {
+        self.compose.as_ref().is_some_and(Compose::is_composing)
+    }
+
+    fn on_unhandled_key(&mut self, _: &crate::os::PlatformKey) -> bool {
+        let Some((window, symbol)) = self.native.pending_keysym.get() else { return false };
+        window == self.state.id && self.compose.as_ref().is_some_and(|compose| compose.dispatch(symbol, &mut self.editor))
+    }
+
+    fn focused(&mut self, active: bool) {
+        if !active && let Some(compose) = &self.compose {
+            compose.reset();
+        }
+    }
+
+    fn drain_text_input(&mut self, out: &mut Vec<WindowHostEvent>) {
+        self.editor.drain(out);
     }
 
     fn inspect_text_input(&self) -> serde_json::Value {
-        serde_json::json!({ "allowed": self.editor, "native_focus": self.is_focused(), "has_marked": false })
+        serde_json::json!({ "allowed": self.editor.session().is_some(), "native_focus": self.is_focused(), "has_marked": false })
     }
 }
 

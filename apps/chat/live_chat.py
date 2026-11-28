@@ -40,7 +40,7 @@ class Client:
         snapshot = self.observe()
         editor = snapshot["editor"]
         session = {"session": editor["session"], "expected_rev": editor["document_rev"]}
-        self.act(snapshot["focus"], "editor", event={"propose_edit": {
+        self.act(snapshot["focus"], "editor", event={"edit": {
             **session, "edit": {"insert": {"text": text, "replacement": None}},
         }})
         snapshot = self.observe()

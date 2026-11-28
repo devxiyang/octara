@@ -336,7 +336,7 @@ impl InspectionState {
                 if !current {
                     return Err(ActionError::stale("the editor session or document revision changed", false));
                 }
-                Input::Editor(event)
+                Input::Editor(*event)
             }
             AgentAction::Accessibility { action } => {
                 if target.node().is_none_or(|node| !tree.is_interactive(node)) {

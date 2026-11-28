@@ -233,14 +233,17 @@ fn cjk_ime_keeps_the_renamed_file_session_across_reorder_and_rejects_retired_tar
     let rename = target(&driver, id, "rename-1");
     accessible(&mut driver, id, rename, A11yAction::Focus);
     let initial = active_editor(&mut driver, id);
-    let composition = EditorEvent::Composition {
+    let composition = EditorEvent::Edit {
         session: initial.session,
         expected_rev: initial.document_rev,
-        text: "日ほ".into(),
-        selection: Some((6, 3)),
-        replacement: Some(0..5),
+        edit: octara::TextEdit::Mark {
+            text: "日ほ".into(),
+            selection: Some(std::ops::Range { start: 6, end: 3 }),
+            replacement: Some(0..5),
+            clauses: Default::default(),
+        },
     };
-    let receipt = act(&mut driver, id, rename, AgentAction::Editor { event: composition });
+    let receipt = act(&mut driver, id, rename, AgentAction::Editor { event: composition.into() });
     assert_eq!(receipt.handled, Some(true), "{receipt:?}");
     let composed = active_editor(&mut driver, id);
     assert_eq!(composed.marked, Some(0..6));
@@ -248,14 +251,18 @@ fn cjk_ime_keeps_the_renamed_file_session_across_reorder_and_rejects_retired_tar
     assert_eq!(target(&driver, id, "rename-1"), rename);
     assert_eq!(active_editor(&mut driver, id), composed);
 
-    let commit = EditorEvent::Commit { session: composed.session, expected_rev: composed.document_rev, text: "日本語".into() };
-    let receipt = act(&mut driver, id, rename, AgentAction::Editor { event: commit.clone() });
+    let commit = EditorEvent::Edit {
+        session: composed.session,
+        expected_rev: composed.document_rev,
+        edit: octara::TextEdit::Insert { text: "日本語".into(), replacement: None },
+    };
+    let receipt = act(&mut driver, id, rename, AgentAction::Editor { event: commit.clone().into() });
     assert_eq!(receipt.handled, Some(true), "{receipt:?}");
     let renamed = active_editor(&mut driver, id);
     assert_eq!(renamed.value.as_deref(), Some("日本語"));
     assert!(renamed.marked.is_none());
 
-    let old_revision = act(&mut driver, id, rename, AgentAction::Editor { event: commit });
+    let old_revision = act(&mut driver, id, rename, AgentAction::Editor { event: commit.into() });
     assert!(!old_revision.ok);
     assert_eq!(old_revision.code.as_deref(), Some("STALE_TARGET"));
     assert_eq!(old_revision.delivery, Delivery::Refused);
@@ -482,7 +489,7 @@ fn four_channel_recording_replays_to_identical_receipts_and_pixels() {
     let mut recording = Replay::new([11, 29]);
     record_input(&mut recording, &mut original, id, Input::Interaction(InteractionEvent::WindowActive(true)));
     let editor = active_editor(&mut original, id);
-    let event = EditorEvent::ProposeEdit {
+    let event = EditorEvent::Edit {
         session: editor.session,
         expected_rev: editor.document_rev,
         edit: TextEdit::Insert { text: "日本".into(), replacement: Some(0..7) },
@@ -516,8 +523,11 @@ fn replay_redacts_password_keys_and_edits_and_private_platform_data() {
     let session = active_editor(&mut driver, id);
     assert!(session.secure && session.value.is_none() && session.selection.is_none());
     let mut recording = Replay::new([11, 29]);
-    let editor =
-        EditorEvent::Commit { session: session.session, expected_rev: session.document_rev, text: "secure-recording-token".into() };
+    let editor = EditorEvent::Edit {
+        session: session.session,
+        expected_rev: session.document_rev,
+        edit: octara::TextEdit::Insert { text: "secure-recording-token".into(), replacement: None },
+    };
     recording.record_input(driver.app(), id, &Input::Editor(editor.clone()));
     recording.record_input(
         driver.app(),
@@ -556,7 +566,7 @@ fn replay_redacts_password_keys_and_edits_and_private_platform_data() {
     );
     recording.record_request(
         driver.app(),
-        &AgentRequest::new(Some(id), AgentCommand::Act { target: window, action: AgentAction::Editor { event: editor } }),
+        &AgentRequest::new(Some(id), AgentCommand::Act { target: window, action: AgentAction::Editor { event: editor.into() } }),
     );
 
     let channels = recording

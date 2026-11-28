@@ -331,12 +331,21 @@ fn apply(driver: &mut HeadlessDriver, window: &mut SimWindow, action: Action) ->
                 let expected_rev = session.editor().document_rev();
                 let session = session.id();
                 let event = match action {
-                    Action::Compose => {
-                        EditorEvent::Composition {
-                            session, expected_rev, text: "文件".into(), selection: Some((6, 3)), replacement: None
-                        }
-                    }
-                    _ => EditorEvent::Commit { session, expected_rev, text: "文書".into() },
+                    Action::Compose => EditorEvent::Edit {
+                        session,
+                        expected_rev,
+                        edit: octara::TextEdit::Mark {
+                            text: "文件".into(),
+                            selection: Some(std::ops::Range { start: 6, end: 3 }),
+                            replacement: None,
+                            clauses: Default::default(),
+                        },
+                    },
+                    _ => EditorEvent::Edit {
+                        session,
+                        expected_rev,
+                        edit: octara::TextEdit::Insert { text: "文書".into(), replacement: None },
+                    },
                 };
                 driver.dispatch(id, Input::Editor(event))?;
             }

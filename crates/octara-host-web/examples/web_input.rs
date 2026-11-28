@@ -30,8 +30,10 @@ mod browser {
             let unclaimed = Rc::clone(&unclaimed_gestures);
             let app = WebApp::mount(mount, move |cx| {
                 let value = cx.signal("a😀b".to_owned());
+                let wrapped_value = cx.signal("alpha bravo charlie".to_owned());
                 let presses = cx.signal(0);
                 let intercepts = cx.signal(0);
+                let composition_keys = cx.signal(0);
                 let shortcuts = cx.signal(0);
                 let dropped = cx.signal(String::new());
                 cx.on_chord("f2".parse().unwrap(), move |w| w.update(shortcuts, |count| *count += 1));
@@ -66,6 +68,10 @@ mod browser {
                             })
                             .behavior(move |behavior| {
                                 behavior.on_key(move |cx, key| {
+                                    if matches!(key.key, Key::Enter | Key::Escape) {
+                                        cx.update(composition_keys, |count| *count += 1);
+                                        return true;
+                                    }
                                     if key.key != Key::Down {
                                         return false;
                                     }
@@ -76,6 +82,7 @@ mod browser {
                             }),
                     )
                     .child(text(bind(move |cx| cx.get(intercepts).to_string())).test_id("key-count"))
+                    .child(text(bind(move |cx| cx.get(composition_keys).to_string())).test_id("composition-key-count"))
                     .child(text(bind(move |cx| cx.get(shortcuts).to_string())).test_id("shortcut-count"))
                     .child(
                         el().test_id("drop-zone")
@@ -108,7 +115,18 @@ mod browser {
                             })
                             .child(text("Drag this item")),
                     )
-                    .child(el().test_id("declined-drag").on_drag_start(|_| None).child(text("Decline this drag")));
+                    .child(el().test_id("declined-drag").on_drag_start(|_| None).child(text("Decline this drag")))
+                    .child(
+                        textarea()
+                            .test_id("wrapped-editor")
+                            .w(77)
+                            .h(40)
+                            .shrink(0.0)
+                            .text_family(FontFamilyToken::Mono)
+                            .line_height(LineHeight::Relative(1.25))
+                            .value(bind(move |cx| cx.get(wrapped_value)))
+                            .on_input(move |cx, text| cx.set(wrapped_value, text.to_owned())),
+                    );
                 #[cfg(feature = "webgpu")]
                 let content = content.child(gpu_canvas());
                 content
@@ -125,18 +143,22 @@ mod browser {
         }
 
         pub fn value(&self) -> String {
-            self.editor(|editor| editor.value().to_owned())
+            self.editor("editor", |editor| editor.value().to_owned())
+        }
+
+        pub fn wrapped_value(&self) -> String {
+            self.editor("wrapped-editor", |editor| editor.value().to_owned())
         }
 
         pub fn selection(&self) -> Vec<u32> {
-            self.editor(|editor| {
+            self.editor("editor", |editor| {
                 let (anchor, focus) = editor.selection();
                 vec![anchor as u32, focus as u32]
             })
         }
 
         pub fn marked(&self) -> bool {
-            self.editor(|editor| editor.composition().is_some())
+            self.editor("editor", |editor| editor.composition().is_some())
         }
 
         pub fn viewport_width(&self) -> f32 {
@@ -145,11 +167,11 @@ mod browser {
     }
 
     impl WebInputFixture {
-        fn editor<R>(&self, read: impl FnOnce(&octara::tree::editor::EditorSlot) -> R) -> R {
+        fn editor<R>(&self, id: &str, read: impl FnOnce(&octara::tree::editor::EditorSlot) -> R) -> R {
             self.app
                 .with_app(|app| {
                     let tree = app.window(self.app.window_id()).unwrap().runtime().tree();
-                    read(tree.editor(tree.test_ids("editor")[0]).unwrap())
+                    read(tree.editor(tree.test_ids(id)[0]).unwrap())
                 })
                 .unwrap()
         }

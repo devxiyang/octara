@@ -23,7 +23,7 @@ use octara_model::capture::FrameReceipt;
 use octara_model::geometry::{Point, Size};
 use octara_model::identity::{NativeId, TargetGuard};
 use octara_model::input::{
-    Button, ContactTarget, DroppedFile, EditorEvent, HostReply, InteractionEvent, Key, Modifiers, PointerId, PointerKind, TextEdit,
+    Button, ContactTarget, DroppedFile, EditorEvent, HostReply, InteractionEvent, Modifiers, PointerId, PointerKind, TextEdit,
 };
 use octara_model::native::{NativeEvent, TypedNativeCommand};
 use octara_model::theme::ColorScheme;
@@ -733,36 +733,57 @@ impl Shell {
         self.dispatch(id, Input::Interaction(event))
     }
 
-    fn text_key(&mut self, id: WindowId, event: PlatformKey) -> Result<bool, String> {
-        let editor = self
-            .app
-            .runtime()
-            .window(id)
-            .and_then(|window| EditorSession::active(window.tree()))
-            .map(|session| (session.id(), session.editor().document_rev()));
-        let handled = match (event.event, editor) {
-            (Some(key), Some((session, expected_rev))) => {
-                self.dispatch(id, Input::Editor(EditorEvent::KeyIntercept { session, expected_rev, key }))?
+    fn drain_text_input(&mut self, window: WindowId) -> Result<(), String> {
+        let mut inputs = Vec::new();
+        loop {
+            if let Some(host) = self.windows.get_mut(&window) {
+                host.os.text_input().drain_text_input(&mut inputs);
             }
-            (Some(key), None) => self.dispatch(id, Input::Interaction(InteractionEvent::Key(key)))?,
-            (None, _) => false,
+            if inputs.is_empty() {
+                return Ok(());
+            }
+            for input in inputs.drain(..) {
+                self.dispatch(window, input)?;
+            }
+        }
+    }
+
+    fn text_key(&mut self, id: WindowId, event: PlatformKey) -> Result<bool, String> {
+        self.drain_text_input(id)?;
+        let session = |shell: &Self| {
+            let session = EditorSession::active(shell.app.runtime().window(id)?.tree())?;
+            Some((session.id(), session.editor().document_rev(), session.editor().composition().is_some()))
         };
-        if handled {
-            return Ok(true);
+        let active = session(self);
+        if let Some(host) = self.windows.get_mut(&id) {
+            let input = host.os.text_input();
+            if input.is_composing() || active.is_some_and(|(_, _, composing)| composing) {
+                input.on_unhandled_key(&event);
+                return Ok(true);
+            }
+        }
+        if let Some(key) = event.event {
+            let input = match active {
+                Some((session, expected_rev, _)) => Input::Editor(EditorEvent::KeyIntercept { session, expected_rev, key }),
+                None => Input::Interaction(InteractionEvent::Key(key)),
+            };
+            if self.dispatch(id, input)? {
+                return Ok(true);
+            }
         }
         if self.windows.get_mut(&id).is_some_and(|host| host.os.text_input().on_unhandled_key(&event)) {
             return Ok(true);
         }
-        if let Some((session, expected_rev)) = editor
-            && let Some(key) = event.event
-            && self.dispatch(id, Input::Editor(EditorEvent::KeyFallback { session, expected_rev, key }))?
-        {
-            return Ok(true);
+        let Some((session, expected_rev, false)) = session(self) else { return Ok(false) };
+        if let Some(command) = event.event.and_then(octara::tree::editor::command_for_key) {
+            return self.dispatch(id, Input::Editor(EditorEvent::Command { session, expected_rev, command }));
         }
-        match fallback_edit(self.app.runtime().window(id), &event) {
-            Some(edit) => self.dispatch(id, Input::Editor(edit)),
-            None => Ok(false),
+        let plain_key = event.event.is_none_or(|key| !key.modifiers.intersects(Modifiers::CTRL | Modifiers::META));
+        if plain_key && let Some(text) = event.text.filter(|text| !text.is_empty() && !text.chars().any(char::is_control)) {
+            let edit = TextEdit::Insert { text, replacement: None };
+            return self.dispatch(id, Input::Editor(EditorEvent::Edit { session, expected_rev, edit }));
         }
+        Ok(false)
     }
 
     fn cursor(&mut self, id: WindowId, at: Option<Point>, modifiers: Modifiers) -> Result<bool, String> {
@@ -992,7 +1013,12 @@ impl Shell {
             PlatformEvent::Editor { window, event } => return self.dispatch(window, Input::Editor(event)),
             PlatformEvent::Interaction { window, event } => return self.interaction(window, event),
             PlatformEvent::FileDrop { window, phase, position, paths } => return self.file_drop(window, phase, position, paths),
-            PlatformEvent::HostReply { window, reply } => return self.dispatch(window, Input::Host(reply)),
+            PlatformEvent::HostReply { window, reply } => {
+                if matches!(&reply, HostReply::MenuCommand { chord: Some(_), .. }) {
+                    self.drain_text_input(window)?;
+                }
+                return self.dispatch(window, Input::Host(reply));
+            }
             PlatformEvent::Frame { window, target } => self.draw(window, target, false)?,
             PlatformEvent::FrameClockTick { window, tick } => {
                 if self.config.trace_frame_clock {
@@ -1143,22 +1169,4 @@ fn constrained_size(mut size: Size, options: &WindowOptions) -> Size {
         }
     }
     size
-}
-
-fn fallback_edit(window: Option<&octara::runtime::WindowRuntime>, event: &PlatformKey) -> Option<EditorEvent> {
-    if event.event.is_some_and(|key| key.modifiers.intersects(Modifiers::CTRL | Modifiers::META)) {
-        return None;
-    }
-    let session = EditorSession::active(window?.tree())?;
-    let editor = session.editor();
-    if editor.composition().is_some() {
-        return None;
-    }
-    let edit = if event.event.is_some_and(|key| key.key == Key::Enter) && editor.multiline {
-        TextEdit::Insert { text: "\n".into(), replacement: None }
-    } else {
-        let text = event.text.as_deref().filter(|text| !text.is_empty() && !text.chars().any(char::is_control))?;
-        TextEdit::Insert { text: text.into(), replacement: None }
-    };
-    Some(EditorEvent::ProposeEdit { session: session.id(), expected_rev: editor.document_rev(), edit })
 }

@@ -7,7 +7,7 @@ pub use octara_model::geometry::{Align, Edges, LayoutBox, Placement, Point, Rect
 pub use octara_model::image::{CachePolicy, HttpMediaEntry, ImageSource, ImageState, VideoSource};
 pub use octara_model::input::{
     Button, Chord, ContextMenuEvent, ContextMenuItem, CopyFormat, CursorStyle, DragItem, DragPayload, DropAxis, DropEvent, DropHover,
-    DropPosition, DroppedFile, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers, PasteEvent,
+    DropPosition, DroppedFile, EditorCommand, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers, PasteEvent,
 };
 pub use octara_model::input::{OverscrollEvent, ScrollDismissesKeyboard};
 pub use octara_model::motion::{Curve, Motion, Spring, TextReveal, TextRevealKind};
@@ -23,8 +23,8 @@ pub use octara_model::style::{
     ScrollbarVisibility, StyleProp, UserSelect,
 };
 pub use octara_model::text::{
-    AutoCapitalize, Autocorrect, FontStyle, FontWeight, InlineAlign, InlineAttachment, InlineContent, InlinePill, InputTraits,
-    KeyboardType, PillStyle, ReturnKeyType, RichSpan, TextAlign, TextContentType, Wrap as TextWrap,
+    AutoCapitalize, Autocorrect, ClauseStyle, FontStyle, FontWeight, InlineAlign, InlineAttachment, InlineContent, InlinePill, InputTraits,
+    KeyboardType, MarkedClause, PillStyle, ReturnKeyType, RichSpan, TextAlign, TextContentType, Wrap as TextWrap,
 };
 pub use octara_model::theme::{
     BoxShadow, Breakpoint, Color, ColorScheme, ColorToken, ColorValue, ContainerWidthToken, Family as FontFamilyToken, Fill, FontSizeToken,

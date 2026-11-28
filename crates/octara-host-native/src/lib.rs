@@ -5,6 +5,8 @@ mod media;
 pub mod os;
 mod presentation;
 mod shell;
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "linux", test))]
+mod text_bridge;
 mod trace;
 mod window;
 

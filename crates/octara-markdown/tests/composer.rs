@@ -107,11 +107,11 @@ impl Mounted {
     }
 
     fn select(&mut self, selection: (usize, usize)) {
-        self.proposal(|session, expected_rev| EditorEvent::ProposeSelection { session, expected_rev, selection });
+        self.proposal(|session, expected_rev| EditorEvent::Select { session, expected_rev, selection });
     }
 
     fn type_text(&mut self, text: &str) {
-        self.proposal(|session, expected_rev| EditorEvent::ProposeEdit {
+        self.proposal(|session, expected_rev| EditorEvent::Edit {
             session,
             expected_rev,
             edit: TextEdit::Insert { text: text.into(), replacement: None },
@@ -362,15 +362,18 @@ fn configured_triggers_follow_selection_focus_dismissal_and_ime() {
     mounted.select((1, 4));
     assert!(mounted.active().is_none());
     mounted.select((4, 4));
-    mounted.proposal(|session, expected_rev| EditorEvent::Composition {
+    mounted.proposal(|session, expected_rev| EditorEvent::Edit {
         session,
         expected_rev,
-        text: "字".into(),
-        selection: Some((3, 3)),
-        replacement: None,
+        edit: octara::TextEdit::Mark {
+            text: "字".into(),
+            selection: Some(std::ops::Range { start: 3, end: 3 }),
+            replacement: None,
+            clauses: Default::default(),
+        },
     });
     assert!(mounted.active().is_none());
-    mounted.proposal(|session, expected_rev| EditorEvent::CancelComposition { session, expected_rev });
+    mounted.proposal(|session, expected_rev| EditorEvent::Edit { session, expected_rev, edit: octara::TextEdit::Cancel });
     assert_eq!(mounted.active().unwrap().query, "Ém");
     mounted.driver.app_mut().update_window(mounted.window, |write| write.blur()).unwrap();
     assert!(mounted.active().is_none());

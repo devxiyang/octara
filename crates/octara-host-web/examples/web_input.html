@@ -137,9 +137,56 @@ try {
     field.setRangeText("你", 2, 2, "end");
     dispatch(field, new InputEvent("input", { bubbles: true, inputType: "insertCompositionText", data: "你", isComposing: true }));
     assert(app.marked() && field.value === "a界你b" && app.value() === "a界b", "an IME draft became a committed edit");
+    // Some hosts report ordinary key events while the editor still owns a marked draft.
+    for (const key of ["Enter", "Escape"]) {
+        assert(dispatch(field, new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })),
+            "the application canceled a composition key");
+    }
+    assert(node("composition-key-count").textContent === "0", "application key handlers saw the composition");
     composition("compositionend", "你");
     await within(() => !app.marked(), "the IME commit did not finish");
     assert(app.value() === "a界你b" && field.value === app.value(), "the IME commit was lost or applied twice");
+
+    assert(!dispatch(field, new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })),
+        "the non-composing key did not reach the application");
+    assert(node("composition-key-count").textContent === "1", "the app did not resume normal key handling");
+    field.setSelectionRange(3, 3);
+    const command = inputType => dispatch(field, new InputEvent("beforeinput", { inputType, bubbles: true, cancelable: true }));
+    assert(!command("deleteContentBackward"), "the retained editor did not handle DeleteBackward");
+    assert(app.value() === "a界b" && field.value === app.value(), "the shared delete command was not applied");
+    assert(!command("historyUndo"), "the retained editor did not handle Undo");
+    assert(app.value() === "a界你b" && field.value === app.value(), "the shared undo command did not restore the editor");
+    assert(!command("historyRedo"), "the retained editor did not handle Redo");
+    assert(app.value() === "a界b" && field.value === app.value(), "the shared redo command was not applied");
+
+    for (const [inputType, expected] of [["historyUndo", "a界你b"], ["historyRedo", "a界b"]]) {
+        const options = { inputType, bubbles: true, cancelable: false };
+        assert(dispatch(field, new InputEvent("beforeinput", options)), "the history event must remain noncancelable");
+        assert(app.value() === expected, `the retained editor did not handle noncancelable ${inputType}`);
+        const retainedSelection = app.selection().join();
+        // The browser's history can diverge from Octara's retained transaction history.
+        field.value = "a😀b";
+        dispatch(field, new InputEvent("input", options));
+        assert(app.value() === expected && field.value === expected && app.selection().join() === retainedSelection,
+            `browser ${inputType} overwrote retained history`);
+    }
+
+    const wrapped = node("wrapped-editor");
+    wrapped.focus();
+    assert(wrapped.scrollHeight > wrapped.clientHeight, "the textarea did not wrap into three lines");
+    for (const [inputType, caret, start, end, expected] of [
+        ["deleteSoftLineBackward", 9, 6, 9, "alpha vo charlie"],
+        ["deleteSoftLineForward", 8, 8, 12, "alpha brcharlie"],
+    ]) {
+        const options = { inputType, bubbles: true, cancelable: true };
+        wrapped.setSelectionRange(caret, caret);
+        assert(dispatch(wrapped, new InputEvent("beforeinput", options)), "the browser must resolve the visual line boundary");
+        wrapped.setRangeText("", start, end, "end");
+        dispatch(wrapped, new InputEvent("input", options));
+        assert(app.wrapped_value() === expected && wrapped.value === expected, "the native soft-line deletion was lost");
+        assert(!dispatch(wrapped, new InputEvent("beforeinput", { ...options, inputType: "historyUndo" })), "the soft-line edit could not be undone");
+        assert(wrapped.value === "alpha bravo charlie", "undo did not restore the wrapped text");
+    }
 
     const dropLabel = node("drop-label");
     const dropRect = dropLabel.getBoundingClientRect();

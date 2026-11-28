@@ -1,15 +1,18 @@
 //! Logical editing and controlled value settlement for the retained tree.
 
+mod command;
 mod rich;
 mod rope;
 
+pub use command::command_for_key;
 pub use rich::EditorRichText;
 pub use rope::EditorRope;
 
 use crate::{NodeId, Tree};
 use octara_model::identity::{EditorSessionId, TreeId};
-use octara_model::input::{EditorEvent, KeyEvent};
-use octara_model::text::{AtomicRange, CommitKind, InlineAttachment, InputTraits, RichSpan, TextEdit};
+use octara_model::input::{EditorCommand, EditorEvent, KeyEvent};
+use octara_model::text::{AtomicRange, CommitKind, InlineAttachment, InputTraits, MarkedClause, RichSpan, TextEdit, TextGeometry};
+use smallvec::SmallVec;
 use std::{fmt, ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -58,6 +61,7 @@ pub struct Composition {
     text: EditorRope,
     rich: EditorRichText,
     marked: Range<usize>,
+    clauses: SmallVec<[MarkedClause; 4]>,
     selection: Option<(usize, usize)>,
 }
 
@@ -68,6 +72,11 @@ impl Composition {
 
     pub fn marked(&self) -> Range<usize> {
         self.marked.clone()
+    }
+
+    /// Styled UTF-8 ranges relative to the marked text.
+    pub fn clauses(&self) -> &[MarkedClause] {
+        &self.clauses
     }
 
     /// Byte offsets in the displayed text, with the anchor first. `None` hides the cursor.
@@ -85,7 +94,8 @@ pub struct EditorSlot {
     session_gen: u64,
     composition: Option<Composition>,
     selection: (usize, usize),
-    undo: UndoHistory,
+    undo: Arc<UndoHistory>,
+    column: Option<command::Column>,
     secure: bool,
     pub placeholder: Arc<str>,
     pub multiline: bool,
@@ -121,7 +131,8 @@ impl EditorSlot {
             session_gen: 0,
             composition: None,
             selection: (0, 0),
-            undo: UndoHistory::default(),
+            undo: Arc::default(),
+            column: None,
             secure: false,
             placeholder: Arc::from(""),
             multiline: false,
@@ -203,7 +214,7 @@ impl EditorSlot {
                 composition.selection = composition.selection.map(|selection| composition.rich.snap_selection(selection));
             }
         }
-        self.undo.merge = false;
+        self.end_navigation();
         self.advance_document();
         true
     }
@@ -260,7 +271,7 @@ impl EditorSlot {
         if !secure {
             self.selection = self.rich.snap_selection(self.selection);
         }
-        self.undo = UndoHistory::default();
+        self.undo = Arc::default();
         self.composition = None;
         self.invalidate_session();
         self.advance_document();
@@ -287,7 +298,7 @@ impl EditorSlot {
         let rope = self.value.replaced(start..old_end, &value.0[start..new_end]).expect("diff uses valid UTF-8 ranges");
         self.set_value(rope);
         self.composition = None;
-        self.undo = UndoHistory::default();
+        self.undo = Arc::default();
         self.invalidate_session();
         self.advance_document();
         true
@@ -295,7 +306,14 @@ impl EditorSlot {
 
     fn invalidate_session(&mut self) {
         self.session_gen = self.session_gen.checked_add(1).expect("editor session generations exhausted");
-        self.undo.merge = false;
+        self.end_navigation();
+    }
+
+    fn end_navigation(&mut self) {
+        self.column = None;
+        if self.undo.merge {
+            Arc::make_mut(&mut self.undo).merge = false;
+        }
     }
 
     fn advance_document(&mut self) {
@@ -313,17 +331,14 @@ impl EditorSlot {
 
     /// Returns whether the host needs an editor projection, including rejected edits.
     pub(crate) fn apply_update(&mut self, tree: TreeId, node: NodeId, update: EditorRuntimeUpdate) -> bool {
-        self.apply_update_with_history(tree, node, update, true)
-    }
-
-    fn apply_update_with_history(&mut self, tree: TreeId, node: NodeId, update: EditorRuntimeUpdate, record_history: bool) -> bool {
         if update.stamp.session != (EditorSessionId { tree, node, session_gen: self.session_gen }) || update.stamp.rev != self.document_rev
         {
             return false;
         }
         let changed = match update.kind {
-            Update::Select { selection, snapped } => {
-                self.undo.merge = false;
+            Update::Select { selection, snapped, column } => {
+                self.end_navigation();
+                self.column = column;
                 let changed = if let Some(composition) = &mut self.composition {
                     composition.selection.replace(selection) != Some(selection)
                 } else {
@@ -335,11 +350,12 @@ impl EditorSlot {
                 changed
             }
             Update::Compose(composition) => {
-                self.undo.merge = false;
+                self.end_navigation();
                 let changed = match (&self.composition, &composition) {
                     (Some(old), Some(new)) => {
                         !old.text.shares_storage(&new.text)
                             || old.marked != new.marked
+                            || old.clauses != new.clauses
                             || old.selection != new.selection
                             || old.rich != new.rich
                     }
@@ -349,20 +365,21 @@ impl EditorSlot {
                 changed
             }
             Update::Accept { mut next, history } => {
+                self.column = None;
                 if !self.secure {
                     next.selection = next.rich.snap_selection(next.selection);
                 }
                 let changed_value = !self.value.shares_storage(&next.value);
                 let changed_rich = self.rich != next.rich;
                 if changed_value {
-                    if record_history && !self.secure {
+                    if !self.secure {
                         let before =
                             EditorVersion { value: self.value.without_flattened(), rich: self.rich.clone(), selection: self.selection };
-                        self.undo.accept(history, before, &next);
+                        Arc::make_mut(&mut self.undo).accept(history, before, &next);
                     }
                     self.set_value(next.value);
                 } else if next.selection != self.selection || changed_rich {
-                    self.undo.merge = false;
+                    self.end_navigation();
                 }
                 if changed_rich && !changed_value {
                     self.advance_value();
@@ -373,7 +390,7 @@ impl EditorSlot {
                 changed_value || changed_rich || changed_selection || composing
             }
             Update::Reconcile => {
-                self.undo.merge = false;
+                self.end_navigation();
                 if self.composition.take().is_some() {
                     self.advance_document();
                 }
@@ -421,6 +438,11 @@ impl<'a> EditorSession<'a> {
     }
 
     pub fn route(&self, event: EditorEvent) -> Result<EditorAction, EditorRejection> {
+        self.route_with_geometry(event, None)
+    }
+
+    /// Routes visual commands against the displayed document's current layout when available.
+    pub fn route_with_geometry(&self, event: EditorEvent, geometry: Option<&TextGeometry>) -> Result<EditorAction, EditorRejection> {
         let event = EventText(event);
         let event = &event.0;
         if event.session() != self.id {
@@ -430,27 +452,18 @@ impl<'a> EditorSession<'a> {
             return Err(EditorRejection::StaleRevision);
         }
         match event {
-            EditorEvent::ProposeEdit { edit, .. } => self.route_edit(edit),
-            EditorEvent::ProposeSelection { selection, .. } => {
-                validate_selection(self.slot.displayed_rope(), *selection)?;
-                let proposed = *selection;
-                let selection = self.slot.rich_text().map_or(proposed, |rich| rich.snap_selection(proposed));
-                Ok(self.update(Update::Select { selection, snapped: proposed != selection }))
-            }
-            EditorEvent::Composition { text, selection, replacement, .. } => self.compose(text, *selection, replacement.clone()),
-            EditorEvent::Commit { text, .. } => self.insert(text, None),
-            EditorEvent::CancelComposition { .. } => Ok(self.update(Update::Compose(None))),
-            EditorEvent::KeyIntercept { key, .. } => Ok(EditorAction::KeyIntercept(*key)),
-            EditorEvent::KeyFallback { key, .. } => Ok(EditorAction::KeyFallback(*key)),
+            EditorEvent::Edit { edit, .. } => self.route_edit(edit),
+            EditorEvent::Select { selection, .. } => self.select(*selection, None),
+            EditorEvent::Command { command, .. } => self.route_command(*command, geometry),
+            EditorEvent::KeyIntercept { key, .. } if self.slot.composition.is_none() => Ok(EditorAction::KeyIntercept(*key)),
+            EditorEvent::KeyIntercept { .. } => Err(EditorRejection::Composing),
         }
     }
 
-    pub fn undo(&self) -> Option<EditorProposal> {
-        self.history_proposal(true)
-    }
-
-    pub fn redo(&self) -> Option<EditorProposal> {
-        self.history_proposal(false)
+    fn select(&self, proposed: (usize, usize), column: Option<command::Column>) -> Result<EditorAction, EditorRejection> {
+        validate_selection(self.slot.displayed_rope(), proposed)?;
+        let selection = self.slot.rich_text().map_or(proposed, |rich| rich.snap_selection(proposed));
+        Ok(self.update(Update::Select { selection, snapped: proposed != selection, column }))
     }
 
     fn history_proposal(&self, undo: bool) -> Option<EditorProposal> {
@@ -464,10 +477,14 @@ impl<'a> EditorSession<'a> {
 
     fn route_edit(&self, edit: &TextEdit) -> Result<EditorAction, EditorRejection> {
         match edit {
-            TextEdit::Mark { text, selection, replacement } => {
-                self.compose(text, selection.as_ref().map(|range| (range.start, range.end)), replacement.clone())
+            TextEdit::Mark { text, selection, replacement, clauses } => {
+                self.compose(text, selection.as_ref().map(|range| (range.start, range.end)), replacement.clone(), clauses)
             }
-            TextEdit::Insert { text, replacement } => self.insert(text, replacement.clone()),
+            TextEdit::Insert { text, replacement } => {
+                let kind = if text.is_empty() { CommitKind::Deleting } else { CommitKind::Typing };
+                self.insert(text, replacement.clone(), kind)
+            }
+            TextEdit::DeleteSurrounding { before_bytes, after_bytes } => self.delete_surrounding(*before_bytes, *after_bytes),
             TextEdit::Commit { text, selection, kind } => self.commit(text, *selection, *kind),
             TextEdit::Unmark => {
                 let composition = self.slot.composition.as_ref().ok_or(EditorRejection::NoComposition)?;
@@ -484,6 +501,7 @@ impl<'a> EditorSession<'a> {
         text: &str,
         selection: Option<(usize, usize)>,
         replacement: Option<Range<usize>>,
+        clauses: &[MarkedClause],
     ) -> Result<EditorAction, EditorRejection> {
         if text.is_empty() {
             return Ok(self.update(Update::Compose(None)));
@@ -495,15 +513,38 @@ impl<'a> EditorSession<'a> {
         let (value, rich) = self.replace(range.clone(), text)?;
         let marked = range.start..range.start + text.len();
         let selection = selection.map(|(anchor, caret)| (marked.start + anchor, marked.start + caret));
-        Ok(self.update(Update::Compose(Some(Composition { text: value, rich, marked, selection }))))
+        let clauses = normalize_clauses(text, clauses);
+        Ok(self.update(Update::Compose(Some(Composition { text: value, rich, marked, clauses, selection }))))
     }
 
-    fn insert(&self, text: &str, replacement: Option<Range<usize>>) -> Result<EditorAction, EditorRejection> {
+    fn insert(&self, text: &str, replacement: Option<Range<usize>>, kind: CommitKind) -> Result<EditorAction, EditorRejection> {
         let range = self.replacement(replacement)?;
         let (value, rich) = self.replace(range.clone(), text)?;
         let end = range.start + text.len();
-        let kind = if text.is_empty() { CommitKind::Deleting } else { CommitKind::Typing };
         Ok(self.propose(value, rich, (end, end), self.change(range, text.len(), kind)))
+    }
+
+    fn delete_surrounding(&self, before: usize, after: usize) -> Result<EditorAction, EditorRejection> {
+        if self.slot.composition.is_some() {
+            return Err(EditorRejection::Composing);
+        }
+        if before == 0 && after == 0 {
+            return Ok(EditorAction::Handled);
+        }
+        let selected = ordered(self.slot.selection);
+        let start = selected.start.checked_sub(before).ok_or(EditorRejection::InvalidRange)?;
+        let end = selected.end.checked_add(after).ok_or(EditorRejection::InvalidRange)?;
+        validate_selection(self.slot.rope(), (start, end))?;
+        if selected.is_empty() {
+            return self.insert("", Some(start..end), CommitKind::Deleting);
+        }
+        let before = self.replacement(Some(start..selected.start))?;
+        let after = self.replacement(Some(selected.end..end))?;
+        let (value, rich) = self.replace(after, "")?;
+        let value = value.replaced(before.clone(), "").ok_or(EditorRejection::InvalidRange)?;
+        let rich = if before.is_empty() { rich } else { rich.after_replace(before.clone(), 0) };
+        let selection = (self.slot.selection.0 - before.len(), self.slot.selection.1 - before.len());
+        Ok(self.propose(value, rich, selection, None))
     }
 
     fn commit(&self, text: &str, selection: (usize, usize), kind: CommitKind) -> Result<EditorAction, EditorRejection> {
@@ -519,7 +560,7 @@ impl<'a> EditorSession<'a> {
             if (backward || start == caret)
                 && let Some(atom) = self.slot.rich_text().and_then(|rich| rich.adjacent_atom(caret, backward))
             {
-                return self.insert("", Some(atom.range.clone()));
+                return self.insert("", Some(atom.range.clone()), CommitKind::Deleting);
             }
         }
         let range = self.replacement(Some(start..old_end))?;
@@ -589,7 +630,8 @@ impl EditorMirror {
             session_gen: slot.session_gen,
             composition: slot.composition.clone(),
             selection: slot.selection,
-            undo: UndoHistory::default(),
+            undo: slot.undo.clone(),
+            column: slot.column,
             secure: slot.secure,
             placeholder: slot.placeholder.clone(),
             multiline: slot.multiline,
@@ -604,16 +646,42 @@ impl EditorMirror {
         &self.0
     }
 
+    /// Checks whether a restyled document preserves the coordinates and atomic ranges used by pending edits.
+    pub fn same_editing_state(&self, other: &Self) -> bool {
+        let left = &self.0;
+        let right = &other.0;
+        left.selection == right.selection
+            && left.value == right.value
+            && left.secure == right.secure
+            && left.rich.atoms == right.rich.atoms
+            && match (&left.composition, &right.composition) {
+                (None, None) => true,
+                (Some(left), Some(right)) => {
+                    left.text == right.text
+                        && left.marked == right.marked
+                        && left.selection == right.selection
+                        && left.clauses == right.clauses
+                        && left.rich.atoms == right.rich.atoms
+                }
+                _ => false,
+            }
+    }
+
     pub fn apply(&mut self, event: EditorEvent) -> bool {
+        self.apply_with_geometry(event, None)
+    }
+
+    /// Applies a speculative event and reports whether the document revision advanced.
+    pub fn apply_with_geometry(&mut self, event: EditorEvent, geometry: Option<&TextGeometry>) -> bool {
         let id = event.session();
         let rev = self.0.document_rev;
         let session = EditorSession { id, slot: &self.0 };
-        let update = match session.route(event) {
+        let update = match session.route_with_geometry(event, geometry) {
             Ok(EditorAction::Apply(update)) => update,
             Ok(EditorAction::Propose(proposal)) => proposal.into_update(true),
             _ => return false,
         };
-        self.0.apply_update_with_history(id.tree, id.node, update, false);
+        self.0.apply_update(id.tree, id.node, update);
         self.0.document_rev != rev
     }
 }
@@ -637,16 +705,11 @@ struct EventText(EditorEvent);
 
 impl Drop for EventText {
     fn drop(&mut self) {
-        match &mut self.0 {
-            EditorEvent::Composition { text, .. }
-            | EditorEvent::Commit { text, .. }
-            | EditorEvent::ProposeEdit {
-                edit: TextEdit::Mark { text, .. } | TextEdit::Insert { text, .. } | TextEdit::Commit { text, .. },
-                ..
-            } => {
-                wipe(text);
-            }
-            _ => {}
+        if let EditorEvent::Edit {
+            edit: TextEdit::Mark { text, .. } | TextEdit::Insert { text, .. } | TextEdit::Commit { text, .. }, ..
+        } = &mut self.0
+        {
+            wipe(text);
         }
     }
 }
@@ -657,13 +720,16 @@ pub enum EditorRejection {
     StaleRevision,
     InvalidRange,
     NoComposition,
+    Composing,
 }
 
 pub enum EditorAction {
     Propose(EditorProposal),
     Apply(EditorRuntimeUpdate),
     KeyIntercept(KeyEvent),
-    KeyFallback(KeyEvent),
+    Clipboard(EditorCommand),
+    Handled,
+    Unhandled,
 }
 
 impl fmt::Debug for EditorAction {
@@ -672,7 +738,9 @@ impl fmt::Debug for EditorAction {
             Self::Propose(proposal) => f.debug_tuple("Propose").field(proposal).finish(),
             Self::Apply(update) => f.debug_tuple("Apply").field(update).finish(),
             Self::KeyIntercept(_) => f.debug_struct("KeyIntercept").finish_non_exhaustive(),
-            Self::KeyFallback(_) => f.debug_struct("KeyFallback").finish_non_exhaustive(),
+            Self::Clipboard(command) => f.debug_tuple("Clipboard").field(command).finish(),
+            Self::Handled => f.write_str("Handled"),
+            Self::Unhandled => f.write_str("Unhandled"),
         }
     }
 }
@@ -768,7 +836,7 @@ impl EditorRuntimeUpdate {
 }
 
 enum Update {
-    Select { selection: (usize, usize), snapped: bool },
+    Select { selection: (usize, usize), snapped: bool, column: Option<command::Column> },
     Compose(Option<Composition>),
     Accept { next: EditorVersion, history: HistoryEdit },
     Reconcile,
@@ -793,6 +861,7 @@ impl EditorVersion {
     }
 }
 
+#[derive(Clone)]
 struct Change {
     range: Range<usize>,
     inserted: usize,
@@ -817,7 +886,7 @@ impl Change {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct UndoHistory {
     undo: Vec<Step>,
     redo: Vec<Step>,
@@ -859,10 +928,35 @@ impl UndoHistory {
     }
 }
 
+#[derive(Clone)]
 struct Step {
     before: EditorVersion,
     after: EditorVersion,
     change: Option<Change>,
+}
+
+// IMEs may send overlapping or out-of-bounds attribute spans. Give the
+// earlier span ownership of an overlap and keep every endpoint valid UTF-8.
+fn normalize_clauses(text: &str, clauses: &[MarkedClause]) -> SmallVec<[MarkedClause; 4]> {
+    let mut clauses: SmallVec<[_; 4]> = clauses
+        .iter()
+        .filter_map(|clause| {
+            let start = text.ceil_char_boundary(clause.range.start);
+            let end = text.floor_char_boundary(clause.range.end);
+            (start < end).then_some(MarkedClause { range: start..end, style: clause.style })
+        })
+        .collect();
+    clauses.sort_by_key(|clause| clause.range.start);
+    let mut previous_end = 0;
+    clauses.retain_mut(|clause| {
+        clause.range.start = clause.range.start.max(previous_end);
+        if clause.range.is_empty() {
+            return false;
+        }
+        previous_end = clause.range.end;
+        true
+    });
+    clauses
 }
 
 fn ordered((anchor, caret): (usize, usize)) -> Range<usize> {
@@ -962,7 +1056,7 @@ mod tests {
 
     fn route_edit(slot: &EditorSlot, edit: TextEdit) -> Result<EditorAction, EditorRejection> {
         let session = session(slot);
-        session.route(EditorEvent::ProposeEdit { session: session.id(), expected_rev: slot.document_rev(), edit })
+        session.route(EditorEvent::Edit { session: session.id(), expected_rev: slot.document_rev(), edit })
     }
 
     fn proposal(slot: &EditorSlot, edit: TextEdit) -> EditorProposal {
@@ -970,10 +1064,24 @@ mod tests {
         proposal
     }
 
+    fn history(slot: &EditorSlot, command: EditorCommand) -> Option<EditorProposal> {
+        match route_command(slot, command, None) {
+            EditorAction::Propose(proposal) => Some(proposal),
+            EditorAction::Handled => None,
+            _ => panic!("expected a history command"),
+        }
+    }
+
+    fn route_command(slot: &EditorSlot, command: EditorCommand, geometry: Option<&TextGeometry>) -> EditorAction {
+        let session = session(slot);
+        let event = EditorEvent::Command { session: session.id(), expected_rev: slot.document_rev(), command };
+        session.route_with_geometry(event, geometry).unwrap()
+    }
+
     fn select(slot: &mut EditorSlot, selection: (usize, usize)) {
         let session = session(slot);
         let EditorAction::Apply(change) =
-            session.route(EditorEvent::ProposeSelection { session: session.id(), expected_rev: slot.document_rev(), selection }).unwrap()
+            session.route(EditorEvent::Select { session: session.id(), expected_rev: slot.document_rev(), selection }).unwrap()
         else {
             panic!("expected a selection update");
         };
@@ -993,7 +1101,7 @@ mod tests {
         assert_eq!(slot.document_rev(), revision);
         assert_eq!(slot.value_rev(), 0);
         assert_eq!(slot.value(), "éx");
-        assert!(session(&slot).undo().is_none());
+        assert!(history(&slot, EditorCommand::Undo).is_none());
 
         let accepted = proposal(&slot, edit).settle(Some("日本"));
         assert!(update(&mut slot, accepted));
@@ -1002,11 +1110,11 @@ mod tests {
         assert_eq!(slot.selection(), (6, 3));
         assert_eq!(slot.clipboard_text(), Some("本"));
 
-        let undo = session(&slot).undo().unwrap().settle(Some("éx"));
+        let undo = history(&slot, EditorCommand::Undo).unwrap().settle(Some("éx"));
         assert!(update(&mut slot, undo));
         assert_eq!(slot.value(), "éx");
         assert_eq!(slot.selection(), (3, 0));
-        let redo = session(&slot).redo().unwrap().settle(Some("日本"));
+        let redo = history(&slot, EditorCommand::Redo).unwrap().settle(Some("日本"));
         assert!(update(&mut slot, redo));
         assert_eq!(slot.selection(), (6, 3));
     }
@@ -1017,8 +1125,11 @@ mod tests {
         select(&mut slot, (2, 1));
         let old = session(&slot).id();
         let old_rev = slot.document_rev();
-        let draft = route_edit(&slot, TextEdit::Mark { text: "中".into(), selection: Some(Range { start: 3, end: 0 }), replacement: None })
-            .unwrap();
+        let draft = route_edit(
+            &slot,
+            TextEdit::Mark { text: "中".into(), selection: Some(Range { start: 3, end: 0 }), replacement: None, clauses: SmallVec::new() },
+        )
+        .unwrap();
         let EditorAction::Apply(draft) = draft else { panic!("expected a composition update") };
         assert!(update(&mut slot, draft));
         assert_eq!(slot.value(), "abc");
@@ -1026,7 +1137,7 @@ mod tests {
         assert_eq!(composition.text(), "a中c");
         assert_eq!(composition.marked(), 1..4);
         assert_eq!(composition.selection(), Some((4, 1)));
-        let stale = session(&slot).route(EditorEvent::CancelComposition { session: old, expected_rev: old_rev });
+        let stale = session(&slot).route(EditorEvent::Edit { session: old, expected_rev: old_rev, edit: TextEdit::Cancel });
         assert_eq!(stale.unwrap_err(), EditorRejection::StaleRevision);
 
         let commit = proposal(&slot, TextEdit::Unmark);
@@ -1052,7 +1163,7 @@ mod tests {
         assert!(!update(&mut slot, old));
         assert_eq!(slot.value(), "hello");
         assert_eq!(
-            session(&slot).route(EditorEvent::CancelComposition { session: id, expected_rev: rev }).unwrap_err(),
+            session(&slot).route(EditorEvent::Edit { session: id, expected_rev: rev, edit: TextEdit::Cancel }).unwrap_err(),
             EditorRejection::WrongSession,
         );
         let id = session(&slot).id();
@@ -1071,7 +1182,7 @@ mod tests {
         assert!(update(&mut slot, edit.settle(Some("newpassword"))));
         assert_eq!(slot.reportable_value(), None);
         assert_eq!(slot.clipboard_text(), None);
-        assert!(session(&slot).undo().is_none());
+        assert!(history(&slot, EditorCommand::Undo).is_none());
     }
 
     fn accept(slot: &mut EditorSlot, proposal: EditorProposal) {
@@ -1092,7 +1203,9 @@ mod tests {
         select(&mut slot, (9, 9));
         let snapshot = slot.snapshot().unwrap();
 
-        let deletion = proposal(&slot, TextEdit::Insert { text: String::new(), replacement: Some(8..9) });
+        let EditorAction::Propose(deletion) = route_command(&slot, EditorCommand::DeleteBackward, None) else {
+            panic!("expected a deletion proposal");
+        };
         assert_eq!(deletion.selection(), (2, 2));
         accept(&mut slot, deletion);
         assert_eq!(slot.value(), "A ! ✅");
@@ -1101,17 +1214,17 @@ mod tests {
         accept(&mut slot, adjacent);
         assert_eq!(slot.value(), "A! ✅");
 
-        let undo_adjacent = session(&slot).undo().unwrap();
+        let undo_adjacent = history(&slot, EditorCommand::Undo).unwrap();
         accept(&mut slot, undo_adjacent);
         assert_eq!(slot.value(), "A ! ✅");
-        let undo_atom = session(&slot).undo().unwrap();
+        let undo_atom = history(&slot, EditorCommand::Undo).unwrap();
         accept(&mut slot, undo_atom);
         assert_eq!(slot.value(), snapshot.as_str());
         assert_eq!(slot.atoms(), &[atom]);
         assert_eq!(slot.decorations(), &[decoration]);
         assert_eq!(slot.selection(), (9, 9));
 
-        let redo = session(&slot).redo().unwrap();
+        let redo = history(&slot, EditorCommand::Redo).unwrap();
         accept(&mut slot, redo);
         assert_eq!(slot.value(), "A ! ✅");
         assert!(slot.atoms().is_empty());
@@ -1135,7 +1248,7 @@ mod tests {
         assert_eq!(deleted.selection(), (1, 1));
         accept(&mut slot, deleted);
 
-        let undo = session(&slot).undo().unwrap();
+        let undo = history(&slot, EditorCommand::Undo).unwrap();
         accept(&mut slot, undo);
         select(&mut slot, (1, 1));
         let forward = proposal(&slot, TextEdit::Commit { text: "aaaa".into(), selection: (1, 1), kind: CommitKind::Deleting });
@@ -1163,9 +1276,11 @@ mod tests {
             atoms: Arc::from([AtomicRange { range: 4..8, kind: Arc::from("token") }]),
             ..Default::default()
         });
-        let EditorAction::Apply(draft) =
-            route_edit(&slot, TextEdit::Mark { text: "😀".into(), selection: Some(4..4), replacement: Some(1..2) }).unwrap()
-        else {
+        let EditorAction::Apply(draft) = route_edit(
+            &slot,
+            TextEdit::Mark { text: "😀".into(), selection: Some(4..4), replacement: Some(1..2), clauses: SmallVec::new() },
+        )
+        .unwrap() else {
             panic!("expected a composition update")
         };
         assert!(update(&mut slot, draft));
@@ -1198,6 +1313,135 @@ mod tests {
     }
 
     #[test]
+    fn delete_surrounding_keeps_selected_text_and_expands_atoms_in_one_revision() {
+        let mut slot = EditorSlot::new("A @name日本");
+        slot.set_rich_text(EditorRichText {
+            atoms: Arc::from([AtomicRange { range: 2..7, kind: Arc::from("mention") }]),
+            ..Default::default()
+        });
+        select(&mut slot, (10, 7));
+        let rev = slot.document_rev();
+        let bad = route_edit(&slot, TextEdit::DeleteSurrounding { before_bytes: 1, after_bytes: 1 });
+        assert_eq!(bad.unwrap_err(), EditorRejection::InvalidRange);
+        let deletion = proposal(&slot, TextEdit::DeleteSurrounding { before_bytes: 1, after_bytes: 3 });
+        assert_eq!(deletion.selection(), (5, 2));
+        accept(&mut slot, deletion);
+        assert_eq!(slot.value(), "A 日");
+        assert_eq!(slot.document_rev(), rev + 1);
+        let undo = history(&slot, EditorCommand::Undo).unwrap();
+        accept(&mut slot, undo);
+        assert_eq!(slot.value(), "A @name日本");
+        assert_eq!(slot.selection(), (10, 7));
+        assert_eq!(slot.atoms().len(), 1);
+    }
+
+    #[test]
+    fn clause_changes_advance_the_document_only_and_normalize_to_utf8() {
+        use octara_model::text::ClauseStyle::{ActiveClause, Clause};
+
+        let mut slot = EditorSlot::new("prefix");
+        let mark = |slot: &mut EditorSlot, active| {
+            let edit = TextEdit::Mark {
+                text: "日本語".into(),
+                selection: None,
+                replacement: None,
+                clauses: SmallVec::from_buf([
+                    MarkedClause { range: 4..20, style: active },
+                    MarkedClause { range: 0..8, style: Clause },
+                    MarkedClause { range: 8..9, style: Clause },
+                    MarkedClause { range: usize::MAX..usize::MAX, style: Clause },
+                ]),
+            };
+            let EditorAction::Apply(draft) = route_edit(slot, edit).unwrap() else { panic!("expected a draft") };
+            assert!(update(slot, draft));
+        };
+        mark(&mut slot, ActiveClause);
+        assert_eq!(
+            slot.composition().unwrap().clauses(),
+            &[MarkedClause { range: 0..6, style: Clause }, MarkedClause { range: 6..9, style: ActiveClause },],
+        );
+        // Style-only updates use the same text, marked range, and selection.
+        let rev = slot.document_rev();
+        let edit = TextEdit::Mark {
+            text: "日本語".into(),
+            selection: None,
+            replacement: None,
+            clauses: [MarkedClause { range: 0..6, style: Clause }, MarkedClause { range: 6..9, style: Clause }].into_iter().collect(),
+        };
+        let EditorAction::Apply(draft) = route_edit(&slot, edit.clone()).unwrap() else { panic!("expected a draft") };
+        assert!(update(&mut slot, draft));
+        assert_eq!(slot.document_rev(), rev + 1);
+        assert_eq!(slot.value_rev(), 0);
+        let EditorAction::Apply(draft) = route_edit(&slot, edit).unwrap() else { panic!("expected a draft") };
+        assert!(!update(&mut slot, draft));
+    }
+
+    #[test]
+    fn consecutive_typing_and_deletion_coalesce_through_mirror_predictions() {
+        let mut slot = EditorSlot::new("");
+        let id = session(&slot).id();
+        let mut mirror = EditorMirror::new(&slot);
+        for text in ["é", "🚀"] {
+            let edit = TextEdit::Insert { text: text.into(), replacement: None };
+            assert!(mirror.apply(EditorEvent::Edit { session: id, expected_rev: slot.document_rev(), edit: edit.clone() }));
+            let typing = proposal(&slot, edit);
+            accept(&mut slot, typing);
+        }
+        for (command, expected) in [
+            (EditorCommand::DeleteBackward, "é"),
+            (EditorCommand::DeleteBackward, ""),
+            (EditorCommand::Undo, "é🚀"),
+            (EditorCommand::Undo, ""),
+            (EditorCommand::Redo, "é🚀"),
+            (EditorCommand::Redo, ""),
+        ] {
+            assert!(mirror.apply(EditorEvent::Command { session: id, expected_rev: slot.document_rev(), command }));
+            let EditorAction::Propose(edit) = route_command(&slot, command, None) else { panic!("expected an edit proposal") };
+            accept(&mut slot, edit);
+            assert_eq!(slot.value(), expected);
+            assert_eq!(mirror.editor().value(), expected);
+            assert_eq!(mirror.editor().document_rev(), slot.document_rev());
+        }
+    }
+
+    #[test]
+    fn visual_movement_handles_rtl_and_preserves_the_vertical_goal() {
+        use octara_model::geometry::Rect;
+        use octara_model::text::{TextFragment, TextLine};
+
+        let mut slot = EditorSlot::new("אבג\nx\n12345");
+        slot.multiline = true;
+        let line = |range: Range<usize>, fragments: Vec<TextFragment>| TextLine {
+            range,
+            rect: Rect::new(0.0, 0.0, 5.0, 16.0),
+            glyph_top: 0.0,
+            glyph_height: 16.0,
+            fragments: fragments.into(),
+        };
+        let fragment = |range, x, rtl| TextFragment { range, rect: Rect::new(x, 0.0, 1.0, 16.0), rtl };
+        let geometry = TextGeometry {
+            lines: Arc::from([
+                line(0..7, vec![fragment(4..6, 0.0, true), fragment(2..4, 1.0, true), fragment(0..2, 2.0, true)]),
+                line(7..9, vec![fragment(7..8, 0.0, false)]),
+                line(9..14, (0..5).map(|x| fragment(9 + x..10 + x, x as f32, false)).collect()),
+            ]),
+            ..Default::default()
+        };
+        for (command, expected) in [
+            (EditorCommand::MoveLeft, (2, 2)),
+            (EditorCommand::SelectLeft, (2, 4)),
+            (EditorCommand::MoveRight, (2, 2)),
+            (EditorCommand::MoveDown, (8, 8)),
+            (EditorCommand::SelectDown, (8, 11)),
+            (EditorCommand::SelectLineEnd, (8, 14)),
+        ] {
+            let EditorAction::Apply(edit) = route_command(&slot, command, Some(&geometry)) else { panic!("expected a selection") };
+            assert!(update(&mut slot, edit));
+            assert_eq!(slot.selection(), expected);
+        }
+    }
+
+    #[test]
     fn reorder_keeps_composition_and_focus_reentry_or_retirement_invalidates_it() {
         let mut tree = Tree::new(TREE, Default::default());
         let root = tree.node_ref(tree.root());
@@ -1215,12 +1459,15 @@ mod tests {
         let session = EditorSession::active(&tree).unwrap();
         let id = session.id();
         let EditorAction::Apply(draft) = session
-            .route(EditorEvent::Composition {
+            .route(EditorEvent::Edit {
                 session: id,
                 expected_rev: session.editor().document_rev(),
-                text: "文".into(),
-                selection: Some((3, 0)),
-                replacement: Some(0..0),
+                edit: TextEdit::Mark {
+                    text: "文".into(),
+                    selection: Some(Range { start: 3, end: 0 }),
+                    replacement: Some(0..0),
+                    clauses: SmallVec::new(),
+                },
             })
             .unwrap()
         else {
@@ -1246,8 +1493,13 @@ mod tests {
         assert_eq!(session.editor().composition().unwrap().text(), "文note");
         assert_eq!(session.editor().input_traits, traits);
         assert_eq!(EditorMirror::new(session.editor()).editor().input_traits, traits);
-        let EditorAction::Propose(commit) =
-            session.route(EditorEvent::Commit { session: id, expected_rev: draft_rev, text: "文".into() }).unwrap()
+        let EditorAction::Propose(commit) = session
+            .route(EditorEvent::Edit {
+                session: id,
+                expected_rev: draft_rev,
+                edit: TextEdit::Insert { text: "文".into(), replacement: None },
+            })
+            .unwrap()
         else {
             panic!("expected a commit proposal");
         };
@@ -1263,12 +1515,10 @@ mod tests {
 
         let session = EditorSession::active(&tree).unwrap();
         let EditorAction::Apply(late) = session
-            .route(EditorEvent::Composition {
+            .route(EditorEvent::Edit {
                 session: session.id(),
                 expected_rev: session.editor().document_rev(),
-                text: "文".into(),
-                selection: None,
-                replacement: None,
+                edit: TextEdit::Mark { text: "文".into(), selection: None, replacement: None, clauses: SmallVec::new() },
             })
             .unwrap()
         else {

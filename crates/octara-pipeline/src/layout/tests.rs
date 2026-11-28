@@ -310,7 +310,7 @@ fn fixed_height_editor_reveals_the_caret_and_replaces_text_without_recomputing_t
     let old_caret = text.caret(editor, &layout).unwrap();
     let session = EditorSession::active(&tree).unwrap();
     let EditorAction::Apply(update) = session
-        .route(EditorEvent::ProposeSelection {
+        .route(EditorEvent::Select {
             session: session.id(),
             expected_rev: session.editor().document_rev(),
             selection: (value.len(), value.len()),

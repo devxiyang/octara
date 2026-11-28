@@ -16,6 +16,11 @@ fn inline_pill_has_cpu_gpu_parity() {
     fixture::inline_pill(compare_gpu());
 }
 
+#[test]
+fn marked_clauses_have_cpu_gpu_parity() {
+    fixture::marked_clauses(compare_gpu());
+}
+
 fn compare_gpu() -> impl FnMut(&DisplayList, &Picture, f32) {
     let mut gpu = GpuRenderer::new();
     if let Some(gpu) = &gpu {

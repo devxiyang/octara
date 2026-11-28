@@ -252,6 +252,11 @@ pub trait WindowAccessibility {
 }
 
 pub trait WindowTextInput {
+    /// A native input method owns keys while it has marked text.
+    fn is_composing(&self) -> bool {
+        false
+    }
+
     fn sync_text_input(&mut self, session: Option<&ActiveEditorView<'_>>);
     /// Give the native text system a key that Octara has not consumed.
     fn on_unhandled_key(&mut self, _event: &PlatformKey) -> bool {

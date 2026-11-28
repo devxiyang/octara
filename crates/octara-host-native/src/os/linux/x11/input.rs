@@ -1,9 +1,9 @@
 use super::{Native, XResult};
+use crate::os::linux::compose::KeySymbol;
 use crate::os::{PlatformEvent, PlatformKey, PointerPhase};
 use octara_model::geometry::{Point, Vec2};
 use octara_model::input::{Button, InteractionEvent, Key, KeyEvent, Modifiers, PointerId, PointerKind, WheelPhase};
-use std::ffi::CString;
-use std::ptr::{NonNull, null_mut};
+use std::ptr::NonNull;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
@@ -18,7 +18,6 @@ pub(super) struct PointerPosition {
 
 pub(super) struct Keyboard {
     state: Option<XkbState>,
-    compose: Option<Compose>,
     pressed: [bool; 256],
     released: Option<(u32, u8)>,
     alt: u16,
@@ -28,14 +27,7 @@ pub(super) struct Keyboard {
 impl Keyboard {
     pub fn new(native: &Native) -> Self {
         let _ = setup_xkb_events(native);
-        let mut keyboard = Self {
-            state: XkbState::new(native),
-            compose: Compose::new(),
-            pressed: [false; 256],
-            released: None,
-            alt: 1 << 3,
-            meta: 1 << 6,
-        };
+        let mut keyboard = Self { state: XkbState::new(native), pressed: [false; 256], released: None, alt: 1 << 3, meta: 1 << 6 };
         keyboard.refresh_modifiers(native);
         keyboard
     }
@@ -101,33 +93,18 @@ impl Keyboard {
         keysym as u32
     }
 
-    fn press(&mut self, native: &Native, event: &KeyPressEvent) -> Option<PlatformKey> {
+    fn press(&mut self, native: &Native, event: &KeyPressEvent) -> (KeySymbol, PlatformKey) {
         let repeat = std::mem::replace(&mut self.pressed[usize::from(event.detail)], true)
             || self.released.take() == Some((event.time, event.detail));
         let modifiers = self.modifiers(event.state);
         let symbol = self.keysym(native, event);
         let logical = logical_key(symbol).map(|key| KeyEvent { key, modifiers, code: physical_code(event.detail), repeat });
         let text = if modifiers.intersects(Modifiers::CTRL | Modifiers::META) {
-            self.reset_compose();
             None
         } else {
-            match self.compose.as_mut().map(|compose| compose.feed(symbol)) {
-                Some(ComposeResult::Pending) => return None,
-                Some(ComposeResult::Complete(text)) => return Some(PlatformKey { event: None, text }),
-                Some(ComposeResult::Cancelled) => None,
-                Some(ComposeResult::Plain) | None => {
-                    let character = keysym_character(symbol);
-                    character.map(|character| character.to_string())
-                }
-            }
+            keysym_character(symbol).map(|character| character.to_string())
         };
-        (logical.is_some() || text.is_some()).then_some(PlatformKey { event: logical, text })
-    }
-
-    fn reset_compose(&mut self) {
-        if let Some(compose) = &self.compose {
-            compose.reset();
-        }
+        (KeySymbol { value: symbol, modifiers }, PlatformKey { event: logical, text })
     }
 
     fn release(&mut self, event: &KeyPressEvent) {
@@ -138,7 +115,6 @@ impl Keyboard {
     fn focus_lost(&mut self) {
         self.pressed.fill(false);
         self.released = None;
-        self.reset_compose();
     }
 }
 
@@ -211,85 +187,6 @@ impl Drop for XkbState {
     fn drop(&mut self) {
         // SAFETY: This instance owns one state reference.
         unsafe { (self.library.xkb_state_unref)(self.state.as_ptr()) };
-    }
-}
-
-struct Compose {
-    library: &'static xkb_api::XkbCommonCompose,
-    state: NonNull<xkb_api::xkb_compose_state>,
-}
-
-enum ComposeResult {
-    Plain,
-    Pending,
-    Complete(Option<String>),
-    Cancelled,
-}
-
-impl Compose {
-    fn new() -> Option<Self> {
-        let xkb = xkb_api::xkbcommon_option()?;
-        let library = xkb_api::xkbcommon_compose_option()?;
-        let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
-            .into_iter()
-            .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
-            .unwrap_or_else(|| "C".into());
-        let locale = CString::new(locale).ok()?;
-        // SAFETY: The locale is NUL-terminated. The table retains the context it needs and
-        // the compose state retains its table, so temporary references can be released.
-        unsafe {
-            let context = NonNull::new((xkb.xkb_context_new)(xkb_api::xkb_context_flags::XKB_CONTEXT_NO_FLAGS))?;
-            let table = (library.xkb_compose_table_new_from_locale)(
-                context.as_ptr(),
-                locale.as_ptr(),
-                xkb_api::xkb_compose_compile_flags::XKB_COMPOSE_COMPILE_NO_FLAGS,
-            );
-            (xkb.xkb_context_unref)(context.as_ptr());
-            let table = NonNull::new(table)?;
-            let state = (library.xkb_compose_state_new)(table.as_ptr(), xkb_api::xkb_compose_state_flags::XKB_COMPOSE_STATE_NO_FLAGS);
-            (library.xkb_compose_table_unref)(table.as_ptr());
-            Some(Self { library, state: NonNull::new(state)? })
-        }
-    }
-
-    fn feed(&mut self, symbol: u32) -> ComposeResult {
-        use xkb_api::xkb_compose_status::*;
-        let state = self.state.as_ptr();
-        let lib = self.library;
-        // SAFETY: The state is owned and used only on the UI thread.
-        unsafe {
-            if (lib.xkb_compose_state_feed)(state, symbol) == xkb_api::xkb_compose_feed_result::XKB_COMPOSE_FEED_IGNORED {
-                return ComposeResult::Plain;
-            }
-            match (lib.xkb_compose_state_get_status)(state) {
-                XKB_COMPOSE_NOTHING => ComposeResult::Plain,
-                XKB_COMPOSE_COMPOSING => ComposeResult::Pending,
-                XKB_COMPOSE_CANCELLED => {
-                    self.reset();
-                    ComposeResult::Cancelled
-                }
-                XKB_COMPOSE_COMPOSED => {
-                    let len = (lib.xkb_compose_state_get_utf8)(state, null_mut(), 0).max(0) as usize;
-                    let mut bytes = vec![0u8; len + 1];
-                    (lib.xkb_compose_state_get_utf8)(state, bytes.as_mut_ptr().cast(), bytes.len());
-                    bytes.truncate(len);
-                    self.reset();
-                    ComposeResult::Complete(String::from_utf8(bytes).ok())
-                }
-            }
-        }
-    }
-
-    fn reset(&self) {
-        // SAFETY: This instance owns the live compose state.
-        unsafe { (self.library.xkb_compose_state_reset)(self.state.as_ptr()) };
-    }
-}
-
-impl Drop for Compose {
-    fn drop(&mut self) {
-        // SAFETY: This instance owns one compose-state reference.
-        unsafe { (self.library.xkb_compose_state_unref)(self.state.as_ptr()) };
     }
 }
 
@@ -410,7 +307,9 @@ pub(super) fn translate(native: &Native, keyboard: &mut Keyboard, event: Event) 
         Event::KeyPress(event) => {
             let window = native.window(event.event)?;
             native.timestamp.set(event.time);
-            keyboard.press(native, &event).map(|event| PlatformEvent::Key { window: window.id, event })
+            let (symbol, event) = keyboard.press(native, &event);
+            native.pending_keysym.set(Some((window.id, symbol)));
+            Some(PlatformEvent::Key { window: window.id, event })
         }
         Event::KeyRelease(event) => {
             keyboard.release(&event);

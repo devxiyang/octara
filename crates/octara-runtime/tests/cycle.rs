@@ -1,5 +1,5 @@
 use octara_model::geometry::{LayoutBox, Point, WindowViewport};
-use octara_model::input::{ContactTarget, EditorEvent};
+use octara_model::input::{ContactTarget, EditorEvent, TextEdit};
 use octara_model::style::State;
 use octara_runtime::cycle::{AppError, WINDOW_ROUNDS};
 use octara_runtime::{AppRuntime, CommitOutput, HandlerEvent, HostEngine, Input, ProjectError, ProjectFeedback, WindowOptions};
@@ -7,6 +7,7 @@ use octara_tree::editor::{EditorSession, EditorSlot};
 use octara_tree::tables::HandlerKind;
 use octara_tree::{NodeChange, NodeContent, NodeId, NodeSpec, RuntimeOp, Tree, TreeDelta};
 use std::cell::Cell;
+use std::ops::Range;
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -139,12 +140,15 @@ fn accepted_ime_commit_keeps_the_session_through_a_bound_value_write() {
     let (session, revision) = (active.id(), active.editor().document_rev());
     app.dispatch(
         window,
-        Input::Editor(EditorEvent::Composition {
+        Input::Editor(EditorEvent::Edit {
             session,
             expected_rev: revision,
-            text: "界".into(),
-            selection: Some((3, 0)),
-            replacement: None,
+            edit: TextEdit::Mark {
+                text: "界".into(),
+                selection: Some(Range { start: 3, end: 0 }),
+                replacement: None,
+                clauses: Default::default(),
+            },
         }),
     )
     .unwrap();
@@ -153,7 +157,15 @@ fn accepted_ime_commit_keeps_the_session_through_a_bound_value_write() {
     assert_eq!(active.editor().value(), "");
     assert_eq!(active.editor().composition().unwrap().text(), "界");
     let revision = active.editor().document_rev();
-    app.dispatch(window, Input::Editor(EditorEvent::Commit { session, expected_rev: revision, text: "世界".into() })).unwrap();
+    app.dispatch(
+        window,
+        Input::Editor(EditorEvent::Edit {
+            session,
+            expected_rev: revision,
+            edit: TextEdit::Insert { text: "世界".into(), replacement: None },
+        }),
+    )
+    .unwrap();
 
     let active = EditorSession::active(app.window(window).unwrap().tree()).unwrap();
     assert_eq!(active.id(), session);
@@ -161,6 +173,65 @@ fn accepted_ime_commit_keeps_the_session_through_a_bound_value_write() {
     assert_eq!(active.editor().document_rev(), revision + 1);
     assert!(active.editor().composition().is_none());
     assert_eq!(app.update(None, |write| write.get(value)).unwrap(), "世界");
+}
+
+#[test]
+fn active_composition_owns_editor_keys_before_handlers_submit_and_modal_dismissal() {
+    use octara_model::input::{EditorCommand, HostReply, InteractionEvent, Key, KeyEvent, Modifiers};
+    use octara_tree::{overlay::LayerPolicy, transaction::OverlaySpec};
+    let (mut app, _) = app();
+    let (keys, submissions, dismissals, menu_hits) = app.build(|cx| (cx.signal(0), cx.signal(0), cx.signal(0), cx.signal(0))).unwrap();
+    let window = app
+        .open_window(WindowOptions::default(), move |mount| {
+            let modal = mount.create(NodeSpec::new(NodeContent::Box));
+            mount.change(modal, NodeChange::Overlay(OverlaySpec { layer: Some(LayerPolicy::modal()), ..Default::default() }));
+            mount.place(mount.overlay_root(), 0, modal);
+            mount.on(modal, HandlerKind::Dismiss, move |write, _| write.update(dismissals, |count| *count += 1));
+            mount.on_command(modal, "menu.escape", move |write| write.update(menu_hits, |count| *count += 1));
+            let mut editor = EditorSlot::new("A");
+            editor.submit_on_enter = true;
+            let node = mount.create(NodeSpec::new(NodeContent::TextInput(Box::new(editor))));
+            mount.change(node, NodeChange::TestId(Some("editor".into())));
+            mount.place(modal, 0, node);
+            mount.on(node, HandlerKind::Key, move |write, _| write.update(keys, |count| *count += 1));
+            mount.on(node, HandlerKind::Submit, move |write, _| write.update(submissions, |count| *count += 1));
+        })
+        .unwrap();
+    app.update(Some(window), |write| write.focus("editor")).unwrap();
+    let editor = EditorSession::active(app.window(window).unwrap().tree()).unwrap();
+    let session = editor.id();
+    let expected_rev = editor.editor().document_rev();
+    let mark =
+        TextEdit::Mark { text: "漢".into(), selection: Some(Range { start: 3, end: 0 }), replacement: None, clauses: Default::default() };
+    assert!(app.dispatch(window, Input::Editor(EditorEvent::Edit { session, expected_rev, edit: mark })).unwrap().handled);
+    let expected_rev = expected_rev + 1;
+    for key in [Key::Enter, Key::Escape, Key::Space, Key::Left, Key::Backspace, Key::Char('1')] {
+        let key = KeyEvent::new(key, Modifiers::empty());
+        assert!(!app.dispatch(window, Input::Interaction(InteractionEvent::Key(key))).unwrap().handled);
+        assert!(!app.dispatch(window, Input::Editor(EditorEvent::KeyIntercept { session, expected_rev, key })).unwrap().handled);
+    }
+    let command = EditorEvent::Command { session, expected_rev, command: EditorCommand::SelectAll };
+    assert!(!app.dispatch(window, Input::Editor(command)).unwrap().handled);
+    assert_eq!(app.update(None, |read| (read.get(keys), read.get(submissions), read.get(dismissals))).unwrap(), (0, 0, 0));
+    let menu = |chord| Input::Host(HostReply::MenuCommand { name: "menu.escape".into(), chord });
+    let chord = Some("escape".parse().unwrap());
+    assert!(app.dispatch(window, menu(chord)).unwrap().handled);
+    assert_eq!(app.update(None, |read| read.get(menu_hits)).unwrap(), 0);
+    assert!(app.dispatch(window, menu(None)).unwrap().handled);
+    assert_eq!(app.update(None, |read| read.get(menu_hits)).unwrap(), 1);
+    let active = EditorSession::active(app.window(window).unwrap().tree()).unwrap();
+    assert_eq!(active.editor().document_rev(), expected_rev);
+    assert_eq!(active.editor().composition().unwrap().text(), "漢A");
+
+    let event = EditorEvent::Edit { session, expected_rev, edit: TextEdit::Cancel };
+    assert!(app.dispatch(window, Input::Editor(event)).unwrap().handled);
+    assert!(app.dispatch(window, menu(chord)).unwrap().handled);
+    assert_eq!(app.update(None, |read| read.get(menu_hits)).unwrap(), 2);
+    for key in [Key::Enter, Key::Escape] {
+        let key = KeyEvent::new(key, Modifiers::empty());
+        assert!(app.dispatch(window, Input::Interaction(InteractionEvent::Key(key))).unwrap().handled);
+    }
+    assert_eq!(app.update(None, |read| (read.get(keys), read.get(submissions), read.get(dismissals))).unwrap(), (2, 1, 1));
 }
 
 #[test]

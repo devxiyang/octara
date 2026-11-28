@@ -819,7 +819,7 @@ mod browser {
 
         let select = |tree: &mut Tree, selection| {
             let session = EditorSession::active(tree).unwrap();
-            let event = EditorEvent::ProposeSelection { session: session.id(), expected_rev: session.editor().document_rev(), selection };
+            let event = EditorEvent::Select { session: session.id(), expected_rev: session.editor().document_rev(), selection };
             let EditorAction::Apply(update) = session.route(event).unwrap() else { panic!("editor selection update") };
             tree.apply_runtime(RuntimeOp::EditorApply { node: editor, update })
         };

@@ -4,9 +4,11 @@ use octara_model::{
 };
 use std::path::{Path, PathBuf};
 
-const URIS: &str = "text/uri-list";
-const TEXT: &str = "text/plain";
-const UTF8: &str = "text/plain;charset=utf-8";
+pub(super) const URIS: &str = "text/uri-list";
+pub(super) const TEXT: &str = "text/plain";
+pub(super) const UTF8: &str = "text/plain;charset=utf-8";
+
+pub(super) const PNG: &str = "image/png";
 
 type Formats = Vec<(&'static str, Vec<u8>)>;
 
@@ -28,9 +30,9 @@ pub(super) fn clipboard_formats(items: &[ClipboardItem]) -> Result<Formats, Serv
                     formats.push_file(path)?;
                 }
             }
-            ClipboardItem::Image { media_type, bytes } if media_type == "image/png" => {
-                super::services::load_png(bytes)?;
-                formats.push_image("image/png", bytes)?;
+            ClipboardItem::Image { media_type, bytes } if media_type == PNG => {
+                image::load_from_memory_with_format(bytes, image::ImageFormat::Png).map_err(|_| ServiceError::Failed)?;
+                formats.push_image(PNG, bytes)?;
             }
             ClipboardItem::Image { .. } => return Err(ServiceError::Unavailable),
         }

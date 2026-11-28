@@ -671,7 +671,7 @@ impl WriteCx<'_> {
         {
             return false;
         }
-        let event = EditorEvent::ProposeEdit {
+        let event = EditorEvent::Edit {
             session: state.session,
             expected_rev: state.revision,
             edit: TextEdit::Insert { text: text.into(), replacement: Some(range) },

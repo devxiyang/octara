@@ -1,8 +1,7 @@
 mod accessibility;
-mod linux_clipboard;
+mod compose;
 mod mime;
 mod preferences;
-mod services;
 mod wayland;
 mod x11;
 

@@ -44,12 +44,12 @@ fn input(driver: &mut HeadlessDriver, window: WindowId, id: &str, value: &str) {
     let snapshot = observe(driver, window);
     let target = node(&snapshot, id).target;
     let editor = snapshot.editor.expect("focused editor");
-    let event = EditorEvent::ProposeEdit {
+    let event = EditorEvent::Edit {
         session: editor.session,
         expected_rev: editor.document_rev,
         edit: TextEdit::Commit { text: value.into(), selection: (value.len(), value.len()), kind: CommitKind::Other },
     };
-    let receipt = act(driver, window, target, AgentAction::Editor { event });
+    let receipt = act(driver, window, target, AgentAction::Editor { event: event.into() });
     assert!(receipt.ok && receipt.handled == Some(true), "{id}: {receipt:?}");
 }
 
@@ -142,7 +142,7 @@ fn markdown_showcase_replays_with_a_reveal_and_caret_command() {
         expected_rev: editor.document_rev,
         key: KeyEvent::new(Key::Enter, Modifiers::empty()),
     };
-    let receipt = act(&mut driver, window, active.focus.unwrap(), AgentAction::Editor { event });
+    let receipt = act(&mut driver, window, active.focus.unwrap(), AgentAction::Editor { event: event.into() });
     assert!(receipt.ok && receipt.handled == Some(true), "{receipt:?}");
     assert!(!observe(&mut driver, window).nodes.iter().any(|node| node.test_id.as_deref() == Some("eclipse-chart")));
 
@@ -294,7 +294,12 @@ fn editor_rejects_a_proposal_for_an_old_document_revision() {
     let before = view.editor.unwrap();
     let target = node(&observe(&mut driver, window), "editor").target;
     let action = AgentAction::Editor {
-        event: EditorEvent::Commit { session: before.session, expected_rev: before.document_rev, text: "你好".into() },
+        event: EditorEvent::Edit {
+            session: before.session,
+            expected_rev: before.document_rev,
+            edit: octara::TextEdit::Insert { text: "你好".into(), replacement: None },
+        }
+        .into(),
     };
     let receipt = act(&mut driver, window, target, action.clone());
     assert!(receipt.ok, "{receipt:?}");

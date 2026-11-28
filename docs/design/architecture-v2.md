@@ -339,7 +339,7 @@ Replaces v1's 25-variant flat `InputEvent` and eliminates the Native vs Hosted p
    - `Wheel { pos, delta, phase, mods }` / `Key(KeyEvent)` / `BackGesture { id, phase }` / `WindowActive(bool)`
    - *Native hit-test and Web `WeakMap` lookup both emit `ContactTarget { hit: TargetGuard, action: Option<TargetGuard> }`. `InteractionArbiter` is the single state machine for press capture, outside-dismiss, modal scope, iOS keyboard-dismiss re-verification, and focus handoff.*
 2. **`EditorEvent`**:
-   - `ProposeEdit { session, expected_rev, edit }`, `ProposeSelection`, `Composition`, `Commit`, `CancelComposition`, `KeyIntercept` — shared by macOS AppKit, iOS UIKit, Linux input methods, and Web `<input>`/`<textarea>`.
+   - `Edit`, `Select`, `Command`, and `KeyIntercept` carry a session and expected revision across native, Web, and deterministic hosts. Native adapters use `HostTextBridge` to reconcile synchronous IME queries with retained editor state.
 3. **`HostReply`**:
    - `ViewportChanged`, `ChromeChanged`, `GeometryChanged`, `MenuCommand`, `AskAnswer`, `ServiceReply`, `NativeEvent`, `NativeMeasurement`, `NativeSnapshot`, `ExitFinished(ExitTicket)`, `AccessibilityAction`.
 4. **`AgentCommand`** (isolated in `octara-inspect`):

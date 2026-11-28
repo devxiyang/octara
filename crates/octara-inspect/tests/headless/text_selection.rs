@@ -257,12 +257,15 @@ fn editor_pointer_uses_settled_composition_and_wrapped_geometry() {
     assert_eq!(selection(&app, window, field), (19, 19));
 
     let session = EditorSession::active(app.runtime().window(window).unwrap().tree()).unwrap();
-    let composing = EditorEvent::Composition {
+    let composing = EditorEvent::Edit {
         session: session.id(),
         expected_rev: session.editor().document_rev(),
-        text: "あ".into(),
-        selection: Some((3, 3)),
-        replacement: None,
+        edit: octara::TextEdit::Mark {
+            text: "あ".into(),
+            selection: Some(std::ops::Range { start: 3, end: 3 }),
+            replacement: None,
+            clauses: Default::default(),
+        },
     };
     app.dispatch(window, Input::Editor(composing)).unwrap();
     let third = point(2, 1);

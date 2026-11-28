@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 pub(super) struct ViewState {
-    id: WindowId,
+    pub(super) id: WindowId,
     pub(super) sender: PlatformSender,
     pub(super) editor: EditorState,
     pub(super) accessibility_elements: RefCell<Option<Retained<NSArray>>>,

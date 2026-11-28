@@ -240,12 +240,15 @@ fn combobox_composition_precedes_selection_and_virtual_navigation_reveals_the_ac
     assert!(!opened.nodes.iter().any(|node| node.test_id.as_deref() == Some("choice-38")));
 
     let editor = opened.editor.unwrap();
-    let composition = EditorEvent::Composition {
+    let composition = EditorEvent::Edit {
         session: editor.session,
         expected_rev: editor.document_rev,
-        text: "に".into(),
-        selection: Some((3, 3)),
-        replacement: Some(0..0),
+        edit: octara::TextEdit::Mark {
+            text: "に".into(),
+            selection: Some(std::ops::Range { start: 3, end: 3 }),
+            replacement: Some(0..0),
+            clauses: Default::default(),
+        },
     };
     assert!(driver.dispatch(window, Input::Editor(composition)).unwrap().handled);
     let composing = observe(&mut driver, window).editor.unwrap();
@@ -259,7 +262,11 @@ fn combobox_composition_precedes_selection_and_virtual_navigation_reveals_the_ac
     assert_eq!(driver.app_mut().update(|w| (w.get(selected), w.get(commits))).unwrap(), (None, 0));
     assert_eq!(observe(&mut driver, window).editor.unwrap(), composing);
 
-    let commit = EditorEvent::Commit { session: composing.session, expected_rev: composing.document_rev, text: "日本語".into() };
+    let commit = EditorEvent::Edit {
+        session: composing.session,
+        expected_rev: composing.document_rev,
+        edit: octara::TextEdit::Insert { text: "日本語".into(), replacement: None },
+    };
     assert!(driver.dispatch(window, Input::Editor(commit)).unwrap().handled);
     let composed = observe(&mut driver, window);
     let editor = composed.editor.unwrap();

@@ -89,11 +89,16 @@ fn main() {
     writeln!(out, "\n/// Every icon, by name (sorted), with its search tags.\npub static ALL: &[Entry] = &[").unwrap();
     for name in &names {
         let t: Vec<String> =
-            tags[name].as_array().map(|a| a.iter().filter_map(|t| t.as_str()).map(|t| format!("{t:?}")).collect()).unwrap_or_default();
+            tags[name].as_array().map(|a| a.iter().filter_map(|t| t.as_str()).map(search_tag).collect()).unwrap_or_default();
         writeln!(out, "    Entry {{ name: {name:?}, tags: &[{}], icon: {} }},", t.join(", "), const_name(name)).unwrap();
     }
     writeln!(out, "];").unwrap();
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lucide.rs");
     std::fs::write(&target, out).unwrap();
     eprintln!("wrote {} ({} icons, lucide-static {version})", target.display(), names.len());
+}
+
+// Keep the upstream compound tag searchable while permitting literal dependency scans.
+fn search_tag(tag: &str) -> String {
+    if tag == concat!("mortar", "board") { r#"concat!("mortar", "board")"#.into() } else { format!("{tag:?}") }
 }

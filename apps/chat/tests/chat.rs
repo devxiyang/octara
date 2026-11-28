@@ -70,7 +70,7 @@ fn composer_commands_and_mentions_reach_the_offline_rich_answer() {
     assert!(draft.contains("exoplanet transit"));
     assert!(!ui.exists("msg-2"));
 
-    ui.edit(|session, expected_rev| EditorEvent::ProposeSelection { session, expected_rev, selection: (draft.len(), draft.len()) });
+    ui.edit(|session, expected_rev| EditorEvent::Select { session, expected_rev, selection: (draft.len(), draft.len()) });
     ui.text(" @Mi");
     ui.key(Key::Enter, Modifiers::empty());
     assert!(ui.update(|chat, w| w.get(chat.draft)).trim_end().ends_with("[@Mira](user://mira)"));

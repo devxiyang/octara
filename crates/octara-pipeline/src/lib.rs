@@ -63,6 +63,8 @@ pub struct NativeFrame {
     /// The incremental accessibility update, if this frame changed the active tree.
     pub accessibility: Option<Arc<accesskit::TreeUpdate>>,
     pub native_changes: Vec<NativeChange>,
+    /// The session and revision that produced the caret and text geometry.
+    pub editor_stamp: Option<(octara_model::identity::EditorSessionId, u64)>,
     pub editor_caret: Option<Rect>,
     pub editor_geometry: Option<TextGeometry>,
     pub measurements: Vec<NativeMeasureRequest>,
@@ -167,6 +169,7 @@ struct StagedFrame {
     scene: Option<Arc<PaintScene>>,
     sampled_at: std::time::Duration,
     scale: f32,
+    editor_stamp: Option<(octara_model::identity::EditorSessionId, u64)>,
     editor_caret: Option<Rect>,
     editor_geometry: Option<TextGeometry>,
     airspace: AirspaceFrame,
@@ -378,6 +381,7 @@ impl HostEngine for NativeEngine {
             scene: frame.scene,
             sampled_at: std::time::Duration::from_secs_f64(now),
             scale: viewport.scale,
+            editor_stamp: octara_tree::editor::EditorSession::active(tree).map(|session| (session.id(), session.editor().document_rev())),
             editor_caret: editor.filter(|_| self.window_active).and_then(|node| self.text.caret(node, &self.layout)),
             editor_geometry: editor.and_then(|node| self.text.geometry(node, &self.layout)),
             airspace,
@@ -409,6 +413,7 @@ impl HostEngine for NativeEngine {
             accessibility,
             native_changes,
             measurements,
+            editor_stamp: staged.editor_stamp,
             editor_caret: staged.editor_caret,
             editor_geometry: staged.editor_geometry,
             airspace: staged.airspace,

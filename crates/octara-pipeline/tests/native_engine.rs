@@ -623,7 +623,7 @@ fn overlays_follow_editor_caret_and_selection_in_the_same_projection() {
         delta.merge(tree.apply_runtime(update));
     }
     let session = EditorSession::active(&tree).unwrap();
-    let event = EditorEvent::ProposeSelection { session: session.id(), expected_rev: session.editor().document_rev(), selection: (0, 3) };
+    let event = EditorEvent::Select { session: session.id(), expected_rev: session.editor().document_rev(), selection: (0, 3) };
     let EditorAction::Apply(update) = session.route(event).unwrap() else { panic!("expected selection update") };
     delta.merge(tree.apply_runtime(RuntimeOp::EditorApply { node: editor, update }));
     engine.project(&tree, &delta, viewport(), 0.1).unwrap();

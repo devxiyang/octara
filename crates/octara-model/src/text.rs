@@ -6,6 +6,7 @@ use crate::paint::{CanvasOp, Image, NodeIcon, ObjectFit};
 use crate::style::Direction;
 use crate::theme::ColorValue;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
@@ -164,6 +165,21 @@ pub struct InputTraits {
     pub autocorrect: Autocorrect,
 }
 
+/// Underline treatment for an input method's marked-text clause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClauseStyle {
+    Clause,
+    ActiveClause,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkedClause {
+    /// UTF-8 byte range relative to the marked text.
+    pub range: Range<usize>,
+    pub style: ClauseStyle,
+}
+
 /// An edit from a platform text input. Ranges count UTF-8 bytes in the displayed document,
 /// including marked text. A missing replacement uses the marked range, then the selection.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,11 +188,13 @@ pub enum TextEdit {
     /// Replace a displayed range with uncommitted text. The start and end of `selection`
     /// encode the anchor and caret relative to `text`. No selection hides the input method's
     /// cursor. Empty text cancels the composition.
-    Mark { text: String, selection: Option<Range<usize>>, replacement: Option<Range<usize>> },
+    Mark { text: String, selection: Option<Range<usize>>, replacement: Option<Range<usize>>, clauses: SmallVec<[MarkedClause; 4]> },
     /// Replace a displayed range and accept the resulting document as one committed edit.
     Insert { text: String, replacement: Option<Range<usize>> },
     /// Commit the document and its directional selection as one native edit.
     Commit { text: String, selection: (usize, usize), kind: CommitKind },
+    /// Delete the UTF-8 bytes before and after the selection, keeping the selected text.
+    DeleteSurrounding { before_bytes: usize, after_bytes: usize },
     /// Accept the displayed document, removing its input-method marking.
     Unmark,
     /// Restore the committed document and the selection from before composition began.
@@ -201,6 +219,9 @@ impl fmt::Debug for TextEdit {
             Self::Insert { replacement, .. } => f.debug_struct("Insert").field("replacement", replacement).finish_non_exhaustive(),
             Self::Commit { selection, kind, .. } => {
                 f.debug_struct("Commit").field("selection", selection).field("kind", kind).finish_non_exhaustive()
+            }
+            Self::DeleteSurrounding { before_bytes, after_bytes } => {
+                f.debug_struct("DeleteSurrounding").field("before_bytes", before_bytes).field("after_bytes", after_bytes).finish()
             }
             Self::Unmark => f.write_str("Unmark"),
             Self::Cancel => f.write_str("Cancel"),
@@ -565,7 +586,7 @@ impl TextDocument {
                 self.commit(text, anchor, caret)
             }
             TextEdit::Mark { text, .. } if text.is_empty() => self.composition.take().is_some(),
-            TextEdit::Mark { text, selection, replacement } => {
+            TextEdit::Mark { text, selection, replacement, .. } => {
                 let (display, marked) = self.with_replacement(text, replacement.as_ref());
                 let selection = selection.as_ref().map(|range| {
                     (marked.start + text.floor_char_boundary(range.start), marked.start + text.floor_char_boundary(range.end))
@@ -575,6 +596,23 @@ impl TextDocument {
                     return false;
                 }
                 self.composition = Some(composition);
+                true
+            }
+            TextEdit::DeleteSurrounding { before_bytes, after_bytes } => {
+                if self.composition.is_some() || (*before_bytes == 0 && *after_bytes == 0) {
+                    return false;
+                }
+                let low = self.anchor.min(self.caret);
+                let high = self.anchor.max(self.caret);
+                let Some(start) = low.checked_sub(*before_bytes) else { return false };
+                let Some(end) = high.checked_add(*after_bytes) else { return false };
+                if !self.value.is_char_boundary(start) || !self.value.is_char_boundary(end) {
+                    return false;
+                }
+                self.value.replace_range(high..end, "");
+                self.value.replace_range(start..low, "");
+                self.anchor -= before_bytes;
+                self.caret -= before_bytes;
                 true
             }
             TextEdit::Insert { text, replacement } => {
@@ -643,6 +681,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn delete_surrounding_keeps_directional_selection_and_rejects_partial_codepoints() {
+        let mut document = TextDocument::new("A😀中BZ".into(), 8, 5);
+        assert!(!document.apply(&TextEdit::DeleteSurrounding { before_bytes: 3, after_bytes: 1 }));
+        assert_eq!(document.committed(), ("A😀中BZ", 8, 5));
+        assert!(document.apply(&TextEdit::DeleteSurrounding { before_bytes: 4, after_bytes: 1 }));
+        assert_eq!(document.committed(), ("A中Z", 4, 1));
+    }
+
+    #[test]
     fn input_traits_deserialize_partial_platform_hints() {
         let traits: InputTraits =
             serde_json::from_str(r#"{"keyboard_type":"number","content_type":"one_time_code","autocorrect":"off"}"#).unwrap();
@@ -668,7 +715,8 @@ mod tests {
     #[test]
     fn marking_and_unmarking_preserves_reverse_utf8_selection() {
         let mut document = TextDocument::new("a界b".into(), 4, 1);
-        let edit = TextEdit::Mark { text: "語".into(), selection: Some(Range { start: 3, end: 1 }), replacement: None };
+        let edit =
+            TextEdit::Mark { text: "語".into(), selection: Some(Range { start: 3, end: 1 }), replacement: None, clauses: SmallVec::new() };
         assert!(document.apply(&edit));
         assert_eq!(document.committed(), ("a界b", 4, 1));
         assert_eq!(document.text(), "a語b");

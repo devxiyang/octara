@@ -63,13 +63,6 @@ fn clipboard_image(data: impl Fn(&NSString) -> Option<Retained<NSData>>) -> Opti
     Some(ClipboardItem::Image { media_type: "image/png".into(), bytes: png.to_vec() })
 }
 
-pub(super) fn write_text(text: &str) -> bool {
-    let pasteboard = NSPasteboard::generalPasteboard();
-    pasteboard.clearContents();
-    // SAFETY: The AppKit string type is a static pasteboard representation.
-    pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
-}
-
 pub(super) fn write_clipboard(items: &[ClipboardItem]) -> Result<(), ServiceError> {
     write_items(&NSPasteboard::generalPasteboard(), items)
 }

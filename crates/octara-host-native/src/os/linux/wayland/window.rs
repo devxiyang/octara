@@ -1,5 +1,7 @@
 use super::{Protocol, Shared};
-use crate::os::{ActiveEditorView, OsWindow, PlatformEvent, PlatformSender, ServiceCleanup, WindowAccessibility, WindowTextInput};
+use crate::os::{
+    ActiveEditorView, OsWindow, PlatformEvent, PlatformSender, ServiceCleanup, WindowAccessibility, WindowHostEvent, WindowTextInput,
+};
 use octara::WindowOptions;
 use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
 use octara::runtime::WindowId;
@@ -22,15 +24,16 @@ use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1;
 use wayland_protocols::wp::viewporter::client::wp_viewport;
 
-use super::super::accessibility::Accessibility;
-use super::ime::EditorState;
+use super::super::{accessibility::Accessibility, compose::Compose};
+use crate::text_bridge::HostTextBridge;
 
 pub(super) struct WindowState {
     pub id: WindowId,
     pub closed: Cell<bool>,
     pub native: Window,
     pub cursor: Cell<CursorStyle>,
-    pub editor: RefCell<Option<EditorState>>,
+    pub editor: RefCell<HostTextBridge>,
+    pub compose: Option<Compose>,
     viewport: Option<wp_viewport::WpViewport>,
     fractional: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
     preferred_scale: Cell<Option<u32>>,
@@ -171,6 +174,7 @@ impl WaylandWindow {
             closed: Cell::new(false),
             cursor: Cell::default(),
             editor: RefCell::default(),
+            compose: Compose::new(),
             preferred_scale: Cell::default(),
             integer_scale: Cell::new(1),
             configured: Cell::default(),
@@ -373,20 +377,48 @@ impl WindowTextInput for WaylandWindow {
         if self.native.closed.get() {
             return;
         }
-        self.native.editor.replace(session.map(EditorState::from));
+        let outcome = self.native.editor.borrow_mut().sync(session);
+        if (outcome.session_changed || outcome.rejected)
+            && let Some(compose) = &self.native.compose
+        {
+            compose.reset();
+        }
         self.shared.sync_ime(&self.native);
+    }
+
+    fn is_composing(&self) -> bool {
+        self.native.editor.borrow().is_composing() || self.native.compose.as_ref().is_some_and(Compose::is_composing)
+    }
+
+    fn on_unhandled_key(&mut self, _: &crate::os::PlatformKey) -> bool {
+        let mut editor = self.native.editor.borrow_mut();
+        if editor.is_composing() {
+            if let Some(compose) = &self.native.compose {
+                compose.reset();
+            }
+            return true;
+        }
+        let Some((window, symbol)) = self.shared.pending_keysym.get() else { return false };
+        window == self.native.id && self.native.compose.as_ref().is_some_and(|compose| compose.dispatch(symbol, &mut editor))
     }
 
     fn focused(&mut self, active: bool) {
         self.accessibility.set_focused(active);
+        if !active && let Some(compose) = &self.native.compose {
+            compose.reset();
+        }
+    }
+
+    fn drain_text_input(&mut self, out: &mut Vec<WindowHostEvent>) {
+        self.native.editor.borrow_mut().drain(out);
     }
 
     fn inspect_text_input(&self) -> serde_json::Value {
         let editor = self.native.editor.borrow();
         serde_json::json!({
-            "allowed": self.shared.text_input.is_some() && editor.is_some(),
+            "allowed": self.shared.text_input.is_some() && editor.session().is_some(),
             "native_focus": self.native.focused.get(),
-            "has_marked": editor.as_ref().is_some_and(|state| state.marked.is_some()),
+            "has_marked": editor.is_composing(),
         })
     }
 }

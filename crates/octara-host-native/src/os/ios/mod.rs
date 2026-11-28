@@ -3,7 +3,6 @@
 mod a11y;
 mod app;
 mod back;
-mod draft;
 mod editor;
 mod gestures;
 mod scene;
@@ -445,6 +444,10 @@ impl WindowTextInput for IosWindow {
         self.back.set_active(focused && !self.suspended);
     }
 
+    fn is_composing(&self) -> bool {
+        self.editor.is_composing()
+    }
+
     fn on_unhandled_key(&mut self, key: &PlatformKey) -> bool {
         if !self.editor.is_focused() {
             return false;
@@ -452,7 +455,8 @@ impl WindowTextInput for IosWindow {
         let native = self.editor.is_composing()
             || key.event.is_some_and(|event| {
                 !event.modifiers.intersects(Modifiers::META | Modifiers::CTRL)
-                    && matches!(event.key, Key::Char(_) | Key::Space | Key::Backspace)
+                    && (matches!(event.key, Key::Char(_) | Key::Space)
+                        || event.key == Key::Backspace && !event.modifiers.contains(Modifiers::ALT))
             });
         if native {
             self.window.forward_key_to_uikit();
@@ -461,9 +465,7 @@ impl WindowTextInput for IosWindow {
     }
 
     fn drain_text_input(&mut self, out: &mut Vec<WindowHostEvent>) {
-        if let Some(input) = self.editor.take() {
-            out.push(input);
-        }
+        self.editor.drain(out);
     }
 
     fn inspect_text_input(&self) -> serde_json::Value {

@@ -12,3 +12,8 @@ fn rich_span_pill_renders_on_cpu() {
 fn inline_pill_renders_on_cpu() {
     fixture::inline_pill(|_, _, _| {});
 }
+
+#[test]
+fn marked_clauses_render_on_cpu() {
+    fixture::marked_clauses(|_, _, _| {});
+}

@@ -152,12 +152,15 @@ fn each_rotates_with_one_attachment_and_keeps_the_moved_editors_ime() {
     let session = active.id();
     app.dispatch(
         id,
-        Input::Editor(EditorEvent::Composition {
+        Input::Editor(EditorEvent::Edit {
             session,
             expected_rev: active.editor().document_rev(),
-            text: "界".into(),
-            selection: Some((3, 0)),
-            replacement: None,
+            edit: octara::TextEdit::Mark {
+                text: "界".into(),
+                selection: Some(std::ops::Range { start: 3, end: 0 }),
+                replacement: None,
+                clauses: Default::default(),
+            },
         }),
     )
     .unwrap();

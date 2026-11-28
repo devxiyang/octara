@@ -1,12 +1,12 @@
-use super::Protocol;
-use crate::os::{PlatformEvent, PlatformKey};
+use super::{NativeEvent, Protocol};
+use crate::os::PlatformKey;
+use crate::os::linux::compose::KeySymbol;
 use octara::runtime::WindowId;
 use octara_model::input::{Key, KeyEvent, Modifiers};
-use std::ffi::CString;
 use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::FileExt;
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 use std::time::{Duration, Instant};
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{wl_keyboard, wl_surface};
@@ -38,13 +38,10 @@ impl Keyboard {
         *self = Self::default();
     }
 
-    fn translate(&mut self, code: u32, repeat: bool) -> Option<PlatformEvent> {
+    fn translate(&mut self, code: u32, repeat: bool) -> Option<NativeEvent> {
         let window = self.focus.as_ref()?.0;
-        let mut event = self.xkb.as_mut()?.key(code, self.modifiers, repeat);
-        if self.modifiers.intersects(Modifiers::CTRL | Modifiers::META) {
-            event.text = None;
-        }
-        (event.event.is_some() || event.text.is_some()).then_some(PlatformEvent::Key { window, event })
+        let (symbol, key) = self.xkb.as_mut()?.key(code, self.modifiers, repeat);
+        Some(NativeEvent::Key { window, symbol, key })
     }
 }
 
@@ -62,7 +59,7 @@ impl Protocol {
             {
                 keyboard.repeat = Some((code, now + config.interval));
                 if let Some(event) = keyboard.translate(code, true) {
-                    self.shared.emit(event);
+                    self.shared.events.borrow_mut().push_back(event);
                 }
             }
         }
@@ -88,6 +85,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ObjectId> for Protocol {
         }
         match event {
             Keymap { format, fd, size } => {
+                if let Some((_, surface)) = &keyboard.focus {
+                    state.shared.events.borrow_mut().push_back(NativeEvent::ResetCompose(surface.clone()));
+                }
                 keyboard.repeat = None;
                 keyboard.xkb = (format == WEnum::Value(wl_keyboard::KeymapFormat::XkbV1)).then(|| self::Keymap::new(fd, size)).flatten();
             }
@@ -100,12 +100,11 @@ impl Dispatch<wl_keyboard::WlKeyboard, ObjectId> for Protocol {
                 seat.keyboard.repeat = None;
             }
             Leave { .. } => {
-                keyboard.focus = None;
+                if let Some((_, surface)) = keyboard.focus.take() {
+                    state.shared.events.borrow_mut().push_back(NativeEvent::ResetCompose(surface));
+                }
                 keyboard.repeat = None;
                 keyboard.modifiers = self::Modifiers::empty();
-                if let Some(keymap) = &mut keyboard.xkb {
-                    keymap.reset_compose();
-                }
                 seat.clipboard_serial = None;
             }
             Key { key, state: input, serial, .. } => match input {
@@ -116,7 +115,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ObjectId> for Protocol {
                         keyboard.repeat = Some((key, Instant::now() + config.delay));
                     }
                     if let Some(event) = keyboard.translate(key, false) {
-                        state.shared.emit(event);
+                        state.shared.events.borrow_mut().push_back(event);
                     }
                     if let Some((_, surface)) = &keyboard.focus {
                         let surface = surface.clone();
@@ -149,7 +148,6 @@ struct Keymap {
     api: &'static xkb::XkbCommon,
     keymap: NonNull<xkb::xkb_keymap>,
     state: NonNull<xkb::xkb_state>,
-    compose: Option<Compose>,
 }
 
 impl Keymap {
@@ -170,21 +168,13 @@ impl Keymap {
                 xkb::xkb_keymap_format::XKB_KEYMAP_FORMAT_TEXT_V1,
                 xkb::xkb_keymap_compile_flags::XKB_KEYMAP_COMPILE_NO_FLAGS,
             ));
-            let compose = keymap.and_then(|_| Compose::new(context));
             (api.xkb_context_unref)(context.as_ptr());
             let keymap = keymap?;
             let Some(state) = NonNull::new((api.xkb_state_new)(keymap.as_ptr())) else {
                 (api.xkb_keymap_unref)(keymap.as_ptr());
                 return None;
             };
-            Some(Self { api, keymap, state, compose })
-        }
-    }
-
-    fn reset_compose(&mut self) {
-        if let Some(compose) = &mut self.compose {
-            // SAFETY: the compose state is owned by this instance.
-            unsafe { (compose.api.xkb_compose_state_reset)(compose.state.as_ptr()) };
+            Some(Self { api, keymap, state })
         }
     }
 
@@ -210,7 +200,7 @@ impl Keymap {
         unsafe { (self.api.xkb_keymap_key_repeats)(self.keymap.as_ptr(), evdev.saturating_add(8)) != 0 }
     }
 
-    fn key(&mut self, evdev: u32, modifiers: Modifiers, repeat: bool) -> PlatformKey {
+    fn key(&self, evdev: u32, modifiers: Modifiers, repeat: bool) -> (KeySymbol, PlatformKey) {
         let code = evdev.saturating_add(8);
         // SAFETY: state and keymap are live. libxkbcommon permits arbitrary keycodes.
         let (symbol, unicode) = unsafe {
@@ -219,14 +209,8 @@ impl Keymap {
         };
         let printable = char::from_u32(unicode).filter(|value| *value != '\0' && !value.is_control());
         let event = logical_key(symbol, printable).map(|key| KeyEvent { key, code: physical_character(evdev), modifiers, repeat });
-        let text = if !modifiers.intersects(Modifiers::CTRL | Modifiers::META)
-            && let Some(composed) = self.compose.as_mut().and_then(|compose| compose.feed(symbol))
-        {
-            composed
-        } else {
-            printable.map(|value| value.to_string())
-        };
-        PlatformKey { event, text }
+        let text = if modifiers.intersects(Modifiers::CTRL | Modifiers::META) { None } else { printable.map(|value| value.to_string()) };
+        (KeySymbol { value: symbol, modifiers }, PlatformKey { event, text })
     }
 }
 
@@ -237,68 +221,6 @@ impl Drop for Keymap {
             (self.api.xkb_state_unref)(self.state.as_ptr());
             (self.api.xkb_keymap_unref)(self.keymap.as_ptr());
         }
-    }
-}
-
-struct Compose {
-    api: &'static xkb::XkbCommonCompose,
-    state: NonNull<xkb::xkb_compose_state>,
-}
-
-impl Compose {
-    fn new(context: NonNull<xkb::xkb_context>) -> Option<Self> {
-        let api = xkb::xkbcommon_compose_option()?;
-        let locale =
-            ["LC_ALL", "LC_CTYPE", "LANG"].into_iter().find_map(|name| std::env::var(name).ok().filter(|locale| !locale.is_empty()));
-        let locale = CString::new(locale.unwrap_or_else(|| "C.UTF-8".into())).ok()?;
-        // SAFETY: the context is live, the locale is NUL-terminated, and the table is
-        // released after creation of the state, which retains its own reference.
-        unsafe {
-            let table = NonNull::new((api.xkb_compose_table_new_from_locale)(
-                context.as_ptr(),
-                locale.as_ptr(),
-                xkb::xkb_compose_compile_flags::XKB_COMPOSE_COMPILE_NO_FLAGS,
-            ))?;
-            let state = (api.xkb_compose_state_new)(table.as_ptr(), xkb::xkb_compose_state_flags::XKB_COMPOSE_STATE_NO_FLAGS);
-            (api.xkb_compose_table_unref)(table.as_ptr());
-            Some(Self { api, state: NonNull::new(state)? })
-        }
-    }
-
-    /// An outer None uses the key's normal text. An inner None waits for more compose keys.
-    fn feed(&mut self, symbol: u32) -> Option<Option<String>> {
-        use xkb::xkb_compose_status::*;
-
-        let state = self.state.as_ptr();
-        // SAFETY: the state is owned here. Both UTF-8 calls obey the library's buffer-size
-        // contract, first querying the extent and then supplying writable storage and a NUL byte.
-        unsafe {
-            (self.api.xkb_compose_state_feed)(state, symbol);
-            match (self.api.xkb_compose_state_get_status)(state) {
-                XKB_COMPOSE_NOTHING => None,
-                XKB_COMPOSE_COMPOSING => Some(None),
-                XKB_COMPOSE_CANCELLED => {
-                    (self.api.xkb_compose_state_reset)(state);
-                    None
-                }
-                XKB_COMPOSE_COMPOSED => {
-                    let size = (self.api.xkb_compose_state_get_utf8)(state, ptr::null_mut(), 0);
-                    let mut bytes = vec![0; usize::try_from(size).ok()?.checked_add(1)?];
-                    let written = (self.api.xkb_compose_state_get_utf8)(state, bytes.as_mut_ptr().cast(), bytes.len());
-                    (self.api.xkb_compose_state_reset)(state);
-                    let written = usize::try_from(written).ok().filter(|written| *written < bytes.len())?;
-                    bytes.truncate(written);
-                    Some(String::from_utf8(bytes).ok())
-                }
-            }
-        }
-    }
-}
-
-impl Drop for Compose {
-    fn drop(&mut self) {
-        // SAFETY: this is the compose state's last and only owning Rust handle.
-        unsafe { (self.api.xkb_compose_state_unref)(self.state.as_ptr()) };
     }
 }
 

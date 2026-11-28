@@ -41,12 +41,12 @@ fn profile(name: &str, app: AppDefinition, id: &str, iterations: u32) -> Result<
         let action = if id == "composer" {
             let snapshot = driver.execute(AgentRequest::new(Some(window), AgentCommand::Observe)).snapshot.ok_or("no observation")?;
             let editor = snapshot.editor.ok_or("the composer lost focus")?;
-            let event = EditorEvent::ProposeEdit {
+            let event = EditorEvent::Edit {
                 session: editor.session,
                 expected_rev: editor.document_rev,
                 edit: TextEdit::Insert { text: if index % 2 == 0 { "a" } else { "b" }.into(), replacement: None },
             };
-            AgentAction::Editor { event }
+            AgentAction::Editor { event: event.into() }
         } else {
             AgentAction::Accessibility { action: A11yAction::Press }
         };

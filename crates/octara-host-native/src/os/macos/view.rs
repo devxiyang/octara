@@ -1,7 +1,7 @@
 //! AppKit responder and Metal-backed content view.
 
 use super::super::{FileDropPhase, HostWake, PlatformEvent, PlatformKey, PlatformSender, PointerPhase, WindowAccessibility};
-use super::editor::TextInput;
+use super::editor::{TextInput, marked_attributes};
 use super::input::{GestureState, cursor, key as platform_key, modifiers, wheel};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
@@ -16,7 +16,7 @@ use objc2_quartz_core::{CALayer, CAMetalLayer};
 use octara_model::ask::ClipboardKinds;
 use octara_model::geometry::Point;
 use octara_model::identity::{EditorSessionId, TargetGuard, WindowId};
-use octara_model::input::{Button, CursorStyle, DragItem, HostReply, InteractionEvent, PasteEvent, PointerId, PointerKind};
+use octara_model::input::{Button, CursorStyle, DragItem, EditorCommand, HostReply, InteractionEvent, PasteEvent, PointerId, PointerKind};
 use octara_model::semantics::A11yAction;
 use octara_pipeline::NativePublication;
 use std::cell::{Cell, RefCell};
@@ -50,7 +50,7 @@ pub(super) struct ViewIvars {
     id: WindowId,
     dispatch: Rc<Dispatch>,
     pub(super) text_input: TextInput,
-    // The editor fallback runs inside the synchronous key dispatch.
+    // The text system receives the native event inside synchronous key dispatch.
     pending_key: Cell<Option<PendingKey>>,
     tried_equivalent: Cell<Option<Retained<NSEvent>>>,
     has_tracking_area: Cell<bool>,
@@ -122,13 +122,37 @@ define_class!(
 
         #[unsafe(method(paste:))]
         fn paste_action(&self, _: Option<&AnyObject>) {
-            if !self.paste() {
-                let items = super::services::read_clipboard(ClipboardKinds::all());
-                if !items.is_empty() {
-                    let reply = HostReply::Paste(PasteEvent { items });
-                    self.emit(PlatformEvent::HostReply { window: self.ivars().id, reply });
-                }
-            }
+            self.paste_from_system();
+        }
+
+        #[unsafe(method(pasteAsPlainText:))]
+        fn paste_as_plain_text_action(&self, _: Option<&AnyObject>) {
+            self.paste_from_system();
+        }
+
+        #[unsafe(method(copy:))]
+        fn copy_action(&self, _: Option<&AnyObject>) {
+            self.editor_action(EditorCommand::Copy);
+        }
+
+        #[unsafe(method(cut:))]
+        fn cut_action(&self, _: Option<&AnyObject>) {
+            self.editor_action(EditorCommand::Cut);
+        }
+
+        #[unsafe(method(selectAll:))]
+        fn select_all_action(&self, _: Option<&AnyObject>) {
+            self.editor_action(EditorCommand::SelectAll);
+        }
+
+        #[unsafe(method(undo:))]
+        fn undo_action(&self, _: Option<&AnyObject>) {
+            self.editor_action(EditorCommand::Undo);
+        }
+
+        #[unsafe(method(redo:))]
+        fn redo_action(&self, _: Option<&AnyObject>) {
+            self.editor_action(EditorCommand::Redo);
         }
 
         #[unsafe(method(updateTrackingAreas))]
@@ -309,7 +333,7 @@ define_class!(
 
         #[unsafe(method(hasMarkedText))]
         fn has_marked_text(&self) -> bool {
-            self.editor_has_marked_text()
+            self.composing()
         }
 
         #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
@@ -318,7 +342,9 @@ define_class!(
         }
 
         #[unsafe(method_id(validAttributesForMarkedText))]
-        fn valid_attributes(&self) -> Retained<NSArray<NSAttributedStringKey>> { NSArray::new() }
+        fn valid_attributes(&self) -> Retained<NSArray<NSAttributedStringKey>> {
+            NSArray::from_slice(&marked_attributes())
+        }
 
         #[unsafe(method(firstRectForCharacterRange:actualRange:))]
         unsafe fn first_rect(&self, proposed: NSRange, actual: NSRangePointer) -> NSRect {
@@ -363,6 +389,16 @@ impl OctaraView {
             self.ivars().cursor.replace((style, cursor));
             if let Some(window) = self.window() {
                 window.invalidateCursorRectsForView(self);
+            }
+        }
+    }
+
+    fn paste_from_system(&self) {
+        if !self.editor_action(EditorCommand::Paste) {
+            let items = super::services::read_clipboard(ClipboardKinds::all());
+            if !items.is_empty() {
+                let reply = HostReply::Paste(PasteEvent { items });
+                self.emit(PlatformEvent::HostReply { window: self.ivars().id, reply });
             }
         }
     }
@@ -445,18 +481,21 @@ impl OctaraView {
 
     fn try_key_equivalent(&self, event: &NSEvent) -> bool {
         let _keep_alive = self.retain();
+        let focused = event.r#type() == NSEventType::KeyDown
+            && self
+                .window()
+                .and_then(|window| window.firstResponder())
+                .is_some_and(|responder| std::ptr::eq(Retained::as_ptr(&responder).cast::<Self>(), self));
+        // A key offered as an equivalent can also be an IME candidate control.
+        if focused && self.composing() {
+            return self.dispatch_key(event);
+        }
         // SAFETY: Offer the equivalent to subviews using the superclass implementation.
         let handled: bool = unsafe { msg_send![super(self), performKeyEquivalent: event] };
         if handled {
             return true;
         }
-        if event.r#type() != NSEventType::KeyDown
-            || !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control)
-            || self
-                .window()
-                .and_then(|window| window.firstResponder())
-                .is_none_or(|responder| !std::ptr::eq(Retained::as_ptr(&responder).cast::<Self>(), self))
-        {
+        if !focused || !event.modifierFlags().intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Control) {
             return false;
         }
         if self.dispatch_key(event) {
@@ -470,12 +509,8 @@ impl OctaraView {
 
     fn dispatch_key(&self, event: &NSEvent) -> bool {
         let _keep_alive = self.retain();
-        let composing = self.composing();
-        if composing && self.interpret_editor_key(event) {
-            return true;
-        }
         let pending = &self.ivars().pending_key;
-        let previous = pending.replace((!composing).then(|| PendingKey { event: event.retain(), session: self.editor_session() }));
+        let previous = pending.replace(Some(PendingKey { event: event.retain(), session: self.editor_session() }));
         let _restore = DropGuard::new(previous, |previous| pending.set(previous));
         self.emit(PlatformEvent::Key { window: self.ivars().id, event: platform_key(event) })
     }

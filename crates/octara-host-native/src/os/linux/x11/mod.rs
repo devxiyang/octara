@@ -1,12 +1,14 @@
 //! X11 windows and protocol events, owned by Octara's UI thread.
 
+mod clipboard;
 mod drag;
 mod input;
 mod window;
 
+use super::compose::KeySymbol;
 use super::preferences;
-use super::services::{self, Clipboard};
 use crate::os::{HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent, PlatformSender, ShellDriver};
+use clipboard::Clipboard;
 use octara::WindowOptions;
 use octara::runtime::WindowId;
 use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError};
@@ -78,6 +80,7 @@ struct Native {
     windows: RefCell<HashMap<Window, Weak<window::WindowState>>>,
     source: RefCell<drag::DragSource>,
     timestamp: Cell<u32>,
+    pending_keysym: Cell<Option<(WindowId, KeySymbol)>>,
 }
 
 impl Native {
@@ -118,6 +121,7 @@ impl Native {
             windows: RefCell::default(),
             source: RefCell::default(),
             timestamp: Cell::new(x11rb::CURRENT_TIME),
+            pending_keysym: Cell::new(None),
         })
     }
 
@@ -189,6 +193,7 @@ impl OsHost for X11Host {
         let result = driver.start(self.as_mut(), sender).and_then(|()| self.event_loop(driver.as_mut(), &native, inbox));
         let termination = if result.is_ok() { driver.event(self.as_mut(), PlatformEvent::WillTerminate).map(|_| ()) } else { Ok(()) };
         let shutdown = driver.shutdown(self.as_mut());
+        self.clipboard.persist();
         result.and(termination).and(shutdown)
     }
 
@@ -221,17 +226,21 @@ impl OsHost for X11Host {
     }
 
     fn read_clipboard(&mut self, accept: ClipboardKinds) -> Option<Vec<ClipboardItem>> {
-        self.clipboard.with_native(|native| services::read_clipboard(native, accept))?.ok()
+        self.clipboard.read(accept).ok()
     }
 
     fn write_clipboard(&mut self, items: &[ClipboardItem]) -> Result<(), ServiceError> {
-        self.clipboard.write(items)
+        self.clipboard.write(items.to_vec())
     }
 
     fn write_clipboard_image(&mut self, image: &Image) {
+        use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+
         let frame = image.frame();
-        let data = arboard::ImageData { width: frame.width as usize, height: frame.height as usize, bytes: (&*frame.rgba).into() };
-        let _ = self.clipboard.with_native(|clipboard| clipboard.set_image(data));
+        let mut bytes = Vec::new();
+        if PngEncoder::new(&mut bytes).write_image(&frame.rgba, frame.width, frame.height, ExtendedColorType::Rgba8).is_ok() {
+            let _ = self.write_clipboard(&[ClipboardItem::Image { media_type: "image/png".into(), bytes }]);
+        }
     }
 }
 
@@ -271,7 +280,9 @@ impl X11Host {
                 } else if !drag::dispatch(native, &keyboard, &event, |event| driver.event(self, event))?
                     && let Some(event) = input::translate(native, &mut keyboard, event)
                 {
-                    driver.event(self, event)?;
+                    let result = driver.event(self, event);
+                    native.pending_keysym.take();
+                    result?;
                 }
                 native_count += 1;
             }

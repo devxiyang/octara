@@ -1,33 +1,33 @@
-//! The rendering view is the UIKit text client. Native draft changes are queued
-//! as guarded editor proposals and reconciled with the retained document.
+//! The rendering view translates UIKit's text protocol into shared editor inputs.
 
-use super::draft::{self, Change, Draft, PendingInputs, byte_offset};
 use super::view::{NativeWindow, ViewState};
-use crate::os::{ActiveEditorView, PlatformEvent, PointerPhase};
+use crate::os::{ActiveEditorView, PlatformEvent, PlatformKey, PointerPhase, WindowHostEvent};
+use crate::text_bridge::{HostTextBridge, native_range, utf16_offset, utf16_range};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_foundation::{
-    NSArray, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSNotification, NSNotificationCenter, NSPoint, NSRange, NSRect,
-    NSSet, NSSize, NSString,
+    NSArray, NSAttributedString, NSAttributedStringKey, NSComparisonResult, NSDictionary, NSNotification, NSNotificationCenter, NSNumber,
+    NSPoint, NSRange, NSRect, NSSet, NSSize, NSString,
 };
 use objc2_quartz_core::CAMetalLayer;
 use objc2_ui_kit::{
-    NSWritingDirection, UIEvent, UIKeyInput, UIKeyboardDidChangeFrameNotification, UIKeyboardType, UIKeyboardWillChangeFrameNotification,
-    UIKeyboardWillHideNotification, UIPress, UIPressPhase, UIPressesEvent, UIReturnKeyType, UITextAutocapitalizationType,
-    UITextAutocorrectionType, UITextContentTypeEmailAddress, UITextContentTypeNewPassword, UITextContentTypeOneTimeCode,
-    UITextContentTypePassword, UITextContentTypeTelephoneNumber, UITextContentTypeURL, UITextContentTypeUsername, UITextInput,
-    UITextInputDelegate, UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits, UITextLayoutDirection, UITextPosition,
-    UITextRange, UITextSelectionRect, UITextStorageDirection, UITouch, UIView,
+    NSUnderlineStyle, NSUnderlineStyleAttributeName, NSWritingDirection, UIEvent, UIKeyCommand, UIKeyInput, UIKeyModifierFlags,
+    UIKeyboardDidChangeFrameNotification, UIKeyboardType, UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIPress,
+    UIPressPhase, UIPressesEvent, UIReturnKeyType, UITextAutocapitalizationType, UITextAutocorrectionType, UITextContentTypeEmailAddress,
+    UITextContentTypeNewPassword, UITextContentTypeOneTimeCode, UITextContentTypePassword, UITextContentTypeTelephoneNumber,
+    UITextContentTypeURL, UITextContentTypeUsername, UITextInput, UITextInputDelegate, UITextInputStringTokenizer, UITextInputTokenizer,
+    UITextInputTraits, UITextLayoutDirection, UITextPosition, UITextRange, UITextSelectionRect, UITextStorageDirection, UITouch, UIView,
 };
-use octara::runtime::Input;
-use octara_model::ask::{ClipboardItem, ClipboardKinds};
-use octara_model::geometry::Rect;
-use octara_model::identity::EditorSessionId;
-use octara_model::input::{HostReply, PasteEvent};
-use octara_model::text::{AutoCapitalize, Autocorrect, InputTraits, KeyboardType, ReturnKeyType, TextContentType, TextGeometry};
+use octara::EditorRope;
+use octara_model::geometry::{Point, Rect};
+use octara_model::input::{EditorCommand, Key, KeyEvent, Modifiers};
+use octara_model::text::{
+    AutoCapitalize, Autocorrect, ClauseStyle, InputTraits, KeyboardType, MarkedClause, ReturnKeyType, TextContentType, TextEdit,
+};
 use serde_json::{Value, json};
-use std::cell::RefCell;
+use smallvec::SmallVec;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 
 define_class!(
@@ -145,23 +145,11 @@ impl SelectionRect {
 
 #[derive(Default)]
 pub(super) struct EditorState {
-    session: RefCell<Option<Session>>,
+    bridge: RefCell<HostTextBridge>,
     delegate: RefCell<Weak<ProtocolObject<dyn UITextInputDelegate>>>,
     marked_style: RefCell<Option<Retained<NSDictionary<NSAttributedStringKey, AnyObject>>>>,
-}
-
-struct Session {
-    id: EditorSessionId,
-    rev: u64,
-    displayed: Draft,
-    expected: Draft,
-    committed: Draft,
-    pending: PendingInputs,
-    inflight: Option<Change>,
-    geometry: Option<TextGeometry>,
-    caret: Option<Rect>,
-    traits: InputTraits,
-    secure: bool,
+    // UIKit can hide its selection independently of the editor's anchor and caret.
+    selection_hidden: Cell<bool>,
 }
 
 define_class!(
@@ -287,40 +275,54 @@ define_class!(
 
         #[unsafe(method(canBecomeFirstResponder))]
         fn can_focus(&self) -> bool {
-            self.editor().session.borrow().is_some()
+            self.editor().bridge.borrow().session().is_some()
+        }
+
+        #[unsafe(method_id(keyCommands))]
+        fn key_commands(&self) -> Option<Retained<NSArray<UIKeyCommand>>> {
+            self.offers_editor_keys().then(|| {
+                let input = NSString::from_str("z");
+                // SAFETY: The actions are implemented below with a single sender argument.
+                let (undo, redo) = unsafe {
+                    (
+                        UIKeyCommand::keyCommandWithInput_modifierFlags_action(&input, UIKeyModifierFlags::Command, sel!(undo:), self.mtm()),
+                        UIKeyCommand::keyCommandWithInput_modifierFlags_action(&input, UIKeyModifierFlags::Command | UIKeyModifierFlags::Shift, sel!(redo:), self.mtm()),
+                    )
+                };
+                undo.setWantsPriorityOverSystemBehavior(true);
+                redo.setWantsPriorityOverSystemBehavior(true);
+                NSArray::from_retained_slice(&[undo, redo])
+            })
+        }
+
+        #[unsafe(method(undo:))]
+        fn undo_action(&self, _: Option<&AnyObject>) {
+            self.route_editor_key(Key::Char('z'), Modifiers::META);
+        }
+
+        #[unsafe(method(redo:))]
+        fn redo_action(&self, _: Option<&AnyObject>) {
+            self.route_editor_key(Key::Char('z'), Modifiers::META | Modifiers::SHIFT);
         }
 
         #[unsafe(method(paste:))]
         fn paste_action(&self, _: Option<&AnyObject>) {
-            let items = super::read_clipboard(ClipboardKinds::all());
-            if items.is_empty() {
-                return;
-            }
-            if let Some(session) = self.editor().session.borrow_mut().as_mut() {
-                session.pending.record_paste(PasteEvent { items });
-                self.wake_editor();
-            }
+            self.command(EditorCommand::Paste);
         }
 
         #[unsafe(method(copy:))]
         fn copy_action(&self, _: Option<&AnyObject>) {
-            if let Some(value) = self.selected_value() {
-                let _ = super::write_clipboard(&[ClipboardItem::Text(value)]);
-            }
+            self.command(EditorCommand::Copy);
         }
 
         #[unsafe(method(cut:))]
         fn cut_action(&self, _: Option<&AnyObject>) {
-            if let Some(value) = self.selected_value()
-                && super::write_clipboard(&[ClipboardItem::Text(value)]).is_ok()
-            {
-                self.insert("");
-            }
+            self.command(EditorCommand::Cut);
         }
 
         #[unsafe(method(selectAll:))]
         fn select_all(&self, _: Option<&AnyObject>) {
-            self.edit(|draft| draft.selection = Some((0, draft.text.len())));
+            self.command(EditorCommand::SelectAll);
         }
 
         #[unsafe(method(canPerformAction:withSender:))]
@@ -328,9 +330,11 @@ define_class!(
             if action == sel!(paste:) {
                 self.canBecomeFirstResponder() && super::has_paste_items()
             } else if action == sel!(copy:) || action == sel!(cut:) {
-                self.selected_value().is_some()
+                self.has_copyable_selection()
             } else if action == sel!(selectAll:) {
                 self.document_length() > 0
+            } else if action == sel!(undo:) || action == sel!(redo:) {
+                self.offers_editor_keys()
             } else {
                 // SAFETY: Forward validation of UIKit's other responder actions.
                 let result: Bool = unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] };
@@ -386,7 +390,7 @@ define_class!(
 
         #[unsafe(method(isSecureTextEntry))]
         fn secure(&self) -> bool {
-            self.editor().session.borrow().as_ref().is_some_and(|session| session.secure)
+            self.editor().bridge.borrow().session().is_some_and(|session| session.secure)
         }
 
         #[unsafe(method_id(textContentType))]
@@ -411,81 +415,81 @@ define_class!(
     unsafe impl UIKeyInput for ContentView {
         #[unsafe(method(hasText))]
         fn has_text(&self) -> bool {
-            self.editor().session.borrow().as_ref().is_some_and(|session| !session.displayed.text.is_empty())
+            self.document_length() != 0
         }
 
         #[unsafe(method(insertText:))]
         fn insert_text(&self, text: &NSString) {
             let text = text.to_string();
-            if matches!(text.as_str(), "\n" | "\r") {
-                let mut session = self.editor().session.borrow_mut();
-                let Some(session) = session.as_mut() else { return };
-                if session.displayed.marked.is_none() {
-                    session.pending.record_return();
-                    self.wake_editor();
-                    return;
-                }
+            if matches!(text.as_str(), "\n" | "\r") && !self.editor().bridge.borrow().is_composing() {
+                self.route_editor_key(Key::Enter, Modifiers::empty());
+            } else {
+                self.edit(TextEdit::Insert { text, replacement: None });
             }
-            self.insert(&text);
         }
 
         #[unsafe(method(deleteBackward))]
         fn backspace(&self) {
-            self.edit(|draft| {
-                let mut range = selection(draft);
-                if range.is_empty() {
-                    range.start = draft.text.grapheme_edge(range.start, true).unwrap_or(range.start);
-                }
-                if !range.is_empty() {
-                    replace(draft, range, "");
-                }
-            });
+            let bridge = self.editor().bridge.borrow();
+            let Some(session) = bridge.session() else { return };
+            let Some(composition) = session.editor().composition() else {
+                drop(bridge);
+                self.command(EditorCommand::DeleteBackward);
+                return;
+            };
+            let edit = delete_marked_backward(session.rope(), composition.marked(), session.selected_range(), composition.clauses());
+            drop(bridge);
+            if let Some(edit) = edit {
+                self.edit(edit);
+            }
         }
     }
 
     unsafe impl UITextInput for ContentView {
         #[unsafe(method_id(textInRange:))]
         fn text_in_range(&self, range: &UITextRange) -> Option<Retained<NSString>> {
-            self.editor().session.borrow().as_ref().zip(offsets(range)).and_then(|(session, range)| {
-                let draft = &session.displayed;
-                draft.text.slice(bytes(draft, range)).map(|text| NSString::from_str(&text))
+            let bridge = self.editor().bridge.borrow();
+            bridge.session().and_then(|session| {
+                let rope = session.rope();
+                rope.slice(utf16_range(rope, offsets(range)?)?).map(|text| NSString::from_str(&text))
             })
         }
 
         #[unsafe(method(replaceRange:withText:))]
         fn replace_range(&self, range: &UITextRange, text: &NSString) {
-            if let Some(range) = offsets(range) {
-                let text = text.to_string();
-                self.edit(|draft| replace(draft, bytes(draft, range), &text));
+            if let Some(replacement) = offsets(range).and_then(|range| self.byte_range(range)) {
+                self.edit(TextEdit::Insert { text: text.to_string(), replacement: Some(replacement) });
             }
         }
 
         #[unsafe(method_id(selectedTextRange))]
         fn selected_range(&self) -> Option<Retained<UITextRange>> {
-            self.editor().session.borrow().as_ref().and_then(|session| {
-                let draft = &session.displayed;
-                let (a, b) = draft.selection?;
-                self.range(draft, a..b)
+            let editor = self.editor();
+            editor.bridge.borrow().session().filter(|_| !editor.selection_hidden.get()).and_then(|session| {
+                self.range(session.rope(), session.selected_range()?)
             })
         }
 
         #[unsafe(method(setSelectedTextRange:))]
         fn set_selection(&self, range: Option<&UITextRange>) {
-            let range = range.and_then(offsets);
-            self.edit(|draft| {
-                draft.selection = range.map(|range| {
-                    let range = bytes(draft, range);
-                    (range.start, range.end)
-                });
-            });
+            let Some(range) = range else {
+                self.editor().selection_hidden.set(true);
+                return;
+            };
+            let Some(range) = offsets(range).and_then(|range| self.byte_range(range)) else { return };
+            self.editor().selection_hidden.set(false);
+            let mut bridge = self.editor().bridge.borrow_mut();
+            if bridge.session().and_then(|session| session.selected_range()).as_ref() != Some(&range)
+                && bridge.select((range.start, range.end))
+            {
+                self.wake_editor();
+            }
         }
 
         #[unsafe(method_id(markedTextRange))]
         fn marked_range(&self) -> Option<Retained<UITextRange>> {
-            self.editor().session.borrow().as_ref().and_then(|session| {
-                let draft = &session.displayed;
-                self.range(draft, draft.marked.clone()?)
-            })
+            let bridge = self.editor().bridge.borrow();
+            bridge.session().and_then(|session| self.range(session.rope(), session.marked_range()?))
         }
 
         #[unsafe(method_id(markedTextStyle))]
@@ -500,24 +504,17 @@ define_class!(
 
         #[unsafe(method(setMarkedText:selectedRange:))]
         fn set_marked(&self, text: Option<&NSString>, selected: NSRange) {
-            let text = text.map(ToString::to_string).unwrap_or_default();
-            self.edit(|draft| {
-                let range = draft.marked.clone().unwrap_or_else(|| selection(draft));
-                let start = range.start;
-                replace(draft, range, &text);
-                let end = start + text.len();
-                draft.marked = (start < end).then_some(start..end);
-                let start_utf16 = draft.text.byte_to_utf16(start).unwrap_or(0);
-                let end_utf16 = draft.text.byte_to_utf16(end).unwrap_or(start_utf16);
-                let a = start_utf16.saturating_add(selected.location).min(end_utf16);
-                let b = a.saturating_add(selected.length).min(end_utf16);
-                draft.selection = Some((byte_offset(&draft.text, a), byte_offset(&draft.text, b)));
-            });
+            self.mark(text.map(ToString::to_string).unwrap_or_default(), selected, None);
+        }
+
+        #[unsafe(method(setAttributedMarkedText:selectedRange:))]
+        fn set_attributed_marked(&self, text: Option<&NSAttributedString>, selected: NSRange) {
+            self.mark(text.map(|text| text.string().to_string()).unwrap_or_default(), selected, text);
         }
 
         #[unsafe(method(unmarkText))]
         fn unmark(&self) {
-            self.edit(|draft| draft.marked = None);
+            self.edit(TextEdit::Unmark);
         }
 
         #[unsafe(method_id(beginningOfDocument))]
@@ -590,13 +587,18 @@ define_class!(
         }
 
         #[unsafe(method(baseWritingDirectionForPosition:inDirection:))]
-        fn writing_direction(&self, native: &UITextPosition, _: UITextStorageDirection) -> NSWritingDirection {
-            let session = self.editor().session.borrow();
+        fn writing_direction(&self, native: &UITextPosition, direction: UITextStorageDirection) -> NSWritingDirection {
+            let bridge = self.editor().bridge.borrow();
             let rtl = (|| {
-                let session = session.as_ref()?;
-                let byte = byte_offset(&session.displayed.text, position(native)?);
-                let geometry = session.geometry.as_ref()?;
-                geometry.lines.iter().flat_map(|line| line.fragments.iter()).find(|part| part.range.contains(&byte)).map(|part| part.rtl)
+                let session = bridge.session()?;
+                if session.secure {
+                    return None;
+                }
+                let rope = session.rope();
+                let byte = utf16_offset(rope, position(native)?);
+                let backward = direction == UITextStorageDirection::Backward;
+                let edge = rope.grapheme_edge(byte, backward).or_else(|| rope.grapheme_edge(byte, !backward))?;
+                session.selection_rects(byte.min(edge)..byte.max(edge)).first().map(|part| part.rtl)
             })();
             match rtl {
                 Some(true) => NSWritingDirection::RightToLeft,
@@ -634,7 +636,10 @@ define_class!(
         #[unsafe(method_id(closestPositionToPoint:withinRange:))]
         fn closest_in_range(&self, point: NSPoint, range: &UITextRange) -> Option<Retained<UITextPosition>> {
             offsets(range).zip(self.text_offset_at(point))
-                .map(|(range, offset)| Position::make(self.mtm(), offset.clamp(range.start, range.end)))
+                .and_then(|(range, offset)| {
+                    let end = range.end.min(self.document_length());
+                    (range.start <= end).then(|| Position::make(self.mtm(), offset.clamp(range.start, end)))
+                })
         }
 
         #[unsafe(method_id(characterRangeAtPoint:))]
@@ -653,23 +658,6 @@ fn backward(direction: UITextLayoutDirection) -> bool {
     matches!(direction, UITextLayoutDirection::Left | UITextLayoutDirection::Up)
 }
 
-fn selection(draft: &Draft) -> Range<usize> {
-    let (start, end) = draft.selection.unwrap_or((draft.text.len(), draft.text.len()));
-    start..end
-}
-
-fn bytes(draft: &Draft, range: Range<usize>) -> Range<usize> {
-    byte_offset(&draft.text, range.start)..byte_offset(&draft.text, range.end)
-}
-
-fn replace(draft: &mut Draft, range: Range<usize>, text: &str) {
-    let end = range.start + text.len();
-    if draft.text.replace(range, text) {
-        draft.selection = Some((end, end));
-        draft.marked = None;
-    }
-}
-
 impl ContentView {
     fn route_presses(&self, presses: &NSSet<UIPress>, phase: UIPressPhase, forward: impl FnOnce(&NSSet<UIPress>)) {
         if let Some(window) = self.window().and_then(|window| window.downcast::<NativeWindow>().ok()) {
@@ -684,7 +672,7 @@ impl ContentView {
     }
 
     fn traits(&self) -> InputTraits {
-        self.editor().session.borrow().as_ref().map_or_else(InputTraits::default, |session| session.traits)
+        self.editor().bridge.borrow().session().map_or_else(InputTraits::default, |session| session.traits)
     }
 
     fn position_offset(&self, native: &UITextPosition, offset: isize) -> Option<Retained<UITextPosition>> {
@@ -693,84 +681,125 @@ impl ContentView {
     }
 
     fn grapheme_range(&self, offset: usize, backward: bool) -> Option<Retained<UITextRange>> {
-        let session = self.editor().session.borrow();
-        let draft = &session.as_ref()?.displayed;
-        let start = byte_offset(&draft.text, offset);
-        let end = draft.text.grapheme_edge(start, backward)?;
-        self.range(draft, start.min(end)..start.max(end))
+        let bridge = self.editor().bridge.borrow();
+        let rope = bridge.session()?.rope();
+        let start = utf16_offset(rope, offset);
+        let end = rope.grapheme_edge(start, backward)?;
+        self.range(rope, start.min(end)..start.max(end))
     }
 
     fn document_length(&self) -> usize {
-        self.editor().session.borrow().as_ref().map_or(0, |session| session.displayed.text.len_utf16())
+        self.editor().bridge.borrow().session().map_or(0, |session| session.rope().len_utf16())
     }
 
-    fn range(&self, draft: &Draft, range: Range<usize>) -> Option<Retained<UITextRange>> {
-        let (start, end) = (draft.text.byte_to_utf16(range.start)?, draft.text.byte_to_utf16(range.end)?);
-        Some(TextRange::make(self.mtm(), start..end))
+    fn range(&self, rope: &EditorRope, range: Range<usize>) -> Option<Retained<UITextRange>> {
+        Some(TextRange::make(self.mtm(), native_range(rope, range)?))
     }
 
-    fn selected_value(&self) -> Option<String> {
-        let session = self.editor().session.borrow();
-        let session = session.as_ref()?;
-        let range = selection(&session.displayed);
-        (!session.secure && !range.is_empty()).then(|| session.displayed.text.slice(range)).flatten()
+    fn byte_range(&self, range: Range<usize>) -> Option<Range<usize>> {
+        let bridge = self.editor().bridge.borrow();
+        utf16_range(bridge.session()?.rope(), range)
+    }
+
+    fn has_copyable_selection(&self) -> bool {
+        let editor = self.editor();
+        !editor.selection_hidden.get()
+            && editor
+                .bridge
+                .borrow()
+                .session()
+                .is_some_and(|session| !session.secure && session.selected_range().is_some_and(|range| !range.is_empty()))
     }
 
     fn wake_editor(&self) {
         self.ivars().sender.send_event(PlatformEvent::UserWake);
     }
 
-    fn edit(&self, edit: impl FnOnce(&mut Draft)) {
-        let mut session = self.editor().session.borrow_mut();
-        if let Some(session) = session.as_mut() {
-            let previous = session.displayed.clone();
-            edit(&mut session.displayed);
-            if session.displayed != previous {
-                session.pending.record(session.displayed.clone());
-                self.wake_editor();
-            }
+    fn edit(&self, edit: TextEdit) {
+        if self.editor().bridge.borrow_mut().edit(edit) {
+            self.editor().selection_hidden.set(false);
+            self.wake_editor();
         }
     }
 
-    fn insert(&self, text: &str) {
-        self.edit(|draft| {
-            let range = draft.marked.clone().unwrap_or_else(|| selection(draft));
-            replace(draft, range, text);
-        });
+    fn command(&self, command: EditorCommand) {
+        if self.editor().bridge.borrow_mut().command(command) {
+            if matches!(command, EditorCommand::SelectAll | EditorCommand::DeleteBackward) {
+                self.editor().selection_hidden.set(false);
+            }
+            self.wake_editor();
+        }
+    }
+
+    fn route_editor_key(&self, key: Key, modifiers: Modifiers) {
+        if !self.offers_editor_keys() {
+            return;
+        }
+        let event = PlatformKey { event: Some(KeyEvent::new(key, modifiers)), text: None };
+        super::app::send_key(PlatformEvent::Key { window: self.ivars().id, event });
+    }
+
+    fn offers_editor_keys(&self) -> bool {
+        let bridge = self.editor().bridge.borrow();
+        bridge.session().is_some() && !bridge.is_composing()
+    }
+
+    fn mark(&self, text: String, selected: NSRange, attributed: Option<&NSAttributedString>) {
+        if text.is_empty() {
+            self.edit(TextEdit::Cancel);
+            return;
+        }
+        let rope = EditorRope::new(&text);
+        let length = rope.len_utf16();
+        let start = selected.location.min(length);
+        let end = start.saturating_add(selected.length).min(length);
+        let selection = utf16_range(&rope, start..end);
+        let style = self.editor().marked_style.borrow();
+        // SAFETY: This key is an immutable UIKit constant.
+        let underline = unsafe { NSUnderlineStyleAttributeName };
+        let default_style = style.as_ref().and_then(|style| style.objectForKey(underline)).as_deref().and_then(clause_style);
+        let mut clauses = SmallVec::new();
+        if let Some(attributed) = attributed {
+            let mut index = 0;
+            while index < attributed.length() {
+                let mut run = NSRange::new(0, 0);
+                // SAFETY: The index is within the native string and the range is writable.
+                let value = unsafe { attributed.attribute_atIndex_effectiveRange(underline, index, &mut run) };
+                let end = run.location + run.length;
+                let range = utf16_offset(&rope, index)..utf16_offset(&rope, end);
+                let style = value.as_deref().and_then(clause_style).or(default_style);
+                append_clauses(&mut clauses, range, selection.as_ref(), style);
+                index = end;
+            }
+        } else {
+            append_clauses(&mut clauses, 0..rope.len(), selection.as_ref(), default_style);
+        }
+        self.edit(TextEdit::Mark { text, selection, replacement: None, clauses });
     }
 
     fn project(&self, range: Range<usize>) -> NSRect {
-        let session = self.editor().session.borrow();
-        let Some(session) = session.as_ref() else { return NSRect::ZERO };
-        let draft = &session.displayed;
-        let range = bytes(draft, range);
-        let at_caret = range.is_empty() && selection(draft).end == range.start;
-        let geometry = session.geometry.as_ref().filter(|_| draft.text == session.expected.text);
-        let caret = at_caret.then_some(session.caret).flatten();
-        let rect = caret.or_else(|| geometry.and_then(|geometry| first_rect(geometry, range.start, range.end))).or(session.caret);
+        let bridge = self.editor().bridge.borrow();
+        let Some(session) = bridge.session() else { return NSRect::ZERO };
+        let Some(range) = utf16_range(session.rope(), range) else { return NSRect::ZERO };
+        let rect = if session.secure { session.caret } else { session.first_rect(range).map(|(_, rect)| rect) };
         rect.map_or(NSRect::ZERO, to_native_rect)
     }
 
     fn project_selection(&self, offsets: Range<usize>) -> Retained<NSArray<UITextSelectionRect>> {
-        let session = self.editor().session.borrow();
-        let Some(session) = session.as_ref() else { return NSArray::new() };
-        let Some(geometry) = session.geometry.as_ref().filter(|_| session.displayed.text == session.expected.text) else {
+        let bridge = self.editor().bridge.borrow();
+        let Some(session) = bridge.session() else { return NSArray::new() };
+        let Some(range) = utf16_range(session.rope(), offsets) else { return NSArray::new() };
+        if session.secure || range.is_empty() {
             return NSArray::new();
-        };
-        let range = bytes(&session.displayed, offsets);
-        let fragments = geometry.lines.iter().flat_map(|line| line.fragments.iter());
-        let rects: Vec<_> = fragments
-            .filter(|part| range.start < part.range.end && range.end > part.range.start && !range.is_empty())
+        }
+        let rects: Vec<_> = session
+            .selection_rects(range.clone())
+            .into_iter()
             .map(|part| {
                 SelectionRect::make(
                     self.mtm(),
                     SelectionState {
-                        rect: to_native_rect(Rect::new(
-                            geometry.origin.x + part.rect.x,
-                            geometry.origin.y + part.rect.y,
-                            part.rect.w,
-                            part.rect.h,
-                        )),
+                        rect: to_native_rect(part.rect),
                         rtl: part.rtl,
                         start: part.range.contains(&range.start),
                         end: part.range.start < range.end && range.end <= part.range.end,
@@ -782,103 +811,117 @@ impl ContentView {
     }
 
     fn text_offset_at(&self, point: NSPoint) -> Option<usize> {
-        let session = self.editor().session.borrow();
-        let session = session.as_ref()?;
-        let draft = &session.displayed;
-        let mut closest = selection(draft).end;
-        if let Some(geometry) = session.geometry.as_ref().filter(|_| draft.text == session.expected.text) {
-            let x = point.x as f32 - geometry.origin.x;
-            let y = point.y as f32 - geometry.origin.y;
-            if let Some(line) = geometry.lines.iter().min_by(|a, b| {
-                let distance = |rect: Rect| (rect.y - y).max(y - rect.bottom()).max(0.0);
-                distance(a.rect).total_cmp(&distance(b.rect))
-            }) {
-                closest = line
-                    .fragments
-                    .iter()
-                    .flat_map(|part| {
-                        let (left, right) = if part.rtl { (part.range.end, part.range.start) } else { (part.range.start, part.range.end) };
-                        [(part.rect.x, left), (part.rect.right(), right)]
-                    })
-                    .min_by(|a, b| (a.0 - x).abs().total_cmp(&(b.0 - x).abs()))
-                    .map_or(line.range.start, |(_, byte)| byte);
-            }
-        }
-        draft.text.byte_to_utf16(closest)
+        let bridge = self.editor().bridge.borrow();
+        let session = bridge.session()?;
+        let rope = session.rope();
+        let closest = (!session.secure)
+            .then(|| session.closest_character_index_at(Point::new(point.x as f32, point.y as f32)))
+            .flatten()
+            .or_else(|| session.selection().map(|(_, focus)| focus))
+            .unwrap_or_else(|| rope.len());
+        rope.byte_to_utf16(closest)
     }
 
-    fn install(&self, input: &ActiveEditorView<'_>) {
-        let expected = Draft::from_editor(input);
-        *self.editor().session.borrow_mut() = Some(Session {
-            id: input.session,
-            rev: input.document_rev,
-            displayed: expected.clone(),
-            expected,
-            committed: Draft::committed(input),
-            pending: PendingInputs::default(),
-            inflight: None,
-            traits: input.editor.input_traits,
-            geometry: input.geometry.cloned().filter(|_| !input.secure),
-            caret: input.caret,
-            secure: input.secure,
-        });
-    }
-
-    fn sync_session(&self, input: &ActiveEditorView<'_>) -> bool {
-        let mut current = self.editor().session.borrow_mut();
-        let session = current.as_mut().expect("active UIKit editor");
-        let updated = input.document_rev != session.rev;
-        if updated {
-            session.expected = Draft::from_editor(input);
-            session.committed = Draft::committed(input);
-            session.rev = input.document_rev;
-        }
-        let rejected = match session.inflight.take() {
-            Some(Change::Document(native)) => native != session.expected,
-            Some(Change::Return | Change::Paste(_)) | None => updated,
-        };
-        if rejected {
-            session.pending.clear();
-        }
-        session.geometry = input.geometry.cloned().filter(|_| !input.secure);
-        session.caret = input.caret;
-        let reload = session.traits != input.editor.input_traits && session.expected.marked.is_none() && session.displayed.marked.is_none();
-        if reload {
-            session.traits = input.editor.input_traits;
-        }
-        reload
-    }
-
-    fn reconcile(&self) {
-        let change = self.editor().session.borrow().as_ref().and_then(|session| {
-            (session.pending.is_empty() && session.displayed != session.expected).then(|| {
-                let text_changed = session.displayed.text != session.expected.text || session.displayed.marked != session.expected.marked;
-                let selection_changed = session.displayed.selection != session.expected.selection;
-                (session.expected.clone(), text_changed, selection_changed)
-            })
-        });
-        let Some((next, text_changed, selection_changed)) = change else { return };
+    fn sync_editor(&self, input: &ActiveEditorView<'_>) {
+        let changes = self.editor().bridge.borrow().sync_changes(Some(input));
+        let text_changed = changes.text_changed || changes.composition_changed;
         let delegate = self.editor().delegate.borrow().load();
-        let input = Some(ProtocolObject::from_ref(self));
+        let native = Some(ProtocolObject::from_ref(self));
         if let Some(delegate) = &delegate {
             if text_changed {
-                delegate.textWillChange(input);
+                delegate.textWillChange(native);
             }
-            if selection_changed {
-                delegate.selectionWillChange(input);
+            if changes.selection_changed {
+                delegate.selectionWillChange(native);
             }
         }
-        if let Some(session) = self.editor().session.borrow_mut().as_mut() {
-            session.displayed = next;
+        self.editor().bridge.borrow_mut().sync(Some(input));
+        if changes.selection_changed {
+            self.editor().selection_hidden.set(false);
         }
         if let Some(delegate) = &delegate {
-            if selection_changed {
-                delegate.selectionDidChange(input);
+            if changes.selection_changed {
+                delegate.selectionDidChange(native);
             }
             if text_changed {
-                delegate.textDidChange(input);
+                delegate.textDidChange(native);
             }
         }
+    }
+}
+
+fn delete_marked_backward(
+    rope: &EditorRope,
+    marked: Range<usize>,
+    selection: Option<Range<usize>>,
+    clauses: &[MarkedClause],
+) -> Option<TextEdit> {
+    let selected = selection.clone().unwrap_or(marked.end..marked.end);
+    let start =
+        if selected.is_empty() && selected.start <= marked.end { rope.grapheme_edge(selected.start, true)? } else { selected.start };
+    let deleted = start.max(marked.start)..selected.end.min(marked.end);
+    if deleted.is_empty() {
+        return None;
+    }
+    if deleted == marked {
+        return Some(TextEdit::Cancel);
+    }
+
+    let deleted = deleted.start - marked.start..deleted.end - marked.start;
+    let mut text = rope.slice(marked)?;
+    text.replace_range(deleted.clone(), "");
+    let shift = |offset: usize| offset - offset.saturating_sub(deleted.start).min(deleted.len());
+    let clauses = clauses
+        .iter()
+        .filter_map(|clause| {
+            let range = shift(clause.range.start)..shift(clause.range.end);
+            (!range.is_empty()).then_some(MarkedClause { range, style: clause.style })
+        })
+        .collect();
+    Some(TextEdit::Mark { text, selection: selection.map(|_| deleted.start..deleted.start), replacement: None, clauses })
+}
+
+fn clause_style(value: &AnyObject) -> Option<ClauseStyle> {
+    let value = value.downcast_ref::<NSNumber>()?.integerValue();
+    let style = NSUnderlineStyle::from_bits_retain(value);
+    if style.contains(NSUnderlineStyle::Thick) || style.contains(NSUnderlineStyle::Double) {
+        Some(ClauseStyle::ActiveClause)
+    } else if style.contains(NSUnderlineStyle::Single) {
+        Some(ClauseStyle::Clause)
+    } else {
+        None
+    }
+}
+
+// UIKit supplies one marked-text style for a plain string. The selected part
+// identifies the active clause when the input method does not supply styled runs.
+fn append_clauses(
+    clauses: &mut SmallVec<[MarkedClause; 4]>,
+    range: Range<usize>,
+    selected: Option<&Range<usize>>,
+    style: Option<ClauseStyle>,
+) {
+    if range.is_empty() {
+        return;
+    }
+    let selected = selected.filter(|selected| !selected.is_empty());
+    if let Some(selected) = selected.filter(|_| style != Some(ClauseStyle::ActiveClause)) {
+        let active = range.start.max(selected.start)..range.end.min(selected.end);
+        if !active.is_empty() {
+            for (range, style) in [
+                (range.start..active.start, ClauseStyle::Clause),
+                (active.clone(), ClauseStyle::ActiveClause),
+                (active.end..range.end, ClauseStyle::Clause),
+            ] {
+                if !range.is_empty() {
+                    clauses.push(MarkedClause { range, style });
+                }
+            }
+            return;
+        }
+    }
+    if let Some(style) = style.or(selected.map(|_| ClauseStyle::Clause)) {
+        clauses.push(MarkedClause { range, style });
     }
 }
 
@@ -886,6 +929,7 @@ pub(super) struct TextInput {
     content: Retained<ContentView>,
     observer: Retained<KeyboardObserver>,
     active: bool,
+    loaded_traits: InputTraits,
 }
 
 impl TextInput {
@@ -905,7 +949,7 @@ impl TextInput {
             }
             observer
         };
-        Self { content, observer, active: true }
+        Self { content, observer, active: true, loaded_traits: InputTraits::default() }
     }
 
     pub(super) fn sync(&mut self, input: Option<&ActiveEditorView<'_>>) {
@@ -913,30 +957,33 @@ impl TextInput {
             self.retire();
             return;
         };
-        let same_session = self
-            .content
-            .editor()
-            .session
-            .borrow()
-            .as_ref()
-            .is_some_and(|session| session.id == input.session && session.secure == input.secure);
+        let same_session = {
+            let bridge = self.content.editor().bridge.borrow();
+            bridge.session().is_some_and(|session| session.id == input.session && session.secure == input.secure)
+        };
         if same_session {
-            let reload = self.content.sync_session(input);
-            self.content.reconcile();
-            if reload {
+            self.content.sync_editor(input);
+            let traits = self.content.traits();
+            if traits != self.loaded_traits && !self.is_composing() {
+                self.loaded_traits = traits;
                 self.content.reloadInputViews();
             }
         } else {
             self.retire();
-            self.content.install(input);
+            self.content.editor().selection_hidden.set(false);
+            self.content.editor().bridge.borrow_mut().sync(Some(input));
+            self.loaded_traits = self.content.traits();
         }
         self.focus();
     }
 
     fn retire(&mut self) {
-        if self.content.editor().session.borrow().is_some() {
+        if self.content.canBecomeFirstResponder() {
             self.content.resignFirstResponder();
-            self.content.editor().session.borrow_mut().take();
+            let editor = self.content.editor();
+            editor.bridge.borrow_mut().clear();
+            editor.marked_style.borrow_mut().take();
+            editor.selection_hidden.set(false);
             if self.active
                 && let Some(window) = self.content.window().filter(|window| window.isKeyWindow())
             {
@@ -958,39 +1005,12 @@ impl TextInput {
         }
     }
 
-    pub(super) fn take(&mut self) -> Option<Input> {
-        let result = (|| {
-            let mut current = self.content.editor().session.borrow_mut();
-            let session = current.as_mut()?;
-            if session.inflight.is_some() {
-                return None;
-            }
-            loop {
-                let change = session.pending.take()?;
-                if let Change::Paste(event) = change {
-                    return Some(Input::Host(HostReply::Paste(event)));
-                }
-                match draft::proposal(&change, &session.expected, &session.committed, session.id, session.rev) {
-                    Ok(Some(event)) => {
-                        session.inflight = Some(change);
-                        return Some(Input::Editor(event));
-                    }
-                    Ok(None) => {}
-                    Err(()) => {
-                        session.pending.clear();
-                        return None;
-                    }
-                }
-            }
-        })();
-        if result.is_none() {
-            self.content.reconcile();
-        }
-        result
+    pub(super) fn drain(&self, out: &mut Vec<WindowHostEvent>) {
+        self.content.editor().bridge.borrow_mut().drain(out);
     }
 
     pub(super) fn is_composing(&self) -> bool {
-        self.content.editor().session.borrow().as_ref().is_some_and(|session| session.displayed.marked.is_some())
+        self.content.editor().bridge.borrow().is_composing()
     }
 
     pub(super) fn is_focused(&self) -> bool {
@@ -998,12 +1018,12 @@ impl TextInput {
     }
 
     pub(super) fn inspect(&self) -> Value {
-        let session = self.content.editor().session.borrow();
+        let bridge = self.content.editor().bridge.borrow();
         json!({
-            "allowed": session.is_some(),
+            "allowed": bridge.session().is_some(),
             "native_focus": self.content.isFirstResponder(),
             "key_window": self.content.window().is_some_and(|window| window.isKeyWindow()),
-            "has_marked": session.as_ref().is_some_and(|session| session.displayed.marked.is_some()),
+            "has_marked": bridge.is_composing(),
             "keyboard_inset": super::scene::keyboard_inset(&self.content),
         })
     }
@@ -1015,28 +1035,6 @@ impl Drop for TextInput {
         // SAFETY: This is the observer registered by this UI-thread adapter.
         unsafe { NSNotificationCenter::defaultCenter().removeObserver(&self.observer) };
     }
-}
-
-fn first_rect(geometry: &TextGeometry, start: usize, end: usize) -> Option<Rect> {
-    let index = geometry.lines.partition_point(|line| line.range.start <= start).saturating_sub(1);
-    let line = geometry.lines.get(index)?;
-    let caret = line.fragments.iter().find(|fragment| fragment.range.contains(&start)).map_or_else(
-        || {
-            line.fragments
-                .iter()
-                .find(|fragment| fragment.range.end == start)
-                .map_or(line.rect.x, |fragment| if fragment.rtl { fragment.rect.x } else { fragment.rect.right() })
-        },
-        |fragment| if fragment.rtl { fragment.rect.right() } else { fragment.rect.x },
-    );
-    let bounds = line
-        .fragments
-        .iter()
-        .filter(|fragment| start < fragment.range.end && end > fragment.range.start)
-        .map(|fragment| (fragment.rect.x, fragment.rect.right()))
-        .reduce(|(left, right), (x, edge)| (left.min(x), right.max(edge)));
-    let (left, right) = if start == end { (caret, caret) } else { bounds.unwrap_or((caret, caret)) };
-    Some(Rect::new(geometry.origin.x + left, geometry.origin.y + line.rect.y, right - left, line.rect.h))
 }
 
 define_class!(
@@ -1056,4 +1054,42 @@ define_class!(
 
 fn to_native_rect(rect: Rect) -> NSRect {
     NSRect::new(NSPoint::new(f64::from(rect.x), f64::from(rect.y)), NSSize::new(f64::from(rect.w), f64::from(rect.h)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marked_backspace_deletes_one_grapheme_and_preserves_clauses() {
+        let rope = EditorRope::new("Aか👩‍🚀なZ");
+        let clauses =
+            [MarkedClause { range: 0..14, style: ClauseStyle::ActiveClause }, MarkedClause { range: 14..17, style: ClauseStyle::Clause }];
+        assert_eq!(
+            delete_marked_backward(&rope, 1..18, Some(15..15), &clauses),
+            Some(TextEdit::Mark {
+                text: "かな".into(),
+                selection: Some(3..3),
+                replacement: None,
+                clauses: [
+                    MarkedClause { range: 0..3, style: ClauseStyle::ActiveClause },
+                    MarkedClause { range: 3..6, style: ClauseStyle::Clause },
+                ]
+                .into_iter()
+                .collect(),
+            })
+        );
+    }
+
+    #[test]
+    fn marked_backspace_clips_selection_and_cancels_an_empty_mark() {
+        let rope = EditorRope::new("AかなZ");
+        assert_eq!(
+            delete_marked_backward(&rope, 1..7, Some(0..4), &[]),
+            Some(TextEdit::Mark { text: "な".into(), selection: Some(0..0), replacement: None, clauses: SmallVec::new() })
+        );
+        assert_eq!(delete_marked_backward(&rope, 1..7, Some(1..1), &[]), None);
+        assert_eq!(delete_marked_backward(&rope, 1..7, Some(8..8), &[]), None);
+        assert_eq!(delete_marked_backward(&rope, 1..7, Some(0..8), &[]), Some(TextEdit::Cancel));
+    }
 }

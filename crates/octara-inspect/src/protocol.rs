@@ -114,7 +114,7 @@ pub enum AgentAction {
         event: KeyEvent,
     },
     Editor {
-        event: EditorEvent,
+        event: Box<EditorEvent>,
     },
     Accessibility {
         action: A11yAction,

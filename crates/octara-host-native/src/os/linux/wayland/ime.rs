@@ -1,26 +1,20 @@
 use super::{NativeEvent, Protocol, Shared, window::WindowState};
-use crate::os::{ActiveEditorView, OsHost, PlatformEvent, ShellDriver};
-use octara::tree::editor::EditorRope;
+use crate::os::{OsHost, PlatformEvent, ShellDriver};
+use crate::text_bridge::{BridgeSession, HostTextBridge, SurroundingText};
+use octara::runtime::Input;
 use octara_model::identity::EditorSessionId;
-use octara_model::input::EditorEvent;
-use octara_model::text::{AutoCapitalize, Autocorrect, KeyboardType, TextContentType, TextEdit};
+use octara_model::text::{AutoCapitalize, Autocorrect, ClauseStyle, KeyboardType, MarkedClause, TextContentType, TextEdit};
 use smithay_client_toolkit::shell::WaylandSurface;
-use std::ops::Range;
+use std::collections::VecDeque;
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{self as protocol, ContentHint, ContentPurpose, ZwpTextInputV3};
 
-pub(super) struct EditorState {
-    session: EditorSessionId,
-    rev: u64,
-    pub marked: Option<Range<usize>>,
-    selection: Range<usize>,
-    displayed: EditorRope,
-    settings: Settings,
-}
+const SURROUNDING_LIMIT: usize = 4000;
+const SURROUNDING_HISTORY: usize = 16;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct Settings {
     surrounding: Option<Surrounding>,
     caret: Option<[i32; 4]>,
@@ -28,64 +22,66 @@ struct Settings {
     purpose: ContentPurpose,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct Surrounding {
     text: String,
     cursor: i32,
     anchor: i32,
 }
 
-impl From<&ActiveEditorView<'_>> for EditorState {
-    fn from(view: &ActiveEditorView<'_>) -> Self {
-        let (anchor, cursor) = view.selection;
-        let selection = anchor.min(cursor)..anchor.max(cursor);
-        let marked = view.composition.map(|composition| composition.marked());
-        let displayed = view.editor.displayed_rope().clone();
-        let settings = Settings {
-            surrounding: surrounding(view, &selection, marked.as_ref()),
-            caret: view
-                .caret
-                .map(|rect| [rect.x.floor() as i32, rect.y.floor() as i32, rect.w.ceil().max(1.0) as i32, rect.h.ceil().max(1.0) as i32]),
-            hint: content_hint(view),
-            purpose: content_purpose(view),
-        };
-        Self { session: view.session, rev: view.document_rev, marked, selection, displayed, settings }
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SurroundingBasis {
+    value_rev: u64,
+    selection: (usize, usize),
+}
+
+impl From<&BridgeSession> for SurroundingBasis {
+    fn from(session: &BridgeSession) -> Self {
+        let editor = session.editor();
+        // Relative deletes target the committed text and selection after removing preedit.
+        Self { value_rev: editor.value_rev(), selection: editor.selection() }
     }
 }
 
-fn surrounding(view: &ActiveEditorView<'_>, selection: &Range<usize>, marked: Option<&Range<usize>>) -> Option<Surrounding> {
-    const LIMIT: usize = 4000;
-
-    if view.secure || selection.len() > LIMIT {
-        return None;
+impl From<&BridgeSession> for Settings {
+    fn from(session: &BridgeSession) -> Self {
+        let surrounding = surrounding(session).map(|window| {
+            let (mut cursor, mut anchor) = (window.cursor, window.anchor);
+            let mut text = window.text.to_owned();
+            if session.marked_range().is_some() {
+                let start = cursor.min(anchor);
+                let end = cursor.max(anchor);
+                text.replace_range(start..end, "");
+                cursor = start;
+                anchor = start;
+            }
+            Surrounding { text, cursor: cursor as i32, anchor: anchor as i32 }
+        });
+        let caret = session
+            .caret
+            .map(|rect| [rect.x.floor() as i32, rect.y.floor() as i32, rect.w.ceil().max(1.0) as i32, rect.h.ceil().max(1.0) as i32]);
+        Self { surrounding, caret, hint: content_hint(session), purpose: content_purpose(session) }
     }
-    let (anchor, cursor) = view.selection;
-    let prefix = (LIMIT - selection.len()) / 2;
-    let start = view.value.ceil_char_boundary(selection.start.saturating_sub(prefix));
-    let end = view.value.floor_char_boundary(view.value.len().min(start + LIMIT));
-    if end < selection.end {
-        return None;
-    }
-    let text = &view.value[start..end];
-    if text.contains('\0') {
-        return None;
-    }
-    if marked.is_some() {
-        let relative = selection.start - start;
-        let after = selection.end - start;
-        let mut text = text.to_owned();
-        text.replace_range(relative..after, "");
-        return Some(Surrounding { text, cursor: relative as i32, anchor: relative as i32 });
-    }
-    Some(Surrounding { text: text.to_owned(), cursor: (cursor - start) as i32, anchor: (anchor - start) as i32 })
 }
 
-fn content_hint(view: &ActiveEditorView<'_>) -> ContentHint {
-    let traits = view.editor.input_traits;
+fn surrounding(session: &BridgeSession) -> Option<SurroundingText<'_>> {
+    let (anchor, cursor) = session.editor().selection();
+    if sensitive(session) || anchor.abs_diff(cursor) > SURROUNDING_LIMIT {
+        return None;
+    }
+    session.surrounding_text(SURROUNDING_LIMIT).filter(|window| !window.text.contains('\0'))
+}
+
+fn sensitive(session: &BridgeSession) -> bool {
+    session.secure || matches!(session.traits.content_type, TextContentType::Password | TextContentType::NewPassword)
+}
+
+fn content_hint(view: &BridgeSession) -> ContentHint {
+    let traits = view.traits;
     let mut flags = ContentHint::empty();
     flags.set(ContentHint::Multiline, view.multiline);
-    flags.set(ContentHint::HiddenText | ContentHint::SensitiveData, view.secure);
-    if !view.secure {
+    flags.set(ContentHint::HiddenText | ContentHint::SensitiveData, sensitive(view));
+    if !sensitive(view) {
         if traits.autocorrect == Autocorrect::On {
             flags |= ContentHint::Spellcheck | ContentHint::Completion;
         }
@@ -99,11 +95,11 @@ fn content_hint(view: &ActiveEditorView<'_>) -> ContentHint {
     flags
 }
 
-fn content_purpose(view: &ActiveEditorView<'_>) -> ContentPurpose {
+fn content_purpose(view: &BridgeSession) -> ContentPurpose {
     use ContentPurpose as Purpose;
 
-    let traits = view.editor.input_traits;
-    if view.secure || matches!(traits.content_type, TextContentType::Password | TextContentType::NewPassword) {
+    let traits = view.traits;
+    if sensitive(view) {
         return if traits.keyboard_type == KeyboardType::Number { Purpose::Pin } else { Purpose::Password };
     }
     match traits.keyboard_type {
@@ -137,6 +133,7 @@ pub(super) struct Ime {
     serial: u32,
     confirmed: bool,
     settings: Option<Settings>,
+    sent_surrounding: VecDeque<(u32, Option<SurroundingBasis>)>,
     pending: Pending,
     handling_update: bool,
 }
@@ -146,7 +143,7 @@ pub(super) struct Update {
     owner: EditorSessionId,
     seat: ObjectId,
     pending: Pending,
-    cancelled: bool,
+    serial: Option<u32>,
 }
 
 impl Ime {
@@ -160,14 +157,15 @@ impl Ime {
             serial: 0,
             confirmed: true,
             settings: None,
+            sent_surrounding: VecDeque::new(),
             pending: Pending::default(),
             handling_update: false,
         }
     }
 
-    fn sync(&mut self, editor: Option<&EditorState>) {
+    fn sync(&mut self, editor: Option<&BridgeSession>) {
         let Some(native) = self.native.as_ref() else { return };
-        let owner = editor.map(|editor| editor.session);
+        let owner = editor.map(|editor| editor.id);
         let new_owner = self.owner != owner;
         if new_owner {
             if self.owner.is_some() {
@@ -178,19 +176,26 @@ impl Ime {
             self.owner = owner;
             self.pending = Pending::default();
             self.settings = None;
+            self.sent_surrounding.clear();
             self.confirmed = true;
             if owner.is_some() {
                 native.enable();
                 self.enabled_at = self.serial.wrapping_add(1);
             }
         }
-        let Some(settings) = editor.map(|editor| &editor.settings) else { return };
-        if !self.confirmed || self.settings.as_ref() == Some(settings) {
+        if !self.confirmed {
+            return;
+        }
+        let Some(editor) = editor else { return };
+        let settings = Settings::from(editor);
+        let basis = settings.surrounding.as_ref().map(|_| SurroundingBasis::from(editor));
+        let previous_basis = self.sent_surrounding.back().and_then(|(_, basis)| *basis);
+        if self.settings.as_ref() == Some(&settings) && previous_basis == basis {
             return;
         }
 
         let previous = self.settings.as_ref();
-        if previous.is_none_or(|previous| previous.surrounding != settings.surrounding) {
+        if previous.is_none_or(|previous| previous.surrounding != settings.surrounding) || previous_basis != basis {
             if let Some(surrounding) = &settings.surrounding {
                 native.set_surrounding_text(surrounding.text.clone(), surrounding.cursor, surrounding.anchor);
                 if !self.handling_update && !new_owner {
@@ -210,7 +215,11 @@ impl Ime {
         }
         native.commit();
         self.serial = self.serial.wrapping_add(1);
-        self.settings = Some(settings.clone());
+        if self.sent_surrounding.len() == SURROUNDING_HISTORY {
+            self.sent_surrounding.pop_front();
+        }
+        self.sent_surrounding.push_back((self.serial, basis));
+        self.settings = Some(settings);
     }
 
     pub(super) fn leave(&mut self, shared: &Shared, seat: ObjectId) {
@@ -220,10 +229,11 @@ impl Ime {
                 owner,
                 seat,
                 pending: Pending::default(),
-                cancelled: true,
+                serial: None,
             }));
         }
         self.settings = None;
+        self.sent_surrounding.clear();
         self.pending = Pending::default();
         self.confirmed = true;
     }
@@ -243,7 +253,7 @@ impl Shared {
             let mut seat = seat.borrow_mut();
             if seat.ime.surface.as_ref() == Some(window.native.wl_surface()) && !seat.ime.handling_update {
                 let editor = window.editor.borrow();
-                seat.ime.sync(if window.closed.get() { None } else { editor.as_ref() });
+                seat.ime.sync(if window.closed.get() { None } else { editor.session() });
             }
         }
     }
@@ -252,90 +262,129 @@ impl Shared {
 impl Update {
     pub(super) fn apply(self, shared: &Shared, host: &mut dyn OsHost, driver: &mut dyn ShellDriver) -> Result<(), String> {
         let Some(window) = shared.window(&self.surface) else { return Ok(()) };
-        let Some(seat) = shared.seat(&self.seat) else {
-            return self.cancel(&window, host, driver);
+        let Some(seat) = shared.seat(&self.seat).filter(|_| self.serial.is_some()) else {
+            {
+                let mut editor = window.editor.borrow_mut();
+                if editor.is_composing() && editor.session().is_some_and(|session| session.id == self.owner) {
+                    editor.edit(TextEdit::Cancel);
+                }
+            }
+            return flush_editor(&window, self.owner, host, driver);
         };
-        if self.cancelled {
-            return self.cancel(&window, host, driver);
-        }
-        let deliver = |driver: &mut dyn ShellDriver, host: &mut dyn OsHost, edit| {
-            driver.event(host, PlatformEvent::Editor { window: window.id, event: edit }).map(|_| ())
-        };
-        let (editor, commit) = {
-            let editor = window.editor.borrow();
-            let Some(editor) = editor.as_ref().filter(|editor| editor.session == self.owner) else { return Ok(()) };
-            let commit = self.pending.commit.is_some() || self.pending.delete != (0, 0);
-            let edit = if commit {
-                let replacement = if self.pending.delete == (0, 0) {
-                    None
-                } else {
-                    let range = editor.marked.as_ref().unwrap_or(&editor.selection);
-                    let (before, after) = self.pending.delete;
-                    let Some(start) = range.start.checked_sub(before as usize) else { return Ok(()) };
-                    let Some(end) = range.end.checked_add(after as usize) else { return Ok(()) };
-                    if editor.settings.surrounding.is_none()
-                        || !editor.displayed.is_char_boundary(start)
-                        || !editor.displayed.is_char_boundary(end)
-                    {
-                        return Ok(());
-                    }
-                    Some(start..end)
-                };
-                Some(EditorEvent::ProposeEdit {
-                    session: editor.session,
-                    expected_rev: editor.rev,
-                    edit: TextEdit::Insert { text: self.pending.commit.unwrap_or_default(), replacement },
-                })
+
+        let delete_basis = {
+            let mut seat = seat.borrow_mut();
+            let ime = &mut seat.ime;
+            ime.handling_update = true;
+            if ime.owner == Some(self.owner) && ime.surface.as_ref() == Some(&self.surface) {
+                ime.confirmed = self.serial == Some(ime.serial);
+                ime.sent_surrounding.iter().find(|(serial, _)| self.serial == Some(*serial)).and_then(|(_, basis)| *basis)
             } else {
                 None
-            };
-            (edit, commit)
+            }
         };
-        seat.borrow_mut().ime.handling_update = true;
-        let result = (|| {
-            if let Some(edit) = editor {
-                deliver(driver, host, edit)?;
-            }
-            let edit = {
-                let editor = window.editor.borrow();
-                let Some(editor) = editor.as_ref().filter(|editor| editor.session == self.owner) else { return Ok(()) };
-                if let Some((text, start, end)) = self.pending.preedit.filter(|(text, ..)| !text.is_empty()) {
-                    let selection = (start >= 0 && end >= 0)
-                        .then(|| (text.floor_char_boundary(start as usize), text.floor_char_boundary(end as usize)));
-                    Some(EditorEvent::Composition { session: editor.session, expected_rev: editor.rev, text, selection, replacement: None })
-                } else if !commit && editor.marked.is_some() {
-                    Some(EditorEvent::CancelComposition { session: editor.session, expected_rev: editor.rev })
-                } else {
-                    None
+        {
+            let mut editor = window.editor.borrow_mut();
+            if editor
+                .session()
+                .filter(|session| session.id == self.owner)
+                .is_some_and(|session| self.pending.valid_delete(session, delete_basis))
+            {
+                if (self.pending.preedit.is_some() || self.pending.commit.is_some() || self.pending.delete != (0, 0))
+                    && let Some(compose) = &window.compose
+                {
+                    compose.reset();
                 }
-            };
-            if let Some(edit) = edit {
-                deliver(driver, host, edit)?;
+                self.pending.apply(&mut editor);
             }
-            Ok(())
-        })();
+        }
+        let result = flush_editor(&window, self.owner, host, driver);
         {
             let mut seat = seat.borrow_mut();
             if seat.ime.surface.as_ref() == Some(&self.surface) {
                 let editor = window.editor.borrow();
-                seat.ime.sync(if window.closed.get() { None } else { editor.as_ref() });
+                seat.ime.sync(if window.closed.get() { None } else { editor.session() });
             }
             seat.ime.handling_update = false;
         }
         result
     }
+}
 
-    fn cancel(&self, window: &WindowState, host: &mut dyn OsHost, driver: &mut dyn ShellDriver) -> Result<(), String> {
-        let event = window
-            .editor
-            .borrow()
-            .as_ref()
-            .filter(|editor| editor.session == self.owner && editor.marked.is_some())
-            .map(|editor| EditorEvent::CancelComposition { session: editor.session, expected_rev: editor.rev });
-        if let Some(event) = event {
-            driver.event(host, PlatformEvent::Editor { window: window.id, event })?;
+impl Pending {
+    fn valid_delete(&self, session: &BridgeSession, basis: Option<SurroundingBasis>) -> bool {
+        let (before, after) = self.delete;
+        if (before, after) == (0, 0) {
+            return true;
         }
-        Ok(())
+        if basis != Some(SurroundingBasis::from(session)) {
+            return false;
+        }
+        surrounding(session).is_some_and(|surrounding| {
+            let start = surrounding.cursor.min(surrounding.anchor).checked_sub(before as usize);
+            let end = surrounding.cursor.max(surrounding.anchor).checked_add(after as usize);
+            start.is_some_and(|start| surrounding.text.is_char_boundary(start))
+                && end.is_some_and(|end| surrounding.text.is_char_boundary(end))
+        })
+    }
+
+    fn apply(self, editor: &mut HostTextBridge) {
+        let (before, after) = self.delete;
+        let preedit = self.preedit.filter(|(text, ..)| !text.is_empty());
+        // Deletion uses the committed surrounding text. A commit by itself can
+        // replace the current marked range directly.
+        if editor.is_composing()
+            && ((before, after) != (0, 0) || (preedit.is_none() && self.commit.is_none()))
+            && !editor.edit(TextEdit::Cancel)
+        {
+            return;
+        }
+        if (before, after) != (0, 0)
+            && !editor.edit(TextEdit::DeleteSurrounding { before_bytes: before as usize, after_bytes: after as usize })
+        {
+            return;
+        }
+        if let Some(text) = self.commit.filter(|text| !text.is_empty() || editor.is_composing())
+            && !editor.edit(TextEdit::Insert { text, replacement: None })
+        {
+            return;
+        }
+        if let Some((text, start, end)) = preedit {
+            editor.edit(mark(text, start, end));
+        }
+    }
+}
+
+fn mark(text: String, start: i32, end: i32) -> TextEdit {
+    let selection = (start >= 0 && end >= 0).then(|| text.floor_char_boundary(start as usize)..text.floor_char_boundary(end as usize));
+    let mut clauses = smallvec::SmallVec::new();
+    let active = selection.as_ref().filter(|range| range.start != range.end);
+    if let Some(active) = active {
+        let (begin, end) = (active.start.min(active.end), active.start.max(active.end));
+        for (range, style) in
+            [(0..begin, ClauseStyle::Clause), (begin..end, ClauseStyle::ActiveClause), (end..text.len(), ClauseStyle::Clause)]
+        {
+            if !range.is_empty() {
+                clauses.push(MarkedClause { range, style });
+            }
+        }
+    } else {
+        clauses.push(MarkedClause { range: 0..text.len(), style: ClauseStyle::Clause });
+    }
+    TextEdit::Mark { text, selection, replacement: None, clauses }
+}
+
+fn flush_editor(window: &WindowState, owner: EditorSessionId, host: &mut dyn OsHost, driver: &mut dyn ShellDriver) -> Result<(), String> {
+    loop {
+        let event = {
+            let mut bridge = window.editor.borrow_mut();
+            if window.closed.get() || bridge.session().is_none_or(|session| session.id != owner) {
+                return Ok(());
+            }
+            bridge.take()
+        };
+        let Some(Input::Editor(event)) = event else { return Ok(()) };
+        driver.event(host, PlatformEvent::Editor { window: window.id, event })?;
     }
 }
 
@@ -352,7 +401,7 @@ impl Dispatch<ZwpTextInputV3, ObjectId> for Protocol {
                     ime.leave(&state.shared, data.clone());
                     if let Some(window) = state.shared.window(&surface) {
                         ime.surface = Some(surface);
-                        ime.sync(window.editor.borrow().as_ref());
+                        ime.sync(window.editor.borrow().session());
                     }
                 }
             }
@@ -362,7 +411,6 @@ impl Dispatch<ZwpTextInputV3, ObjectId> for Protocol {
             DeleteSurroundingText { before_length, after_length } => ime.pending.delete = (before_length, after_length),
             Done { serial } => {
                 let pending = std::mem::take(&mut ime.pending);
-                ime.confirmed = ime.serial == serial;
                 if let (Some(surface), Some(owner)) = (&ime.surface, ime.owner)
                     && serial.wrapping_sub(ime.enabled_at) < (1 << 31)
                 {
@@ -371,11 +419,77 @@ impl Dispatch<ZwpTextInputV3, ObjectId> for Protocol {
                         owner,
                         seat: data.clone(),
                         pending,
-                        cancelled: false,
+                        serial: Some(serial),
                     }));
                 }
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::os::ActiveEditorView;
+    use octara::tree::editor::EditorSlot;
+    use octara_model::identity::{NodeId, TreeId};
+
+    #[test]
+    fn relative_delete_requires_the_sent_committed_context() {
+        let editor = EditorSlot::new("abc😀");
+        let view = ActiveEditorView {
+            session: EditorSessionId { tree: TreeId::new([19, 4], 1), node: NodeId::default(), session_gen: editor.session_gen() },
+            document_rev: editor.document_rev(),
+            value: editor.value(),
+            selection: editor.selection(),
+            composition: editor.composition(),
+            editor: &editor,
+            multiline: false,
+            secure: false,
+            caret: None,
+            geometry: None,
+        };
+        let mut bridge = HostTextBridge::default();
+        bridge.sync(Some(&view));
+        assert!(bridge.select((1, 1)));
+        let sent = SurroundingBasis::from(bridge.session().unwrap());
+        let delete = Pending { delete: (1, 0), ..Pending::default() };
+        assert!(delete.valid_delete(bridge.session().unwrap(), Some(sent)));
+
+        assert!(bridge.select((3, 3)));
+        let session = bridge.session().unwrap();
+        assert!(!delete.valid_delete(session, Some(sent)));
+        assert!(!delete.valid_delete(session, None));
+        assert!(delete.valid_delete(session, Some(SurroundingBasis::from(session))));
+
+        let sent = SurroundingBasis::from(session);
+        let delete_emoji = Pending { delete: (0, 4), ..Pending::default() };
+        assert!(bridge.edit(mark("漢".into(), 3, 3)));
+        assert!(delete_emoji.valid_delete(bridge.session().unwrap(), Some(sent)));
+        let split_emoji = Pending { delete: (0, 3), ..Pending::default() };
+        assert!(!split_emoji.valid_delete(bridge.session().unwrap(), Some(sent)));
+        delete_emoji.apply(&mut bridge);
+        let session = bridge.session().unwrap();
+        assert_eq!(session.editor().value(), "abc");
+        assert!(!delete.valid_delete(session, Some(sent)));
+    }
+
+    #[test]
+    fn preedit_clauses_respect_utf8_boundaries_and_direction() {
+        let TextEdit::Mark { selection, clauses, .. } = mark("a\u{6f22}\u{5b57}z".into(), 7, 2) else { unreachable!() };
+        assert_eq!(selection.map(|range| (range.start, range.end)), Some((7, 1)));
+        assert_eq!(
+            clauses.as_slice(),
+            &[
+                MarkedClause { range: 0..1, style: ClauseStyle::Clause },
+                MarkedClause { range: 1..7, style: ClauseStyle::ActiveClause },
+                MarkedClause { range: 7..8, style: ClauseStyle::Clause },
+            ]
+        );
+
+        let TextEdit::Mark { selection, clauses, .. } = mark("a".into(), -1, -1) else { unreachable!() };
+        assert!(selection.is_none());
+        assert_eq!(clauses.as_slice(), &[MarkedClause { range: 0..1, style: ClauseStyle::Clause }]);
     }
 }

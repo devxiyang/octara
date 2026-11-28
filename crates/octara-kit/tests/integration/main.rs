@@ -55,7 +55,11 @@ impl Mounted {
         let node = self.tree().focus().unwrap();
         let editor = self.tree().editor(node).unwrap();
         let session = EditorSession::active(self.tree()).unwrap().id();
-        let event = EditorEvent::Commit { session, expected_rev: editor.document_rev(), text: value.into() };
+        let event = EditorEvent::Edit {
+            session,
+            expected_rev: editor.document_rev(),
+            edit: octara::TextEdit::Insert { text: value.into(), replacement: None },
+        };
         assert!(self.driver.dispatch(self.id, Input::Editor(event)).unwrap().handled);
     }
 
@@ -63,12 +67,15 @@ impl Mounted {
         let node = self.tree().focus().unwrap();
         let editor = self.tree().editor(node).unwrap();
         let session = EditorSession::active(self.tree()).unwrap().id();
-        let event = EditorEvent::Composition {
+        let event = EditorEvent::Edit {
             session,
             expected_rev: editor.document_rev(),
-            text: value.into(),
-            selection: Some((value.len(), value.len())),
-            replacement: None,
+            edit: octara::TextEdit::Mark {
+                text: value.into(),
+                selection: Some(value.len()..value.len()),
+                replacement: None,
+                clauses: Default::default(),
+            },
         };
         assert!(self.driver.dispatch(self.id, Input::Editor(event)).unwrap().handled);
     }

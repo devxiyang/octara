@@ -15,7 +15,7 @@ use octara_model::geometry::{Align, Point, Rect, Size};
 use octara_model::paint::{CanvasText, FontData, FontFace, FontId, Glyph, GlyphRun, Item, Quad};
 use octara_model::semantics::TextClip;
 use octara_model::style::Direction;
-use octara_model::text::{InlineAttachment, InlineContent, RichSpan, TextAlign, TextGeometry, TextLine, TextStyle, Wrap};
+use octara_model::text::{ClauseStyle, InlineAttachment, InlineContent, RichSpan, TextAlign, TextGeometry, TextLine, TextStyle, Wrap};
 use octara_model::theme::{Color, ColorToken};
 use octara_tree::{DirtyBitmap, NodeId, RetiredNode, Tree, TreeDelta};
 use parley::fontique::{Blob, Collection, CollectionOptions, FallbackKey, GenericFamily, Script, SourceCache};
@@ -1122,10 +1122,25 @@ impl TextEngine {
                     items.extend(range_rects(a.min(b)..a.max(b)).map(|rect| quad(node, rect, color)));
                 }
                 if let Some(composition) = editor.composition() {
-                    items.extend(
-                        range_rects(composition.marked())
-                            .map(|rect| quad(node, Rect::new(rect.x, rect.bottom() - 1.0, rect.w, 1.0), foreground)),
-                    );
+                    let marked = composition.marked();
+                    let mut underline = |range, thickness: f32| {
+                        items.extend(range_rects(range).map(|rect| {
+                            let height = thickness.min(rect.h);
+                            quad(node, Rect::new(rect.x, rect.bottom() - height, rect.w, height), foreground)
+                        }));
+                    };
+                    let mut start = marked.start;
+                    for clause in composition.clauses() {
+                        let range = marked.start + clause.range.start..marked.start + clause.range.end;
+                        underline(start..range.start, 1.0);
+                        start = range.end;
+                        let thickness = match clause.style {
+                            ClauseStyle::Clause => 1.0,
+                            ClauseStyle::ActiveClause => 2.0,
+                        };
+                        underline(range, thickness);
+                    }
+                    underline(start..marked.end, 1.0);
                 }
             }
         } else if let Some(range) = doc_selection(tree, node) {

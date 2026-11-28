@@ -3,13 +3,13 @@ use octara_model::{
     ask::{ClipboardItem, ClipboardKinds, ServiceOutcome, ServiceRequest},
     geometry::Point,
     identity::{EditorSessionId, TargetGuard, WindowId},
-    input::{EditorEvent, Key, KeyEvent, Modifiers, PasteEvent, TextEdit},
+    input::{EditorCommand, EditorEvent, KeyEvent, PasteEvent, TextEdit},
 };
 use octara_tree::{
     NodeId, RuntimeOp, Tree,
     arbiter::{InteractionIntent, TextPointerIntent, TextPointerTarget},
-    editor::EditorSession,
-    selection::{Address, DocSelection, paragraph_at, word_at, word_edge},
+    editor::{EditorSession, command_for_key},
+    selection::{Address, DocSelection, paragraph_at, word_at},
 };
 use std::{collections::VecDeque, ops::Range};
 
@@ -17,13 +17,6 @@ use std::{collections::VecDeque, ops::Range};
 pub(crate) struct TextInteraction {
     region: Option<TargetGuard>,
     drag: Option<TextDrag>,
-    column: Option<(EditorSessionId, f32)>,
-}
-
-impl TextInteraction {
-    pub(super) fn reset_column(&mut self) {
-        self.column = None;
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -50,10 +43,12 @@ impl PasteTarget {
         let node = tree.focus().or_else(|| tree.front_modal()).unwrap_or_else(|| {
             tree.children(root).iter().copied().find(|&node| node != tree.overlay_root() && tree.is_interactive(node)).unwrap_or(root)
         });
-        tree.is_interactive(node).then(|| Self {
-            node: tree.guard(node),
-            editor: EditorSession::active(tree).map(|session| (session.id(), session.editor().document_rev())),
-        })
+        let editor = match EditorSession::active(tree) {
+            Some(session) if session.editor().composition().is_some() => return None,
+            Some(session) => Some((session.id(), session.editor().document_rev())),
+            None => None,
+        };
+        tree.is_interactive(node).then(|| Self { node: tree.guard(node), editor })
     }
 
     fn handlers(self, tree: &Tree) -> impl Iterator<Item = octara_tree::tables::HandlerId> {
@@ -109,7 +104,7 @@ impl AppRuntime {
         !text.is_empty()
             && self.route_editor(
                 id,
-                EditorEvent::ProposeEdit { session, expected_rev, edit: TextEdit::Insert { text, replacement: None } },
+                EditorEvent::Edit { session, expected_rev, edit: TextEdit::Insert { text, replacement: None } },
                 routed,
             )
     }
@@ -150,10 +145,8 @@ impl AppRuntime {
                 TextPointerIntent::Down { target, pos, count, extend } => {
                     window.text.drag = None;
                     if editor.composition().is_some() {
-                        let edit = EditorEvent::ProposeEdit { session, expected_rev, edit: TextEdit::Unmark };
-                        if !self.route_editor(id, edit, routed)
-                            && !self.route_editor(id, EditorEvent::CancelComposition { session, expected_rev }, routed)
-                        {
+                        let edit = EditorEvent::Edit { session, expected_rev, edit: TextEdit::Unmark };
+                        if !self.route_editor(id, edit, routed) {
                             return false;
                         }
                         routed.push_front(Routed::Intent(id, InteractionIntent::TextPointer(intent)));
@@ -178,7 +171,7 @@ impl AppRuntime {
                 }
                 TextPointerIntent::Clear => unreachable!(),
             };
-        self.route_editor(id, EditorEvent::ProposeSelection { session, expected_rev, selection }, routed)
+        self.route_editor(id, EditorEvent::Select { session, expected_rev, selection }, routed)
     }
 
     fn document_pointer(&mut self, id: WindowId, region: NodeId, intent: TextPointerIntent, routed: &mut VecDeque<Routed>) -> bool {
@@ -238,8 +231,8 @@ impl AppRuntime {
         if window.engine.platform_text_selection() || !window.arbiter.is_active() {
             return false;
         }
-        let Some(command) = clipboard_key(key) else { return false };
-        if command == 'v' {
+        let Some(command) = command_for_key(key) else { return false };
+        if command == EditorCommand::Paste {
             return self.request_paste(id);
         }
         let region = window
@@ -249,14 +242,14 @@ impl AppRuntime {
             .or_else(|| window.tree.focus().and_then(|focus| window.tree.region_of(focus)));
         let Some(region) = region else { return false };
         match command {
-            'a' => {
+            EditorCommand::SelectAll => {
                 let texts = window.tree.selectable_texts(region);
                 let Some((&first, &last)) = texts.first().zip(texts.last()) else { return false };
                 let end = window.tree.text(last).expect("selectable text").text.len();
                 self.set_document_selection(id, region, [(first, 0), (last, end)], routed);
                 true
             }
-            'c' => {
+            EditorCommand::Copy => {
                 let Some([anchor, focus]) = window.tree.doc_selection(region) else { return false };
                 if anchor == focus {
                     return false;
@@ -270,115 +263,41 @@ impl AppRuntime {
         }
     }
 
-    pub(super) fn editor_key_default(&mut self, id: WindowId, key: KeyEvent, host_declined: bool, routed: &mut VecDeque<Routed>) -> bool {
-        let window = self.windows.get_mut(&id).expect("known window");
-        if (!host_declined && window.engine.platform_text_selection()) || !window.arbiter.is_active() {
+    pub(super) fn editor_key_default(&mut self, id: WindowId, key: KeyEvent, routed: &mut VecDeque<Routed>) -> bool {
+        let window = &self.windows[&id];
+        if window.engine.platform_text_selection() || !window.arbiter.is_active() {
             return false;
         }
         let Some(session) = EditorSession::active(&window.tree) else { return false };
-        let editor = session.editor();
-        if editor.composition().is_some() {
-            return false;
-        }
-        if clipboard_key(key) == Some('v') {
+        let Some(command) = command_for_key(key) else { return false };
+        let event = EditorEvent::Command { session: session.id(), expected_rev: session.editor().document_rev(), command };
+        self.route_editor(id, event, routed)
+    }
+
+    pub(super) fn editor_clipboard(&mut self, id: WindowId, command: EditorCommand) -> bool {
+        if command == EditorCommand::Paste {
             return self.request_paste(id);
         }
-        let session = session.id();
-        let expected_rev = editor.document_rev();
-        let select = |selection| EditorEvent::ProposeSelection { session, expected_rev, selection };
-        let insert =
-            move |text, replacement| EditorEvent::ProposeEdit { session, expected_rev, edit: TextEdit::Insert { text, replacement } };
-        let rope = editor.rope();
-        let (anchor, caret) = editor.selection();
-        let ordered = anchor.min(caret)..anchor.max(caret);
-        let select_all = select((0, rope.len()));
-        let extend = key.modifiers.contains(Modifiers::SHIFT);
-        let modifiers = key.modifiers - Modifiers::SHIFT;
-        let word = modifiers.intersects(Modifiers::CTRL | Modifiers::ALT);
-        let edge = |backward| {
-            let next = if word { word_edge(rope.as_str(), caret, backward) } else { rope.grapheme_edge(caret, backward).unwrap_or(caret) };
-            editor.rich_text().map_or(next, |rich| rich.snap_movement(next, backward))
-        };
-        let mut column = window.text.column.take().filter(|(previous, _)| *previous == session).map(|(_, x)| x);
-
-        let event = if let Some(command) = clipboard_key(key) {
-            match command {
-                'a' => select_all,
-                'c' | 'x' => {
-                    let Some(text) = editor.clipboard_text().map(str::to_owned) else { return true };
-                    let scope = window.scope;
-                    self.write(scope, id).request_service(
-                        ServiceRequest::WriteClipboard { items: vec![ClipboardItem::Text(text)] },
-                        move |cx, outcome| {
-                            if command == 'x' && outcome == ServiceOutcome::ClipboardWritten {
-                                let event = insert(String::new(), Some(ordered));
-                                cx.commands().queued.push_back(AppCommand::EditorEdit { window: id, event });
-                            }
-                        },
-                    );
-                    return true;
+        let window = &self.windows[&id];
+        let Some(session) = EditorSession::active(&window.tree) else { return false };
+        let editor = session.editor();
+        let Some(text) = editor.clipboard_text().map(str::to_owned) else { return true };
+        let event = (command == EditorCommand::Cut).then(|| EditorEvent::Edit {
+            session: session.id(),
+            expected_rev: editor.document_rev(),
+            edit: TextEdit::Insert { text: String::new(), replacement: None },
+        });
+        self.write(window.scope, id).request_service(
+            ServiceRequest::WriteClipboard { items: vec![ClipboardItem::Text(text)] },
+            move |cx, outcome| {
+                if outcome == ServiceOutcome::ClipboardWritten
+                    && let Some(event) = event
+                {
+                    cx.commands().queued.push_back(AppCommand::EditorEdit { window: id, event });
                 }
-                _ => return false,
-            }
-        } else if matches!(key.key, Key::Backspace | Key::Delete) && !modifiers.contains(Modifiers::META) {
-            let backward = key.key == Key::Backspace;
-            let adjacent =
-                (!word && ordered.is_empty()).then(|| editor.rich_text().and_then(|rich| rich.adjacent_atom(caret, backward))).flatten();
-            let range = if let Some(atom) = adjacent {
-                atom.range.clone()
-            } else if ordered.is_empty() {
-                let next = edge(backward);
-                next.min(caret)..next.max(caret)
-            } else {
-                ordered
-            };
-            if range.is_empty() {
-                return true;
-            }
-            insert(String::new(), Some(range))
-        } else {
-            let next = match key.key {
-                Key::Left | Key::Right if !modifiers.contains(Modifiers::META) => {
-                    let backward = key.key == Key::Left;
-                    if !extend && !word && !ordered.is_empty() {
-                        if backward { ordered.start } else { ordered.end }
-                    } else {
-                        edge(backward)
-                    }
-                }
-                Key::Home | Key::End if (modifiers - Modifiers::CTRL).is_empty() => {
-                    let line = if word { 0..rope.len() } else { editor_line(window, session.node, rope.as_str(), caret) };
-                    if key.key == Key::Home { line.start } else { line.end }
-                }
-                Key::Up | Key::Down if modifiers.is_empty() => {
-                    let direction = if key.key == Key::Up { -1 } else { 1 };
-                    window.engine.text_vertical(session.node, caret, direction, column).map_or_else(
-                        || if direction < 0 { 0 } else { rope.len() },
-                        |(next, x)| {
-                            column = Some(x);
-                            next
-                        },
-                    )
-                }
-                _ => return false,
-            };
-            select((if extend { anchor } else { next }, next))
-        };
-        let handled = self.route_editor(id, event, routed);
-        if matches!(key.key, Key::Up | Key::Down) {
-            self.windows.get_mut(&id).expect("known window").text.column = column.map(|x| (session, x));
-        }
-        handled
-    }
-}
-
-fn clipboard_key(key: KeyEvent) -> Option<char> {
-    if !matches!(key.modifiers, Modifiers::CTRL | Modifiers::META) {
-        return None;
-    }
-    match key.key {
-        Key::Char(c) => Some(c.to_ascii_lowercase()),
-        _ => None,
+            },
+        );
+        true
     }
 }
 
@@ -416,14 +335,4 @@ fn document_span(window: &WindowRuntime, region: NodeId, pos: Point, count: u8) 
     let range = text_span(text, caret, character, count, false, false);
     let address = |byte| -> Address { (node, byte) };
     Some([address(range.start), address(range.end)])
-}
-
-fn editor_line(window: &WindowRuntime, node: NodeId, value: &str, caret: usize) -> Range<usize> {
-    let geometry = window.engine.text_geometry(&window.tree, node);
-    let Some(line) = geometry.as_ref().and_then(|geometry| geometry.lines.iter().rfind(|line| line.range.start <= caret)) else {
-        return paragraph_at(value, caret);
-    };
-    let start = line.range.start;
-    let end = line.range.end.min(value.len());
-    start..(start + value[start..end].trim_end_matches(['\r', '\n']).len())
 }
