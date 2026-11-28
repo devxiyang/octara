@@ -10,7 +10,6 @@ mod forms;
 mod images;
 mod interaction;
 mod layers;
-mod map;
 mod markdown;
 mod menus;
 mod search;
@@ -31,7 +30,6 @@ pub const CARDS: &[Card] = &[
     ("drawing", drawing::view),
     ("images", images::view),
     ("layers", layers::view),
-    ("map", map::view),
     ("menus", menus::view),
     ("search", search::view),
     ("web", web::view),

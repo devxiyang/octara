@@ -3,6 +3,7 @@
 use crate::CacheLine;
 use crate::geometry::{Rect, Size};
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -20,8 +21,17 @@ pub enum CachePolicy {
 pub enum ImageSource {
     Pixels(Image),
     Uri(Arc<str>),
-    Encoded { bytes: Arc<[u8]>, mime: Option<Arc<str>> },
-    Resolved { uri: Arc<str>, headers: Arc<[(Arc<str>, Arc<str>)]>, cache: CachePolicy },
+    /// An application-authorized file on the native host.
+    File(Arc<Path>),
+    Encoded {
+        bytes: Arc<[u8]>,
+        mime: Option<Arc<str>>,
+    },
+    Resolved {
+        uri: Arc<str>,
+        headers: Arc<[(Arc<str>, Arc<str>)]>,
+        cache: CachePolicy,
+    },
 }
 
 impl ImageSource {
@@ -48,6 +58,7 @@ impl std::fmt::Debug for ImageSource {
         match self {
             Self::Pixels(image) => f.debug_tuple("Pixels").field(image).finish(),
             Self::Uri(_) => f.write_str("Uri(..)"),
+            Self::File(_) => f.write_str("File(..)"),
             Self::Encoded { bytes, .. } => f.debug_struct("Encoded").field("len", &bytes.len()).finish_non_exhaustive(),
             Self::Resolved { .. } => f.debug_struct("Resolved").field("cache", &self.cache_policy()).finish_non_exhaustive(),
         }
@@ -113,7 +124,7 @@ impl VideoSource {
 }
 
 /// Cached HTTP response data. Freshness times are Unix seconds.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HttpMediaEntry {
     pub bytes: Arc<[u8]>,
     pub mime: Option<Arc<str>>,

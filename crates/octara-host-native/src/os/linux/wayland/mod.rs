@@ -255,7 +255,7 @@ impl OsHost for WaylandHost {
     }
 
     fn open_url(&mut self, url: &str) {
-        let _ = open::that_detached(url);
+        super::open_url(url);
     }
 
     fn read_clipboard(&mut self, accept: ClipboardKinds) -> Option<Vec<ClipboardItem>> {

@@ -11,14 +11,17 @@ mod trace;
 mod window;
 
 pub use config::{LaunchCapture, ShellConfig};
-pub use media::DiskMediaCache;
+pub use media::{DiskMediaCache, MediaCancelRegistration, MediaFetchRequest, MediaFetchResponse, MediaTransport};
 pub use octara_gpu::{SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory};
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use os::apple_media::AppleImageSource;
 pub use os::{HostWake, PlatformEvent};
 
 use octara::runtime::{BuildCx, Input, WindowId, WindowOptions};
 use octara::{App, AppDefinition, IntoView, WindowDefinition};
 use octara_model::capture::FrameReceipt;
 use os::OsHost;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -79,8 +82,18 @@ pub struct NativeAppOptions {
     /// Defaults to the platform's built-in host.
     pub os_host: Option<Box<dyn OsHost>>,
     pub surface_renderer: Option<SurfaceRendererFactory>,
+    /// Overrides the platform's default HTTP image transport.
+    pub media_transport: Option<Arc<dyn MediaTransport>>,
     pub hook: Option<Box<dyn ShellHook>>,
     pub first_frame: Option<Box<dyn FnOnce(FrameReceipt)>>,
+}
+
+impl NativeAppOptions {
+    /// Uses the supplied transport for remote images. The native loader still owns disk caching and decoding.
+    pub fn with_media_transport(mut self, transport: impl MediaTransport) -> Self {
+        self.media_transport = Some(Arc::new(transport));
+        self
+    }
 }
 
 /// Runs a native app with the supplied OS host, renderer and event-loop hook.

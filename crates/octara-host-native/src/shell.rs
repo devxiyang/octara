@@ -74,7 +74,7 @@ struct Shell {
 
 impl Shell {
     fn new(definition: AppDefinition, host: &dyn OsHost, sender: PlatformSender, options: NativeAppOptions) -> Self {
-        let NativeAppOptions { config, surface_renderer, hook, first_frame, .. } = options;
+        let NativeAppOptions { config, surface_renderer, media_transport, hook, first_frame, .. } = options;
         let config = config.unwrap_or_else(ShellConfig::from_env);
         let frame_sources = Rc::new(RefCell::new(BTreeMap::new()));
         let outputs = frame_sources.clone();
@@ -88,7 +88,7 @@ impl Shell {
             ))
         });
         let thread_setup = host.utility_thread_setup().unwrap_or(|| {});
-        app.runtime_mut().set_media_loader(crate::media::NativeMediaLoader { thread_setup });
+        app.runtime_mut().set_media_loader(crate::media::NativeMediaLoader::new(thread_setup, media_transport));
         app.runtime_mut().set_module_host_kind(host.module_surface_kind());
         app.runtime_mut().set_wake(Some(host.wake()));
         Self {

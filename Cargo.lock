@@ -1294,21 +1294,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "icu_locale"
-version = "2.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "785f595c61ef57169a467eeed7b4b6936a66f6cacbb116a96ee86da983251bf4"
-dependencies = [
- "icu_collections",
- "icu_locale_core",
- "icu_locale_data",
- "icu_locale_fallback",
- "icu_provider",
- "tinystr",
- "zerovec",
-]
-
-[[package]]
 name = "icu_locale_core"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1321,12 +1306,6 @@ dependencies = [
  "writeable",
  "zerovec",
 ]
-
-[[package]]
-name = "icu_locale_data"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d37d91460e362a5cf58907cd7ce871411775ee6294e49a5cc8e6cec16dfa75ea"
 
 [[package]]
 name = "icu_locale_fallback"
@@ -1492,25 +1471,6 @@ name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
-
-[[package]]
-name = "is-docker"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
-dependencies = [
- "once_cell",
-]
-
-[[package]]
-name = "is-wsl"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
-dependencies = [
- "is-docker",
- "once_cell",
-]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -1908,16 +1868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc2-contacts"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b034b578389f89a85c055eacc8d8b368be5f04a6c1b07f672bf3aec21d0ef621"
-dependencies = [
- "objc2 0.6.5",
- "objc2-foundation 0.3.2",
-]
-
-[[package]]
 name = "objc2-core-data"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1988,19 +1938,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5d563b38d2b97209f8e861173de434bd0214cf020e3423a52624cd1d989f006"
 dependencies = [
  "objc2 0.6.5",
- "objc2-foundation 0.3.2",
-]
-
-[[package]]
-name = "objc2-core-location"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca347214e24bc973fc025fd0d36ebb179ff30536ed1f80252706db19ee452009"
-dependencies = [
- "block2 0.6.2",
- "dispatch2",
- "objc2 0.6.5",
- "objc2-contacts",
  "objc2-foundation 0.3.2",
 ]
 
@@ -2079,24 +2016,6 @@ checksum = "2a1e6550c4caed348956ce3370c9ffeca70bb1dbed4fa96112e7c6170e074586"
 dependencies = [
  "objc2 0.6.5",
  "objc2-core-foundation",
-]
-
-[[package]]
-name = "objc2-map-kit"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "579edede1c244621cd8229b70ea6e20e6ec3bab5a74afdfd494b446b681e1e64"
-dependencies = [
- "bitflags",
- "block2 0.6.2",
- "dispatch2",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "objc2-contacts",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-location",
- "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -2385,13 +2304,12 @@ dependencies = [
  "dispatch2",
  "futures-lite",
  "image",
+ "libloading",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
- "objc2-core-location",
  "objc2-foundation 0.3.2",
- "objc2-map-kit",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "objc2-ui-kit",
@@ -2400,22 +2318,17 @@ dependencies = [
  "octara-model",
  "octara-pipeline",
  "octara-render",
- "open",
- "pollster",
  "raw-window-handle",
- "reqwest",
  "rustix 1.1.6",
  "serde",
  "serde_json",
  "sha2",
  "smallvec",
  "smithay-client-toolkit",
- "tokio",
  "url",
  "wayland-client",
  "wayland-cursor",
  "wayland-protocols",
- "x11-dl",
  "x11rb",
  "xkbcommon-dl",
  "zbus",
@@ -2580,7 +2493,6 @@ dependencies = [
  "kurbo",
  "octara-fonts",
  "octara-model",
- "pollster",
  "rustc-hash 2.1.3",
  "swash",
  "web-time",
@@ -2615,7 +2527,6 @@ name = "octara-tree"
 version = "0.0.9"
 dependencies = [
  "bitflags",
- "icu_locale",
  "octara-model",
  "rustc-hash 2.1.3",
  "serde_json",
@@ -2671,16 +2582,6 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
-
-[[package]]
-name = "open"
-version = "5.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d8c8b8e725ad26404d6896eb2f064294a0a7b4f1d9120210d85544684c4ca95"
-dependencies = [
- "is-wsl",
- "libc",
-]
 
 [[package]]
 name = "openssl-probe"
@@ -4759,17 +4660,6 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
-
-[[package]]
-name = "x11-dl"
-version = "2.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38735924fedd5314a6e548792904ed8c6de6636285cb9fec04d5b1db85c1516f"
-dependencies = [
- "libc",
- "once_cell",
- "pkg-config",
-]
 
 [[package]]
 name = "x11rb"

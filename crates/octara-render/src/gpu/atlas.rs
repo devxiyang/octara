@@ -766,7 +766,7 @@ mod tests {
         let mut shared = Atlases::default();
         for atlas in [&mut shared, &mut spill] {
             atlas.begin_frame();
-            let image = pollster::block_on(atlas.stage_image(gpu.device(), size, &pixels)).unwrap();
+            let image = crate::block_on(atlas.stage_image(gpu.device(), size, &pixels)).unwrap();
             assert_eq!((image.origin, image.max_lod), ([1 << lod; 2], lod));
             assert!(!image.opaque);
             atlas.queue_uploads(gpu.queue());
@@ -789,7 +789,7 @@ mod tests {
         let pixels: Arc<[u8]> = vec![255; pixel_count].into();
         let mut atlases = Atlases::default();
         let stage = |atlases: &mut Atlases, size| {
-            pollster::block_on(atlases.stage(gpu.device(), Family::Mask, size, pixels.clone(), edge, 0)).unwrap()
+            crate::block_on(atlases.stage(gpu.device(), Family::Mask, size, pixels.clone(), edge, 0)).unwrap()
         };
 
         atlases.begin_frame();
@@ -829,7 +829,7 @@ mod tests {
         let pixels: Arc<[u8]> = vec![255; bytes as usize].into();
         let mut atlases = Atlases { cache_limit: bytes, frame_limit: 2 * bytes, ..Atlases::default() };
         let upload =
-            |atlases: &mut Atlases| pollster::block_on(atlases.stage(gpu.device(), Family::Glyph, [width, 1], pixels.clone(), width, 0));
+            |atlases: &mut Atlases| crate::block_on(atlases.stage(gpu.device(), Family::Glyph, [width, 1], pixels.clone(), width, 0));
         atlases.begin_frame();
         let first = upload(&mut atlases).unwrap();
         let second = upload(&mut atlases).unwrap();

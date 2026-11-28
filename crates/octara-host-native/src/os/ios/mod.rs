@@ -9,6 +9,7 @@ mod scene;
 mod view;
 
 use super::apple_frame_clock::{DisplayClock, retry_on_clock};
+use super::apple_media::encode_oriented_png;
 use super::apple_metal::set_transactional;
 use crate::os::{
     ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent,
@@ -28,7 +29,8 @@ use objc2_ui_kit::{
     UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification,
     UIAccessibilitySpeakScreenStatusDidChangeNotification, UIAccessibilitySwitchControlStatusDidChangeNotification,
     UIAccessibilityVoiceOverStatusDidChangeNotification, UIApplication, UIColor, UIContentSizeCategoryDidChangeNotification,
-    UICoordinateSpace, UIFont, UIFontTextStyleBody, UIPasteboard, UIScreen, UIStatusBarStyle, UIUserInterfaceStyle, UIView,
+    UICoordinateSpace, UIFont, UIFontTextStyleBody, UIImage, UIImageOrientation, UIPasteboard, UIScreen, UIStatusBarStyle,
+    UIUserInterfaceStyle, UIView,
 };
 use octara::WindowOptions;
 use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
@@ -529,9 +531,7 @@ fn read_clipboard(accept: ClipboardKinds) -> Vec<ClipboardItem> {
         if accept.contains(ClipboardKinds::IMAGE)
             && let Some(images) = pasteboard.images()
         {
-            items.extend(images.iter().filter_map(|image| {
-                Some(ClipboardItem::Image { media_type: "image/png".into(), bytes: image.png_representation()?.to_vec() })
-            }));
+            items.extend(images.iter().filter_map(|image| clipboard_png(&image)));
         }
         if accept.contains(ClipboardKinds::FILES)
             && let Some(urls) = pasteboard.URLs()
@@ -543,6 +543,26 @@ fn read_clipboard(accept: ClipboardKinds) -> Vec<ClipboardItem> {
         }
     }
     items
+}
+
+fn clipboard_png(image: &UIImage) -> Option<ClipboardItem> {
+    // SAFETY: This helper runs on the main thread as part of a pasteboard read.
+    let bytes = if let Some(cg_image) = unsafe { image.CGImage() } {
+        let orientation = match unsafe { image.imageOrientation() } {
+            UIImageOrientation::UpMirrored => 2,
+            UIImageOrientation::Down => 3,
+            UIImageOrientation::DownMirrored => 4,
+            UIImageOrientation::LeftMirrored => 5,
+            UIImageOrientation::Right => 6,
+            UIImageOrientation::RightMirrored => 7,
+            UIImageOrientation::Left => 8,
+            _ => 1,
+        };
+        encode_oriented_png(&cg_image, orientation).ok()?
+    } else {
+        image.png_representation()?.to_vec()
+    };
+    Some(ClipboardItem::Image { media_type: "image/png".into(), bytes })
 }
 
 fn has_paste_items() -> bool {

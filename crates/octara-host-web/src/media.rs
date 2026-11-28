@@ -24,6 +24,7 @@ impl MediaLoader for BrowserMediaLoader {
             let result = match request.source {
                 ImageSource::Pixels(image) => return Ok(LoadedMedia::pixels(image)),
                 ImageSource::Uri(uri) => direct(&uri).await,
+                ImageSource::File(_) => return Err(Arc::from("Local image files require a native host")),
                 ImageSource::Encoded { bytes, mime } => {
                     if bytes.len() > 64 * 1024 * 1024 {
                         return Err(Arc::from("Encoded image exceeds the byte limit"));

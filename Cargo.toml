@@ -43,19 +43,15 @@ categories = ["gui"]
 
 [workspace.dependencies]
 block2 = "0.6.2"
-objc2-map-kit = "0.3.2"
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
-objc2-core-location = "0.3.2"
 objc2-metal = { version = "0.3.2", default-features = false }
 objc2-quartz-core = "0.3.2"
 objc2-ui-kit = { version = "0.3.2", default-features = false }
 objc2-web-kit = "0.3.2"
-open = "5.4.5"
 rfd = "0.18.0"
 accesskit = { version = "0.25.2", features = ["serde"] }
 linebender_resource_handle = "0.1.1"
-icu_locale = { version = "~2.3.0", default-features = false, features = ["compiled_data"] }
 parley = { version = "0.13.0", default-features = false, features = ["std", "complex-scripts"] }
 png = "0.18.1"
 taffy = { version = "0.15.1", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
@@ -86,7 +82,6 @@ aho-corasick = "1.1.4"
 memchr = "2.8.3"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 roxmltree = "0.21.2"
-pollster = "1.0.3"
 unicode-segmentation = "1.13.3"
 wgpu = "30.0.2"
 octara = { path = "crates/octara", version = "0.0.9" }

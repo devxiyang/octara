@@ -9,7 +9,6 @@ mod editor;
 mod input;
 mod menus;
 mod metal_frame;
-mod native;
 mod preferences;
 mod services;
 mod view;
@@ -18,26 +17,23 @@ mod window;
 use super::apple_frame_clock::{DisplayClock, retry_on_clock};
 use super::{
     Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent, PlatformSender,
-    ServiceCleanup, ShellDriver, WindowAccessibility, WindowAsks, WindowHostEvent, WindowNativeViews, WindowPresentation, WindowTextInput,
-    reply, surface_drawable,
+    ServiceCleanup, ShellDriver, WindowAccessibility, WindowAsks, WindowPresentation, WindowTextInput, reply, surface_drawable,
 };
 use application::{Application, EventQueue, Launch};
 use objc2::rc::Retained;
 use objc2::{ClassType, MainThreadMarker};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSColor,
-    NSRequestUserAttentionType, NSView, NSWindow, NSWindowStyleMask, NSWorkspace,
+    NSRequestUserAttentionType, NSView, NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{NSPoint, NSRect, NSString, NSURL};
 use objc2_quartz_core::CATransaction;
 use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
-use octara::runtime::{Input, WindowId};
+use octara::runtime::WindowId;
 use octara::{StatusBarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
-use octara_model::geometry::{Size, WindowViewport};
-use octara_model::identity::NativeId;
+use octara_model::geometry::WindowViewport;
 use octara_model::input::{CursorStyle, DragItem, HostReply, InteractionEvent, PasteEvent};
-use octara_model::native::{NativeChange, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::theme::ColorScheme;
 use octara_model::window::{UserAttention, WindowLevel};
@@ -156,8 +152,6 @@ impl OsHost for MacHost {
         let chrome = chrome::Chrome::new(window.clone(), fullscreen);
         self.routing.borrow_mut().insert(NonNull::from(&*window), id);
         let metal = backend.contains(wgpu::Backends::METAL);
-        let wake = sender.wake();
-        let native = native::Views::new(container.clone(), mtm, metal, move || wake());
         let clock = (metal && !config.manual_clock && config.metal_acquire_delay.is_zero())
             .then(|| DisplayClock::new(&view.clone().into_super(), id, sender.clone()));
         let acquisition = metal.then(|| {
@@ -178,7 +172,7 @@ impl OsHost for MacHost {
             chrome,
             editor,
             accessibility,
-            native,
+            vibrancy: None,
             asks: Rc::default(),
             clock,
             acquisition,
@@ -252,12 +246,37 @@ struct MacWindow {
     chrome: chrome::Chrome,
     editor: editor::Editor,
     accessibility: view::Accessibility,
-    native: native::Views,
+    vibrancy: Option<Retained<NSVisualEffectView>>,
     asks: Rc<asks::Shown>,
     clock: Option<DisplayClock>,
     acquisition: Option<acquisition::Acquisition>,
     transactional: bool,
     activate_on_show: bool,
+}
+
+impl MacWindow {
+    fn set_vibrancy(&mut self, material: WindowMaterial) {
+        let WindowMaterial::Vibrancy(material) = material else {
+            if let Some(effect) = self.vibrancy.take() {
+                effect.removeFromSuperview();
+            }
+            return;
+        };
+        let material = chrome::visual_effect_material(material);
+        if let Some(effect) = &self.vibrancy {
+            if effect.material() != material {
+                effect.setMaterial(material);
+            }
+            return;
+        }
+        let effect = chrome::visual_effect(&self.container, material);
+        self.container.addSubview_positioned_relativeTo(&effect, NSWindowOrderingMode::Below, None);
+        if let Some(layer) = effect.layer() {
+            // Module underlays use z=0 between this backdrop and Metal.
+            layer.setZPosition(-1.0);
+        }
+        self.vibrancy = Some(effect);
+    }
 }
 
 // SAFETY: MacWindow retains the NSWindow, content container, and render view on AppKit's
@@ -335,14 +354,11 @@ unsafe impl OsWindow for MacWindow {
             }
         };
         self.window.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
-        self.native.set_vibrancy(match material {
-            WindowMaterial::Opaque => None,
-            WindowMaterial::Vibrancy(material) => Some(material),
-        });
+        self.set_vibrancy(material);
     }
 
     fn window_is_vibrant(&self) -> bool {
-        self.native.has_vibrancy()
+        self.vibrancy.is_some()
     }
 
     fn window_chrome(&mut self) -> WindowChrome {
@@ -385,10 +401,6 @@ unsafe impl OsWindow for MacWindow {
     }
 
     fn asks(&mut self) -> Option<&mut dyn WindowAsks> {
-        Some(self)
-    }
-
-    fn native_views(&mut self) -> Option<&mut dyn WindowNativeViews> {
         Some(self)
     }
 
@@ -447,51 +459,6 @@ impl WindowAsks for MacWindow {
     }
 }
 
-impl WindowNativeViews for MacWindow {
-    fn sync_native_views(&mut self, changes: &[NativeChange]) {
-        self.native.sync(changes);
-    }
-
-    fn shows_native(&self, kind: &str, slot: NativeSlot) -> bool {
-        self.native.shows(kind, slot)
-    }
-
-    fn measure_native(&mut self, request: NativeMeasureRequest) -> Option<Size> {
-        self.native.measure(request.ticket.id())
-    }
-
-    fn snapshot_native(&mut self, request: NativeSnapshotRequest) {
-        if let Err(error) = self.native.snapshot(request) {
-            reply(&self.sender, self.id, HostReply::NativeSnapshot { request, snapshot: Err(error) });
-        }
-    }
-
-    fn native_busy(&self, id: NativeId) -> Option<String> {
-        self.native.busy(id)
-    }
-
-    fn has_underlay(&self) -> bool {
-        self.native.has_underlay()
-    }
-
-    fn drain_native_events(&mut self, out: &mut Vec<WindowHostEvent>) {
-        out.extend(
-            self.native
-                .inbox()
-                .take_snapshots()
-                .into_iter()
-                .map(|(request, snapshot)| Input::Host(HostReply::NativeSnapshot { request, snapshot })),
-        );
-        for (id, event) in self.native.inbox().take() {
-            self.sender.send_event(PlatformEvent::Native { window: self.id, id, event });
-        }
-    }
-
-    fn inspect_native_views(&self) -> serde_json::Value {
-        self.native.inspect()
-    }
-}
-
 impl WindowPresentation for MacWindow {
     fn externally_paced(&self) -> bool {
         self.clock.as_ref().is_some_and(DisplayClock::externally_paced)
@@ -507,12 +474,8 @@ impl WindowPresentation for MacWindow {
         self.acquisition.as_mut().is_none_or(acquisition::Acquisition::reset)
     }
 
-    fn set_transactional_presentation(&mut self, native_rev: u64, transactional: bool) {
-        self.transactional = self.native.prepare(native_rev) || transactional;
-    }
-
-    fn abandon_native_view_frame(&mut self) {
-        self.native.abandon();
+    fn set_transactional_presentation(&mut self, _native_rev: u64, transactional: bool) {
+        self.transactional = transactional;
     }
 
     fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor, from_clock: bool) -> DrawableAcquisition {
@@ -533,7 +496,7 @@ impl WindowPresentation for MacWindow {
         &mut self,
         drawable: Box<dyn Drawable>,
         queue: &wgpu::Queue,
-        native_rev: u64,
+        _native_rev: u64,
         commit_native_views: &mut dyn FnMut(),
     ) -> Result<(), String> {
         if !self.transactional {
@@ -543,7 +506,6 @@ impl WindowPresentation for MacWindow {
         CATransaction::setDisableActions(true);
         let _transaction = std::mem::DropGuard::new((), |()| CATransaction::commit());
         drawable.present(queue)?;
-        self.native.commit(native_rev);
         commit_native_views();
         Ok(())
     }
@@ -554,5 +516,6 @@ impl Drop for MacWindow {
         self.window.setDelegate(None);
         self.close();
         self.routing.borrow_mut().remove(&NonNull::from(&*self.window));
+        self.set_vibrancy(WindowMaterial::Opaque);
     }
 }

@@ -9,7 +9,7 @@ Build and run from the repository root. `octara-examples` contains the example a
 | Chat replies, virtualized rows, and an editor | `cargo run -p octara-examples-desktop --bin window -- chat_virtual` |
 | Kit forms, comboboxes, and popups | `cargo run -p octara-examples-desktop --bin window -- showcase forms` or `choices`, `interaction`, `controls` |
 | Release workspace with a Navigator, tree view, data table, drag-and-drop reordering, command palette, context menu, and toast | `cargo run -p octara-examples-desktop --bin window -- showcase workspace` |
-| Live Markdown, selectable rich text, canvas, maps, and native WebView | `cargo run -p octara-examples-desktop --bin window -- showcase markdown` or `text`, `drawing`, `map`, `web` |
+| Live Markdown, selectable rich text, canvas, and native WebView | `cargo run -p octara-examples-desktop --bin window -- showcase markdown` or `text`, `drawing`, `web` |
 | Multiple windows and per-window undo history | `cargo run -p octara-examples-desktop --bin window -- windows` or `undo` |
 | Virtualized row geometry and offscreen editors | `cargo run -p octara-examples-desktop --bin virtual_geometry` or `--bin virtual_interaction` |
 | System input methods and marked text | `cargo run -p octara-examples-desktop --bin ime`. [IME walkthrough](IME.md) |

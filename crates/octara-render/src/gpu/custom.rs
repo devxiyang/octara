@@ -689,7 +689,7 @@ pub(super) async fn checked_async<T>(device: &wgpu::Device, record: impl FnOnce(
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub fn with_error_scopes<T>(device: &wgpu::Device, record: impl FnOnce() -> T) -> (T, Option<wgpu::Error>) {
-    pollster::block_on(with_error_scopes_async(device, record))
+    crate::block_on(with_error_scopes_async(device, record))
 }
 
 pub(super) async fn with_error_scopes_async<T>(device: &wgpu::Device, record: impl FnOnce() -> T) -> (T, Option<wgpu::Error>) {

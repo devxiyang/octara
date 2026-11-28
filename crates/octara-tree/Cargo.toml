@@ -14,7 +14,6 @@ publish = true
 
 [dependencies]
 bitflags.workspace = true
-icu_locale.workspace = true
 octara-model.workspace = true
 rustc-hash.workspace = true
 serde_json.workspace = true

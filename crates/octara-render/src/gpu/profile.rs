@@ -30,7 +30,7 @@ impl GpuRenderer {
     /// blocking and submits any ready resolves in one batch. Returns whether work remains.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn poll_profile(&mut self) -> bool {
-        pollster::block_on(self.timestamps.poll_and_flush(&self.device, &self.queue))
+        crate::block_on(self.timestamps.poll_and_flush(&self.device, &self.queue))
     }
 
     #[doc(hidden)]
@@ -46,7 +46,7 @@ impl GpuRenderer {
     #[doc(hidden)]
     #[cfg(not(target_arch = "wasm32"))]
     pub fn flush_profile_resolves(&mut self) -> Result<usize, wgpu::Error> {
-        pollster::block_on(self.timestamps.flush_resolves(&self.device, &self.queue))
+        crate::block_on(self.timestamps.flush_resolves(&self.device, &self.queue))
     }
 
     /// Submits device work that was recorded independently of a window frame.
@@ -56,7 +56,7 @@ impl GpuRenderer {
         &mut self,
         commands: impl IntoIterator<Item = wgpu::CommandBuffer>,
     ) -> Result<wgpu::SubmissionIndex, wgpu::Error> {
-        pollster::block_on(self.submit_commands_async(commands))
+        crate::block_on(self.submit_commands_async(commands))
     }
 
     /// Submits validated device work recorded independently of a frame.

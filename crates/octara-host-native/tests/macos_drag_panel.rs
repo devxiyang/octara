@@ -30,7 +30,6 @@ mod macos {
     use octara_host_native::ShellConfig;
     use octara_host_native::os::{LoopState, OsHost, OsWindow, OsWindowContext, PlatformEvent, PlatformSender, PointerPhase, ShellDriver};
     use octara_render::wgpu;
-    use std::io::Cursor;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -186,12 +185,11 @@ mod macos {
     }
 
     fn drag_items() -> Vec<DragItem> {
-        let mut png = Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(2, 3).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png = include_bytes!("../src/os/apple_media/fixtures/sample.png");
         vec![
             DragItem::Text(DRAG_TEXT.into()),
             DragItem::File(sample_file()),
-            DragItem::Image { media_type: "image/png".into(), bytes: png.into_inner() },
+            DragItem::Image { media_type: "image/png".into(), bytes: png.to_vec() },
         ]
     }
 

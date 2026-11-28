@@ -96,8 +96,8 @@ impl GpuRenderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Option<GpuRenderer> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
+        let adapter = crate::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let (device, queue) = crate::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
         Some(Self::with_device(device, queue))
     }
 

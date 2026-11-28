@@ -34,7 +34,7 @@ impl Device {
         surface_renderer: Option<&SurfaceRendererFactory>,
         thread_setup: fn(),
     ) -> Result<Self, String> {
-        pollster::block_on(async {
+        octara_render::block_on(async {
             let adapter = instance
                 .request_adapter(&wgpu::RequestAdapterOptions {
                     power_preference: wgpu::PowerPreference::HighPerformance,

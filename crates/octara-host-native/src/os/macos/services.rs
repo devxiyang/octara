@@ -1,9 +1,10 @@
 //! AppKit pasteboard services.
 
-use objc2::{AllocAnyThread, ClassType, rc::Retained, runtime::ProtocolObject};
+use crate::os::apple_media;
+use objc2::{ClassType, rc::Retained, runtime::ProtocolObject};
 use objc2_app_kit::{
-    NSBitmapFormat, NSBitmapImageFileType, NSBitmapImageRep, NSCalibratedRGBColorSpace, NSPasteboard, NSPasteboardItem,
-    NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
+    NSPasteboard, NSPasteboardItem, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF,
+    NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
 };
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber, NSString, NSURL};
 use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError};
@@ -57,10 +58,10 @@ fn clipboard_image(data: impl Fn(&NSString) -> Option<Retained<NSData>>) -> Opti
         }
     }
     let data = data(tiff)?;
-    let rep = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &data)?;
-    // SAFETY: The PNG encoder accepts an empty bitmap property dictionary.
-    let png = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }?;
-    Some(ClipboardItem::Image { media_type: "image/png".into(), bytes: png.to_vec() })
+    // SAFETY: The pasteboard returns data that is not mutated during the decode.
+    let image = apple_media::decode(unsafe { data.as_bytes_unchecked() }).ok()?;
+    let bytes = apple_media::encode_png(&image.frame()).ok()?;
+    Some(ClipboardItem::Image { media_type: "image/png".into(), bytes })
 }
 
 pub(super) fn write_clipboard(items: &[ClipboardItem]) -> Result<(), ServiceError> {
@@ -98,38 +99,8 @@ fn write_items(pasteboard: &NSPasteboard, items: &[ClipboardItem]) -> Result<(),
 }
 
 pub(super) fn write_image(image: &Image) {
-    let frame = image.frame();
-    if frame.width == 0 || frame.height == 0 {
-        return;
-    }
-    let stride = frame.width as isize * 4;
-    // SAFETY: AppKit owns the storage it allocates for these dimensions and row width.
-    let Some(rep) = (unsafe {
-        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bitmapFormat_bytesPerRow_bitsPerPixel(
-            NSBitmapImageRep::alloc(),
-            std::ptr::null_mut(),
-            frame.width as isize,
-            frame.height as isize,
-            8,
-            4,
-            true,
-            false,
-            NSCalibratedRGBColorSpace,
-            NSBitmapFormat::AlphaNonpremultiplied,
-            stride,
-            32,
-        )
-    }) else {
-        return;
-    };
-    let data = rep.bitmapData();
-    if data.is_null() || rep.bytesPerRow() != stride {
-        return;
-    }
-    // SAFETY: The bitmap dimensions and stride match the length of the image's RGBA bytes.
-    unsafe { std::ptr::copy_nonoverlapping(frame.rgba.as_ptr(), data, frame.rgba.len()) };
-    // SAFETY: PNG representation accepts an empty bitmap property dictionary.
-    let Some(png) = (unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }) else { return };
+    let Ok(png) = apple_media::encode_png(&image.frame()) else { return };
+    let png = NSData::with_bytes(&png);
     let pasteboard = NSPasteboard::generalPasteboard();
     pasteboard.clearContents();
     // SAFETY: PNG is the representation encoded above.
@@ -139,13 +110,13 @@ pub(super) fn write_image(image: &Image) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::NSBitmapImageRep;
 
     #[test]
     fn clipboard_write_offers_text_and_png_in_one_update() {
         let pasteboard = NSPasteboard::pasteboardWithUniqueName();
-        let mut bytes = Vec::new();
-        PngEncoder::new(&mut bytes).write_image(&[45, 120, 190, 224], 1, 1, ExtendedColorType::Rgba8).unwrap();
+        let bytes = apple_media::encode_png(&Image::rgba(1, 1, [45, 120, 190, 224]).frame()).unwrap();
         let items = [ClipboardItem::Text("Clipboard example".into()), ClipboardItem::Image { media_type: "image/png".into(), bytes }];
         write_items(&pasteboard, &items).unwrap();
 
@@ -161,5 +132,21 @@ mod tests {
         let image = clipboard_image(|kind| entries.objectAtIndex(1).dataForType(kind)).unwrap();
         assert_eq!([ClipboardItem::Text(text.to_string()), image], items);
         pasteboard.clearContents();
+    }
+
+    #[test]
+    fn clipboard_transcodes_tiff_to_png() {
+        let png = NSData::with_bytes(include_bytes!("../apple_media/fixtures/sample.png"));
+        let bitmap = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &png).unwrap();
+        let tiff = bitmap.TIFFRepresentation().unwrap();
+        let entry = NSPasteboardItem::new();
+        // SAFETY: AppKit exports a static type for the TIFF representation.
+        assert!(entry.setData_forType(&tiff, unsafe { NSPasteboardTypeTIFF }));
+        let ClipboardItem::Image { media_type, bytes } = clipboard_image(|kind| entry.dataForType(kind)).unwrap() else {
+            panic!("Expected a clipboard image");
+        };
+        assert_eq!(media_type, "image/png");
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(apple_media::decode(&bytes).unwrap().size(), (24, 16));
     }
 }

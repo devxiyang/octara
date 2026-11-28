@@ -133,7 +133,7 @@ crates/octara-host-native/src/
     mod.rs            # OsHost & OsWindow trait definitions + single factory `create_os_host()`
     apple_frame_clock.rs  # Shared CADisplayLink driver with on-demand drawable acquisition
     macos/            # AppKit NSTextInputClient, async Metal startup drawable acquisition,
-                      # NSView attachment and MapKit underlay, NSMenu bar, AppKit prompts, secure input
+                      # NSView attachment, module view composition, NSMenu bar, AppKit prompts, secure input
     ios/              # UIKit Scene, UITextField/UITextView sessions, interactive swipe-back, safe area
     desktop/          # Linux & Windows: winit IME adapter, arboard clipboard, rfd file picker, open::that_detached
 ```

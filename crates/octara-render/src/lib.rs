@@ -7,6 +7,8 @@
 //!   The built-in pipelines use the reference renderer's [`shape`] formulas, [`glyphs`] and
 //!   [`paths`] rasterizers, and image mip generation.
 
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+mod blocking;
 pub mod cpu;
 pub mod glyphs;
 #[cfg(feature = "gpu")]
@@ -16,6 +18,9 @@ pub mod paths;
 mod pixels;
 pub mod shape;
 
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub use blocking::block_on;
 pub use cpu::CpuRenderer;
 #[cfg(feature = "gpu")]
 pub use gpu::{GpuRenderer, RecordedFrame, SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory, plan};

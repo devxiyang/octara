@@ -48,7 +48,7 @@ impl RecordedCapture<'_> {
     /// Submits the capture and starts mapping its pixel buffer.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn submit(self) -> Result<Readback, String> {
-        pollster::block_on(self.submit_async())
+        crate::block_on(self.submit_async())
     }
 
     /// Submits the capture, validates the submission and starts mapping its pixel buffer.
@@ -162,7 +162,7 @@ impl GpuRenderer {
         sample: Option<PaintSample>,
         wake: impl FnOnce() + Send + 'static,
     ) -> Result<RecordedCapture<'_>, String> {
-        pollster::block_on(self.record_capture_async(list, scale, sample, wake))
+        crate::block_on(self.record_capture_async(list, scale, sample, wake))
     }
 
     /// Records an offscreen drawing and schedules a signal once its pixels are mapped.

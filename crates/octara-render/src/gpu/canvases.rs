@@ -167,7 +167,7 @@ impl GpuRenderer {
         revision: u64,
         current: impl FnOnce() -> bool,
     ) -> Result<bool, wgpu::Error> {
-        pollster::block_on(self.prepare_next_canvas_async(updates, revision, current))
+        crate::block_on(self.prepare_next_canvas_async(updates, revision, current))
     }
 
     pub async fn prepare_next_canvas_async(

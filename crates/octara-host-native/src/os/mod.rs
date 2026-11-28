@@ -31,13 +31,13 @@ pub use events::{FileDropPhase, HostWake, LoopState, PlatformEvent, PlatformKey,
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_frame_clock;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-mod apple_media;
+pub(crate) mod apple_media;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_metal;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_preferences;
-#[cfg(target_os = "macos")]
-mod corners;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub(crate) mod apple_transport;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(target_os = "linux")]
@@ -60,16 +60,6 @@ use windows as platform;
 
 pub fn create_os_host() -> Box<dyn OsHost> {
     platform::create()
-}
-
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub(crate) fn decode_avif(bytes: &[u8]) -> Result<Image, &'static str> {
-    apple_media::decode_avif(bytes).ok_or("Unsupported, oversized, or damaged AVIF image")
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-pub(crate) fn decode_avif(_: &[u8]) -> Result<Image, &'static str> {
-    Err("The built-in decoder on this platform does not support AVIF")
 }
 
 pub struct OsWindowContext<'a> {

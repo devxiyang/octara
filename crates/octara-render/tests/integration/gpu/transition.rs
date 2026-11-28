@@ -111,13 +111,13 @@ fn crossfade(old: TransitionInput, new: TransitionInput) -> PaintProgram {
 #[test]
 fn gpu_crossfades_two_local_outputs_in_window_coordinates() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Ok(adapter) = octara_render::block_on(instance.request_adapter(&Default::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
     let info = adapter.get_info();
     eprintln!("transition adapter: {} ({:?})", info.name, info.backend);
-    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).expect("a GPU device");
+    let (device, queue) = octara_render::block_on(adapter.request_device(&Default::default())).expect("a GPU device");
     let mut gpu = GpuRenderer::with_device(device, queue);
 
     // Keep the previous submission's texture while producing the incoming panel on the same queue.

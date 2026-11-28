@@ -78,19 +78,7 @@ impl Keyboard {
         if let Some(state) = &self.state {
             return state.keysym(event.detail, event.state);
         }
-        let mut modifiers = 0;
-        let mut keysym = 0;
-        // SAFETY: The display is live and both XKB outputs point to writable values.
-        unsafe {
-            (native.display.xlib.XkbLookupKeySym)(
-                native.display.ptr.as_ptr(),
-                event.detail,
-                u32::from(u16::from(event.state)),
-                &mut modifiers,
-                &mut keysym,
-            );
-        }
-        keysym as u32
+        native.display.lookup_keysym(event.detail, event.state)
     }
 
     fn press(&mut self, native: &Native, event: &KeyPressEvent) -> (KeySymbol, PlatformKey) {
@@ -320,18 +308,7 @@ pub(super) fn translate(native: &Native, keyboard: &mut Keyboard, event: Event) 
             None
         }
         Event::MappingNotify(event) => {
-            let mut event = x11_dl::xlib::XMappingEvent {
-                type_: x11_dl::xlib::MappingNotify,
-                serial: 0,
-                send_event: 0,
-                display: native.display.ptr.as_ptr(),
-                event: 0,
-                request: u8::from(event.request).into(),
-                first_keycode: event.first_keycode.into(),
-                count: event.count.into(),
-            };
-            // SAFETY: This event mirrors an X11 MappingNotify from the current display.
-            unsafe { (native.display.xlib.XRefreshKeyboardMapping)(&mut event) };
+            native.display.refresh_keyboard_mapping(event);
             keyboard.refresh(native);
             None
         }

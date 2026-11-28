@@ -4,6 +4,7 @@ mod clipboard;
 mod drag;
 mod input;
 mod window;
+mod xlib;
 
 use super::compose::KeySymbol;
 use super::preferences;
@@ -18,17 +19,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::ptr::{NonNull, null};
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
-use x11_dl::{xlib, xlib_xcb};
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{Atom, AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, Screen, Window};
 use x11rb::xcb_ffi::XCBConnection;
+use xlib::Display;
 
 type XResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -56,18 +56,6 @@ pub(super) fn create() -> Box<dyn OsHost> {
     Box::new(X11Host { clipboard: Rc::new(Clipboard::new()), native: None, sender: Arc::new(OnceLock::new()) })
 }
 
-struct Display {
-    xlib: xlib::Xlib,
-    ptr: NonNull<xlib::Display>,
-}
-
-impl Drop for Display {
-    fn drop(&mut self) {
-        // SAFETY: Display owns this connection. Its XCB wrapper has already been dropped.
-        unsafe { (self.xlib.XCloseDisplay)(self.ptr.as_ptr()) };
-    }
-}
-
 struct Native {
     // Drop the borrowed XCB wrapper before closing the owning Xlib display.
     conn: XCBConnection,
@@ -85,21 +73,10 @@ struct Native {
 
 impl Native {
     fn connect() -> XResult<Self> {
-        let xlib = xlib::Xlib::open()?;
-        let xlib_xcb = xlib_xcb::Xlib_xcb::open()?;
-        // SAFETY: This initializes thread support before opening the display. GPU and UI
-        // threads can use the same display. XCB alone consumes its event queue.
-        let (conn, display, screen) = unsafe {
-            if (xlib.XInitThreads)() == 0 {
-                return Err("Xlib thread initialization failed".into());
-            }
-            let ptr = NonNull::new((xlib.XOpenDisplay)(null())).ok_or("Could not open the X11 display")?;
-            let display = Display { xlib, ptr };
-            let screen = (display.xlib.XDefaultScreen)(ptr.as_ptr()) as usize;
-            let raw = NonNull::new((xlib_xcb.XGetXCBConnection)(ptr.as_ptr())).ok_or("Xlib did not provide an XCB connection")?;
-            (xlib_xcb.XSetEventQueueOwner)(ptr.as_ptr(), xlib_xcb::XEventQueueOwner::XCBOwnsEventQueue);
-            (XCBConnection::from_raw_xcb_connection(raw.as_ptr(), false)?, display, screen)
-        };
+        let (display, screen) = Display::open()?;
+        // SAFETY: The sole XCB wrapper is dropped before the display, both during
+        // initialization and once stored in Native.
+        let conn = unsafe { display.borrow_xcb()? };
         let root = conn.setup().roots[screen].root;
         let atoms = Atoms::new(&conn)?.reply()?;
         conn.change_window_attributes(
@@ -222,7 +199,7 @@ impl OsHost for X11Host {
     }
 
     fn open_url(&mut self, url: &str) {
-        let _ = open::that_detached(url);
+        super::open_url(url);
     }
 
     fn read_clipboard(&mut self, accept: ClipboardKinds) -> Option<Vec<ClipboardItem>> {

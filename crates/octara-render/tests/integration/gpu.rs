@@ -375,12 +375,12 @@ fn a_published_frame_rebuilds_its_resources_on_a_replacement_device() {
     use std::time::Duration;
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+    let Ok(adapter) = octara_render::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
     let device = |adapter: &wgpu::Adapter| {
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a GPU device");
+        let (device, queue) = octara_render::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a GPU device");
         GpuRenderer::with_device(device, queue)
     };
     let mut gpu = device(&adapter);
@@ -457,7 +457,7 @@ fn a_published_frame_rebuilds_its_resources_on_a_replacement_device() {
     assert!(gpu.paint_with_receipts(&display, 1.0, sample).is_err());
     drop(gpu);
 
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("a live adapter");
+    let adapter = octara_render::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("a live adapter");
     let mut replacement = device(&adapter);
     assert_ne!(replacement.device(), &lost);
     let restored = replacement.paint_with_receipts(&display, 1.0, sample).unwrap().picture;
@@ -545,14 +545,14 @@ fn gpu_draws_glyphs_and_paths_across_mask_pages_without_reuploading() {
     use octara_render::gpu::{FrameInput, FrameTarget, OutputColor};
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+    let Ok(adapter) = octara_render::block_on(instance.request_adapter(&Default::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
     let edge = 128;
     let limits = wgpu::Limits { max_texture_dimension_2d: edge, ..Default::default() };
     let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_limits: limits, ..Default::default() })).unwrap();
+        octara_render::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_limits: limits, ..Default::default() })).unwrap();
     let mut gpu = GpuRenderer::with_device(device, queue);
     let mut list = list(
         (edge as f32, edge as f32),

@@ -2,7 +2,6 @@
 
 use crate::tables::{TableMask, ThemeScope};
 use crate::{NodeFlags, NodeId, NodeKind, StyleInvalidation, Tree, TreeDelta};
-use icu_locale::{Locale, LocaleDirectionality};
 use octara_model::style::{Direction, Inherited, LayoutStyle, State};
 use octara_model::window::SystemPreferences;
 use rustc_hash::FxHashSet;
@@ -10,12 +9,53 @@ use smallvec::SmallVec;
 
 use super::{ComputedStyle, StyleResolver, sensitivity};
 
+// Horizontal RTL scripts and primary-language defaults from CLDR 48 script metadata
+// and language-only likelySubtags. No script inference from regions or extensions.
+const RTL_SCRIPTS: &[&str] = &[
+    "Adlm", "Arab", "Armi", "Avst", "Chrs", "Cprt", "Elym", "Gara", "Hatr", "Hebr", "Hung", "Khar", "Lydi", "Mand", "Mani", "Mend", "Merc",
+    "Mero", "Narb", "Nbat", "Nkoo", "Orkh", "Ougr", "Palm", "Phli", "Phlp", "Phnx", "Prti", "Rohg", "Samr", "Sarb", "Sidt", "Sogd", "Sogo",
+    "Syrc", "Thaa", "Yezi",
+];
+const RTL_LANGUAGES: &[&str] = &[
+    "aao", "abh", "abv", "acm", "acq", "acw", "acx", "adf", "ae", "aeb", "aec", "aee", "aeq", "afb", "aib", "aii", "aij", "aiq", "amw",
+    "apc", "apd", "ar", "arc", "arq", "ars", "ary", "arz", "ask", "atn", "auj", "auz", "avd", "avl", "ayh", "ayl", "ayn", "ayp", "azb",
+    "bal", "bdz", "bej", "bft", "bgn", "bgp", "bhe", "bhm", "bhn", "bjf", "bjm", "bqi", "brh", "brk", "bsh", "bsk", "chg", "cja", "ckb",
+    "clh", "czk", "dcc", "def", "deh", "dgl", "dmk", "dml", "dv", "ecy", "esh", "fa", "fay", "faz", "fia", "fub", "gbz", "ggg", "gha",
+    "ghr", "gig", "gjk", "gju", "glh", "glk", "grr", "gwc", "gwf", "gwt", "gzi", "hac", "haz", "hbo", "he", "hkh", "hnd", "hno", "hoh",
+    "hrt", "hrz", "hss", "huy", "isk", "itk", "iw", "jad", "jat", "jbe", "jbn", "jdg", "ji", "jnd", "jog", "jpa", "jpr", "jrb", "jye",
+    "kbu", "kby", "kcy", "kfm", "khw", "klj", "kmz", "kqd", "ks", "ktl", "kvx", "kxp", "lad", "lah", "lhs", "lki", "lrc", "lrk", "lrl",
+    "lsa", "lsd", "lss", "luv", "luz", "mby", "mde", "mey", "mfa", "mfi", "mhj", "mid", "mki", "mnj", "mve", "mvy", "myz", "mzb", "mzn",
+    "nli", "nlm", "nqo", "ntz", "nyq", "oar", "obm", "odk", "oru", "ota", "otk", "oui", "pal", "pbt", "pgd", "phl", "phn", "phr", "phv",
+    "plk", "prc", "prd", "prx", "ps", "psh", "psi", "pst", "qxq", "rdb", "rhg", "rmt", "sam", "sbn", "scl", "sd", "sdb", "sdf", "sdg",
+    "sdh", "sds", "sgr", "sgy", "shd", "shm", "shu", "shv", "siy", "siz", "skr", "smp", "smy", "sog", "sqo", "sqt", "srh", "srz", "ssh",
+    "sts", "swb", "syc", "syn", "syr", "tjo", "tks", "tmr", "tov", "tra", "trg", "trm", "trw", "ug", "ur", "ush", "uzs", "vaf", "vgr",
+    "vmh", "wbk", "wlo", "wne", "wni", "wsv", "xco", "xhe", "xka", "xkc", "xkj", "xkp", "xld", "xly", "xmn", "xmr", "xna", "xpr", "xsa",
+    "xsd", "xvi", "ydg", "yhd", "yi", "yih", "yud", "zba", "zdj", "zrp", "zum",
+];
+
+fn is_rtl_locale(tag: &str) -> bool {
+    let is_alpha = |subtag: &str| subtag.bytes().all(|byte| byte.is_ascii_alphabetic());
+    let mut subtags = tag.split(['-', '_']);
+    let Some(language) = subtags.next().filter(|part| (2..=8).contains(&part.len()) && is_alpha(part)) else { return false };
+    let mut next = subtags.next();
+    if language.len() <= 3 {
+        for _ in 0..3 {
+            if !next.is_some_and(|part| part.len() == 3 && is_alpha(part)) {
+                break;
+            }
+            next = subtags.next();
+        }
+    }
+    if let Some(script) = next.filter(|part| part.len() == 4 && is_alpha(part)) {
+        return RTL_SCRIPTS.iter().any(|known| known.eq_ignore_ascii_case(script));
+    }
+    RTL_LANGUAGES.iter().any(|known| known.eq_ignore_ascii_case(language))
+}
+
 impl Tree {
     /// Recompute the window's inherited text defaults from its host preferences.
     pub fn set_system_preferences(&mut self, preferences: &SystemPreferences) -> TreeDelta {
-        const DIRECTIONALITY: LocaleDirectionality = LocaleDirectionality::new_common();
-        let rtl = preferences.locale.parse::<Locale>().is_ok_and(|locale| DIRECTIONALITY.is_right_to_left(&locale.id));
-        let direction = if rtl { Direction::Rtl } else { Direction::Ltr };
+        let direction = if is_rtl_locale(&preferences.locale) { Direction::Rtl } else { Direction::Ltr };
         let text_scale = if preferences.text_scale.is_finite() && preferences.text_scale > 0.0 { preferences.text_scale } else { 1.0 };
         let mut delta = TreeDelta::default();
         if (direction, text_scale) != (self.initial_inherited.direction, self.initial_inherited.text_scale) {
@@ -365,6 +405,42 @@ impl Tree {
             let mut diagnostic = Diagnostic::new(&codes::MISSING_THEME_TOKEN, format!("Missing theme token {name}"));
             diagnostic.location = self.provenance(node).map(|source| source.origin.to_string());
             delta.diagnostics.push(diagnostic);
+        }
+    }
+}
+
+#[cfg(test)]
+mod locale_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_locale_scripts_take_precedence_over_default_languages() {
+        for tag in ["ar-EG", "he-IL", "fa-IR", "ur-PK", "ug-CN", "ckb-IQ", "ku-Arab", "pa-Arab", "az-Arab", "SD_aRaB_PK", "zh-yue-Hebr-HK"]
+        {
+            assert!(is_rtl_locale(tag), "{tag}");
+        }
+        for tag in [
+            "",
+            "x-Arab",
+            "en-US",
+            "zh-Hans",
+            "ku-Latn",
+            "pa-Guru",
+            "az-Latn",
+            "ar-Latn",
+            "sr-Cyrl",
+            "tzm-Tfng",
+            "en-x-Arab",
+            "en-US-u-nu-arab",
+            "en-US-Arab",
+        ] {
+            assert!(!is_rtl_locale(tag), "{tag}");
+        }
+        for script in RTL_SCRIPTS {
+            assert!(is_rtl_locale(&format!("und-{script}")), "{script}");
+        }
+        for language in RTL_LANGUAGES {
+            assert!(is_rtl_locale(language), "{language}");
         }
     }
 }

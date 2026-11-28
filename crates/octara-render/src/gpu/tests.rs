@@ -808,14 +808,8 @@ fn materials_batch_in_painter_order_with_per_instance_params() {
     let output = TargetInfo { extent: [32, 24], scale: 1.0, max_texture_dimension: 4096, copyable: true, encode_output: false };
     let FramePlan { mut passes, mut requests, resources, .. } = plan::plan_frame(&dl, output);
     assert!(requests.canvases.is_empty() && requests.backdrops.is_empty());
-    pollster::block_on(gpu.prepare_resources(
-        &mut passes,
-        resources,
-        &mut SceneTextures::default(),
-        WORKING_FORMAT,
-        &mut requests.receipts,
-    ))
-    .unwrap();
+    crate::block_on(gpu.prepare_resources(&mut passes, resources, &mut SceneTextures::default(), WORKING_FORMAT, &mut requests.receipts))
+        .unwrap();
     let material = *material(SHADER).downcast_ref::<custom::Material>().unwrap();
     assert_eq!(
         passes[0].batches,
@@ -1138,13 +1132,13 @@ fn backdrop_exit_replays_only_the_accepted_image_of_its_mount() {
 #[test]
 fn profiled_frames_measure_recorded_work_and_read_back_asynchronously() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+    let Ok(adapter) = crate::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
     let features = adapter.features() & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
     let Ok((device, queue)) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features: features, ..Default::default() }))
+        crate::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features: features, ..Default::default() }))
     else {
         eprintln!("no GPU device: skipped");
         return;
@@ -1304,14 +1298,14 @@ fn profiled_frames_measure_recorded_work_and_read_back_asynchronously() {
 #[test]
 fn metal_profiles_share_following_work_and_flush_when_idle() {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
+    let Ok(adapter) = crate::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
     if adapter.get_info().backend != wgpu::Backend::Metal || !adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
         return;
     }
-    let (device, queue) = pollster::block_on(
+    let (device, queue) = crate::block_on(
         adapter.request_device(&wgpu::DeviceDescriptor { required_features: wgpu::Features::TIMESTAMP_QUERY, ..Default::default() }),
     )
     .unwrap();

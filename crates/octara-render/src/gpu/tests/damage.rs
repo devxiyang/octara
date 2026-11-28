@@ -65,7 +65,7 @@ fn full_pixels(gpu: &mut GpuRenderer, device: &wgpu::Device, texture: &wgpu::Tex
     let encoder = device.create_command_encoder(&Default::default());
     let output = FrameTarget { texture, color };
     let input = FrameInput { list, scale: 2.0, sample: None };
-    let frame = pollster::block_on(gpu.record_frame(encoder, output, input, FrameRecording::default())).unwrap();
+    let frame = crate::block_on(gpu.record_frame(encoder, output, input, FrameRecording::default())).unwrap();
     pixels(device, frame, texture)
 }
 

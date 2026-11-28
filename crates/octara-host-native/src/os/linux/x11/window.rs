@@ -327,7 +327,7 @@ unsafe impl OsWindow for X11Window {
         if self.state.destroyed.get() {
             return Err("The X11 window has been destroyed".into());
         }
-        let display = XlibDisplayHandle::new(Some(self.native.display.ptr.cast()), self.native.screen as i32);
+        let display = XlibDisplayHandle::new(Some(self.native.display.as_ptr()), self.native.screen as i32);
         let mut window = XlibWindowHandle::new(self.state.xid.into());
         window.visual_id = self.visual.into();
         Ok((display.into(), window.into()))
@@ -338,7 +338,7 @@ unsafe impl OsWindow for X11Window {
         if self.state.destroyed.get() {
             return surface;
         }
-        let handles = RawNativeSurface::Xlib { display: self.native.display.ptr.cast(), window: self.state.xid.into() };
+        let handles = RawNativeSurface::Xlib { display: self.native.display.as_ptr(), window: self.state.xid.into() };
         // SAFETY: The display and window belong to this X11Window.
         unsafe { surface.with_raw_native(handles) }
     }

@@ -133,14 +133,6 @@ impl<View> PendingNativeViews<View> {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    pub fn latest(&self, id: NativeId) -> Option<&NativePlacement> {
-        self.next
-            .get(&id)
-            .and_then(|change| change.placement.as_ref())
-            .or_else(|| self.prepared.get(&id).filter(|_| !self.retiring_changes.contains_key(&id))?.placement.as_ref())
-    }
-
     /// Freeze placements through the synchronized revision. If a draw was
     /// abandoned, carry its unchanged placements and displayed removals forward.
     pub fn prepare(&mut self, revision: u64) -> bool {
@@ -149,7 +141,7 @@ impl<View> PendingNativeViews<View> {
         self.discard_retired_changes();
         self.merge_next();
         self.prepared_removals.append(&mut self.retiring);
-        self.needs_commit(revision)
+        !self.prepared.is_empty() || !self.prepared_removals.is_empty()
     }
 
     pub fn abandon(&mut self) {
@@ -186,10 +178,6 @@ impl<View> PendingNativeViews<View> {
         }
     }
 
-    pub fn needs_commit(&self, revision: u64) -> bool {
-        self.prepared_rev == Some(revision) && (!self.prepared.is_empty() || !self.prepared_removals.is_empty())
-    }
-
     pub fn commit(&mut self, revision: u64, mut apply: impl FnMut(NativeId, NativeViewChange, Option<&mut View>)) {
         if self.prepared_rev != Some(revision) {
             return;
@@ -204,11 +192,6 @@ impl<View> PendingNativeViews<View> {
                 apply(id, change, None);
             }
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    pub fn retired_views(&self) -> impl Iterator<Item = &View> {
-        self.prepared_removals.iter().chain(&self.retiring).chain(self.retiring_changes.values().map(|retired| &retired.view))
     }
 }
 

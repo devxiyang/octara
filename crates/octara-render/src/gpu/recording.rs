@@ -77,7 +77,7 @@ impl RecordedFrame<'_> {
     /// [`GpuRenderer::accept_presentation`] once the host accepts the frame.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn submit_for_presentation(self) -> (wgpu::SubmissionIndex, PendingPresentation) {
-        pollster::block_on(self.submit_for_presentation_async()).unwrap_or_else(|error| panic!("Octara frame submission failed: {error}"))
+        crate::block_on(self.submit_for_presentation_async()).unwrap_or_else(|error| panic!("Octara frame submission failed: {error}"))
     }
 
     /// Submits with staged uploads. The host may accept the returned presentation candidate.
@@ -173,7 +173,7 @@ impl GpuRenderer {
         input: FrameInput<'_>,
         report: Option<Box<dyn FnOnce(GpuTimings) + Send>>,
     ) -> Result<(RecordedFrame<'_>, Option<FrameProfile>), RecordError> {
-        pollster::block_on(self.record_async(encoder, target, input, report))
+        crate::block_on(self.record_async(encoder, target, input, report))
     }
 
     /// Records a display list and asynchronously validates any new resources and author programs.
