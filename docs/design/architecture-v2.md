@@ -26,6 +26,8 @@ This document is the architectural overview. Exact crate layouts, naming convent
 17. [17 — Direct Native Platform Hosts (Zero `winit` Architecture) (`0.0.10`)](v2/17-native-platform-hosts-without-winit.md)
 18. [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture) (`0.0.10`)](v2/18-native-layout-and-spatial-kernel.md)
 19. [19 — Unified Native IME, Text Editing & Clipboard Hygiene (`0.0.10`)](v2/19-unified-native-ime-and-text-editing.md)
+20. [20 — Zero-Bloat Core Dependencies & Native OS Primitives (`0.0.10`)](v2/20-zero-bloat-core-dependencies.md)
+21. [21 — Direct Apple Metal Renderer (`octara-render-metal`) & 2.5D / Zero-Copy 3D Compositor (`0.0.11`+)](v2/21-direct-metal-renderer-and-25d-compositor.md)
 
 See also: [Octara Master Roadmap (`0.0.8` → `0.1.0` → `0.2.0`)](roadmap.md).
 

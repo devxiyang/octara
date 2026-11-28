@@ -50,8 +50,8 @@
 
 ---
 
-### `0.0.10` — Zero-`winit` Direct Native Hosts, Zero-`TaffyTree` ECS Layout Kernel, Unified Native IME & Tier-1 Closure *(In Progress)*
-- **Specs**: [15 — Tier-1 Core Closure](v2/15-four-platform-core-polish.md) (C3–C6), [17 — Direct Native Platform Hosts (Zero `winit` Architecture)](v2/17-native-platform-hosts-without-winit.md), [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture)](v2/18-native-layout-and-spatial-kernel.md) & [19 — Unified Native IME, Text Editing & Clipboard Hygiene](v2/19-unified-native-ime-and-text-editing.md)
+### `0.0.10` — Zero-`winit` Direct Native Hosts, Zero-`TaffyTree` ECS Layout Kernel, Unified Native IME & Zero-Bloat Core *(In Progress)*
+- **Specs**: [15 — Tier-1 Core Closure](v2/15-four-platform-core-polish.md) (C3–C6), [17 — Direct Native Platform Hosts (Zero `winit` Architecture)](v2/17-native-platform-hosts-without-winit.md), [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture)](v2/18-native-layout-and-spatial-kernel.md), [19 — Unified Native IME, Text Editing & Clipboard Hygiene](v2/19-unified-native-ime-and-text-editing.md) & [20 — Zero-Bloat Core Dependencies & Native OS Primitives](v2/20-zero-bloat-core-dependencies.md)
 - **Scope**:
   1. **iOS & Web Production Closure (C3 + C4, Wave B2 — Done)**: iOS `UIAccessibility` VoiceOver bridge + `StatusBarStyle` + scene-local keyboard layout; Web `visualViewport`, `document.title`/`theme-color`, `beforeunload`, unified multimodal `WriteClipboard`, and modal ARIA focus trap + `inert`.
   2. **100% `winit` & `accesskit_winit` Removal (Waves D1 Done, D2 Running)**: Pure platform-neutral `OsHost` / `OsWindow` / `PlatformEvent` SPI in `octara-host-native`; direct macOS `15.4+` AppKit host (`NSApplication` / `NSWindow` / `NSPanel` / `NSTextInputClient` / `accesskit_macos`), direct iOS `18.4+` UIKit host (`UIApplicationMain` / `UIWindowSceneDelegate` / `UIViewController`), and direct Linux Wayland (`smithay-client-toolkit`, `zwp_text_input_v3`, `zwp_pointer_gestures_v1`, `wp_fractional_scale_v1`, `wl_data_device`, XDG Portal) + X11 (`x11rb`) host.
@@ -64,6 +64,9 @@
      - Collapse `winit`-era duplicate `EditorEvent` variants into minimal orthogonal `Edit` / `Select` / `Command(EditorCommand)` / `KeyIntercept` (with `TextEdit::DeleteSurrounding` and CJK `MarkedClause` underlines) and execute every `EditorCommand` in one shared `octara-tree`/`octara-runtime` path.
      - Extract one platform-neutral `HostTextBridge` in `octara-host-native` (shared `EditorMirror`, optimistic prediction reconciliation, UTF-8↔UTF-16 mapping, 4000 B Wayland `surrounding_text`, `TextGeometry` queries), deleting duplicated per-platform shadow state machines (`os/ios/draft.rs` & AppKit command duplication) and enforcing the deterministic 4-tier key routing law.
      - Delete dead `arboard` dependency workspace-wide (every Tier-1 platform uses native OS clipboard directly).
+  6. **Zero-Bloat Core Dependencies & Native OS Primitives (Wave D5)**:
+     - Delete `tokio` & `reqwest` (+ `rustls`/`hyper`, ~100+ transitive crates) from `octara-host-native`, replacing `media.rs` with a pluggable `MediaTransport` SPI, direct Apple `NSURLSession`, and Octara's own QoS worker pool.
+     - Remove `objc2-map-kit` & `objc2-core-location` from core `octara-host-native`, replace `image` on Apple with hardware `ImageIO` (`CGImageSource` / `CGImageDestination`), purge Linux redundant wrappers (`clipboard-rs`, `wl-clipboard-rs`, `x11-dl`, `open`), replace `icu_locale` in Layer-1 `octara-tree` with a 35-line pure-Rust BCP-47 RTL table (0 CLDR blob in `.wasm`), and self-own `block_on` (deleting `pollster`).
 
 ---
 
@@ -80,19 +83,21 @@
 
 ---
 
-### `0.0.12` — Complex Components, Modern Graphics, `WebKitGTK` & Advanced Hardware Modules
-- **Planned Spec**: `v2/20-components-graphics-and-hardware-modules.md`
+### `0.0.12` — Direct Apple Metal Renderer, 2.5D/3D Compositor, Complex Components, `WebKitGTK` & Hardware Modules
+- **Specs**: [21 — Direct Apple Metal Renderer (`octara-render-metal`) & 2.5D / Zero-Copy 3D Compositor](v2/21-direct-metal-renderer-and-25d-compositor.md) & planned `v2/22-components-and-hardware-modules.md`
 - **Scope**:
-  1. **Complex Components (`octara-headless` + `octara-kit`)**:
+  1. **Direct Apple Metal Backend & 2.5D / Zero-Copy 3D Compositor**:
+     - First-party `octara-render-metal` (`objc2-metal` + MSL implementing `SPI-1` `SurfaceRenderer`, **0 `wgpu` / 0 `naga`** on macOS & iOS, memoryless TBDR depth, `-4–8 MB` iOS binary).
+     - `Mat4` 2.5D perspective layer transforms (1:1 CSS `matrix3d` parity), GPU real-time `backdrop-filter` / Liquid Glass blur, and zero-copy `ExternalTexture` bridge (`MTLTexture`/`IOSurface`/`CVPixelBuffer` on Apple, `wgpu::Texture` on Linux/Windows/WebGPU, `<canvas>` on Web).
+  2. **Complex Components (`octara-headless` + `octara-kit`)**:
      - Virtualized `DataTable` (sticky headers/columns, resizable columns, sorting, multi-select), `TreeView`, `SplitPane` (draggable & collapsible).
      - Gesture-driven `BottomSheet` / `Drawer` (velocity snap & rubber-band dismiss), `Toast` queue stack, `DatePicker` / `TimePicker` / `ColorPicker`, `CommandPalette`, and declarative `Form` validation with `aria-invalid` / error summary bindings.
-  2. **Graphics, Motion & Export**:
-     - GPU real-time `backdrop-filter` frosted blur container.
+  3. **Motion & Export**:
      - Spring physics curves & FLIP layout transitions in `MotionEngine`; 120Hz frame pacing telemetry.
      - Vector PDF / print export directly from `DisplayList`.
-  3. **Linux WebView Backend**:
+  4. **Linux WebView Backend**:
      - Add **`WebKitGTK`** backend inside `modules/octara-webview` (matching the typed navigation, scheme handler, script injection, and Promise RPC surface of Apple `WKWebView`).
-  4. **Advanced Hardware Modules (`modules/*`)**:
+  5. **Advanced Hardware Modules (`modules/*`)**:
      - `modules/octara-biometrics` (Touch ID / Face ID / Linux Polkit-fprint / WebAuthn).
      - `modules/octara-audio` (recording, playback, level metering stream, audio session management).
      - `modules/octara-camera` (`NativeViewFactory` live preview + photo capture + QR/barcode scanning).
@@ -101,7 +106,7 @@
 ---
 
 ### `0.1.0` — Production Beta: Packaging, Fast Restart, DevTools & Core API Freeze
-- **Planned Spec**: `v2/21-packaging-devtools-and-v01-freeze.md`
+- **Planned Spec**: `v2/23-packaging-devtools-and-v01-freeze.md`
 - **Scope**:
   1. **`octara dev` State-Preserving Fast Restart**: File watcher + automatic `RestartState` snapshot → incremental rebuild → instant relaunch restoring window geometry and reactive state.
   2. **`octara bundle` One-Command Packaging**:
