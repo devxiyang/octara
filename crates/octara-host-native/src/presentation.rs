@@ -13,6 +13,7 @@ pub(crate) struct Presentation {
     accepted: u64,
     last_presented_rev: u64,
     surface_size: Option<[u32; 2]>,
+    presented_size: Option<[u32; 2]>,
     rebuild_surface: bool,
 }
 
@@ -37,6 +38,14 @@ impl Presentation {
         self.rebuild_surface
     }
 
+    pub fn awaiting_present(&self) -> bool {
+        self.surface_size.is_some() && self.last_sample.is_none()
+    }
+
+    pub fn size_changed_since_present(&self) -> bool {
+        self.presented_size.is_some() && self.presented_size != self.surface_size
+    }
+
     pub fn needs_draw(&self, revision: u64, at: Duration) -> bool {
         self.last_sample != Some((revision, at))
     }
@@ -56,8 +65,10 @@ impl Presentation {
         }
     }
 
-    pub fn accepts(&self, stamp: FrameStamp, tree: TreeId, generation: u64, size: [u32; 2]) -> bool {
-        self.ready(size)
+    pub fn accepts(&self, stamp: FrameStamp, tree: TreeId, generation: u64) -> bool {
+        // The admission generation identifies the drawable's configured size. A native
+        // resize can arrive before that drawable reaches the presenter.
+        self.surface_size.is_some()
             && stamp.tree == tree
             && stamp.frame > self.accepted
             && stamp.surface_generation == self.surface_generation
@@ -69,6 +80,7 @@ impl Presentation {
     pub fn did_present(&mut self, stamp: FrameStamp) -> bool {
         let first = self.accepted == 0;
         self.last_sample = Some((stamp.sample.revision, stamp.sample.sampled_at));
+        self.presented_size = self.surface_size;
         self.accepted = stamp.frame;
         self.last_presented_rev = stamp.native_rev;
         first
@@ -207,22 +219,21 @@ mod tests {
         let tree = TreeId::new([1, 2], 3);
         present.configure([160, 120]);
         let frame = present.stamp(tree, 1, 5, Duration::from_millis(10));
-        assert!(present.accepts(frame, tree, 1, [160, 120]));
-        assert!(!present.accepts(frame, tree, 2, [160, 120]));
-        assert!(!present.accepts(frame, TreeId::new([2, 3], 3), 1, [160, 120]));
-        assert!(!present.accepts(frame, tree, 1, [120, 160]));
+        assert!(present.accepts(frame, tree, 1));
+        assert!(!present.accepts(frame, tree, 2));
+        assert!(!present.accepts(frame, TreeId::new([2, 3], 3), 1));
         present.invalidate(false);
-        assert!(!present.accepts(frame, tree, 1, [160, 120]));
+        assert!(!present.accepts(frame, tree, 1));
         present.configure([160, 120]);
-        assert!(!present.accepts(frame, tree, 1, [160, 120]));
+        assert!(!present.accepts(frame, tree, 1));
         let frame = present.stamp(tree, 1, 5, Duration::from_millis(10));
         assert!(present.did_present(frame));
-        assert!(!present.accepts(frame, tree, 1, [160, 120]));
+        assert!(!present.accepts(frame, tree, 1));
         assert!(!present.needs_draw(5, Duration::from_millis(10)));
         present.invalidate(true);
         present.configure([120, 160]);
         let frame = present.stamp(tree, 2, 6, Duration::from_millis(11));
-        assert!(present.accepts(frame, tree, 2, [120, 160]));
+        assert!(present.accepts(frame, tree, 2));
         assert!(!present.did_present(frame));
     }
 
@@ -237,9 +248,9 @@ mod tests {
         present.invalidate(false);
         present.configure(size);
         let older = present.stamp(tree, 2, 4, Duration::from_millis(8));
-        assert!(!present.accepts(older, tree, 2, size));
+        assert!(!present.accepts(older, tree, 2));
         let resampled = present.stamp(tree, 2, 5, Duration::from_millis(8));
-        assert!(present.accepts(resampled, tree, 2, size));
+        assert!(present.accepts(resampled, tree, 2));
     }
 
     fn placement(id: u64, x: f32) -> NativePlacement {
@@ -357,5 +368,27 @@ mod tests {
             assert_eq!(change.snapshot_hidden, Some(false));
             assert_eq!(change.placement, Some(placement(1, 24.0)));
         });
+    }
+
+    #[test]
+    fn resize_keeps_the_old_drawable_valid_through_its_presentation() {
+        let mut presentation = Presentation::default();
+        let tree = TreeId::new([5, 6], 1);
+        let first_size = [640, 480];
+        presentation.configure(first_size);
+        for frame in 1..=120 {
+            let stamp = presentation.stamp(tree, 1, frame, Duration::from_millis(frame * 16));
+            let requested = [640 + frame as u32 * 2, 480];
+            assert!(presentation.awaiting_present());
+            assert!(!presentation.ready(requested));
+            assert!(presentation.accepts(stamp, tree, 1));
+            presentation.did_present(stamp);
+            assert!(!presentation.awaiting_present());
+            assert!(!presentation.size_changed_since_present());
+            presentation.configure(requested);
+            assert!(!presentation.accepts(stamp, tree, 1));
+            assert!(presentation.ready(requested));
+            assert!(presentation.size_changed_since_present());
+        }
     }
 }

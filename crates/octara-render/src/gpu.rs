@@ -7,26 +7,22 @@ use octara_model::paint::DisplayList;
 
 mod atlas;
 mod backing;
-mod batch;
 mod canvases;
 mod custom;
-mod damage;
 mod device_loss;
 mod encode;
-mod glyph_pipeline;
-mod instances;
 mod outputs;
 mod pipeline;
-pub mod plan;
 mod prepare;
 mod profile;
 mod readback;
 mod recording;
 mod resolve;
 mod retained;
-mod schedule;
 mod surface;
 mod upload;
+
+pub use crate::plan::{FrameProfile, GpuPassKind, GpuPassTiming, GpuTimings, OutputColor};
 
 pub use atlas::RecordError;
 use atlas::SceneTextures;
@@ -46,11 +42,10 @@ pub use outputs::PendingPresentation;
 use outputs::{CanvasCache, PresentationHistory};
 use pipeline::PipelineCache;
 use profile::TimestampPool;
-pub use profile::{FrameProfile, GpuPassKind, GpuPassTiming, GpuTimings};
 pub use readback::{MappedReadback, Readback, RecordedCapture};
 pub use recording::RecordedFrame;
+pub use resolve::FrameTarget;
 use resolve::OutputResolve;
-pub use resolve::{FrameTarget, OutputColor};
 use retained::CachedFrame;
 pub use surface::{SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory};
 use upload::FrameBuffers;
@@ -68,7 +63,7 @@ pub struct FrameInput<'a> {
 }
 
 /// Renders display lists on a device shared by independently configured targets.
-pub struct GpuRenderer {
+pub struct WgpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipelines: PipelineCache,
@@ -91,10 +86,10 @@ pub struct GpuRenderer {
     timestamps: TimestampPool,
 }
 
-impl GpuRenderer {
+impl WgpuRenderer {
     /// A renderer on the default adapter, or `None` when there is no usable GPU.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new() -> Option<GpuRenderer> {
+    pub fn new() -> Option<WgpuRenderer> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = crate::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
         let (device, queue) = crate::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
@@ -102,7 +97,7 @@ impl GpuRenderer {
     }
 
     /// A renderer on an existing device. Attachment formats are selected at recording time.
-    pub fn with_device(device: wgpu::Device, queue: wgpu::Queue) -> GpuRenderer {
+    pub fn with_device(device: wgpu::Device, queue: wgpu::Queue) -> WgpuRenderer {
         let buffers = FrameBuffers::new(&device);
         let no_layer = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("octara no layer"),
@@ -115,7 +110,7 @@ impl GpuRenderer {
             view_formats: &[],
         });
         let pipelines = PipelineCache::new(&device);
-        GpuRenderer {
+        WgpuRenderer {
             device,
             queue,
             pipelines,

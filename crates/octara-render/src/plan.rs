@@ -1,32 +1,59 @@
 //! Device-free target geometry and painter-order draw planning.
 
-use super::batch::{Draw, NO_CLIP, Paint, Pass, PlannedBatch, Shape, clip_envelope, custom_quad, image, quad, shadow, xywh};
-use super::custom::{self, CanvasMode, CanvasPaint};
-use super::outputs::CanvasCache;
-use crate::glyphs::{GlyphCache, GlyphImage, GlyphKey, SUBPIXEL_STEPS};
+use crate::glyphs::{GlyphImage, GlyphKey, SUBPIXEL_STEPS};
 use crate::paths;
-use crate::shape::{ClipAxes, ClipStack, ClipState, raster_offsets};
+use crate::shape::{ClipAxes, raster_offsets};
+use batch::{NO_CLIP, clip_envelope, custom_quad, image, quad, shadow, xywh};
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample};
 use octara_model::geometry::{Rect, Vec2};
 use octara_model::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, PlacedItem, Quad, TransitionPaint};
 use octara_model::theme::Color;
+use paint::can_retain_canvas;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Weak;
 
+pub(crate) mod batch;
+mod damage;
+pub(crate) mod glyph_instance;
+pub(crate) mod instances;
 mod metrics;
+mod output;
+pub(crate) mod packing;
+pub(crate) mod paint;
+mod profile;
+mod schedule;
+mod spatial;
+
+pub use crate::cpu::CpuRenderer;
+pub use crate::glyphs::GlyphCache;
+pub use crate::image_mips::{ImageLevel, ImageMips};
+pub use crate::shape::{ClipNode, ClipStack, ClipState};
+pub use batch::{Batch, Draw, Paint, Pass, PlannedBatch, Shape};
+pub use damage::{DamageRect, SceneSnapshot};
+pub use glyph_instance::GlyphInst;
+pub use instances::{
+    DrawInst, FRACTIONAL_CLIP, GlyphClip, GlyphDraw, GradientInst, ImageInst, Instances, MaterialInst, QuadInst, SPATIAL_CLIP,
+    SPATIAL_SHIFT, ShadowInst,
+};
 pub use metrics::{TextFrameMetrics, TextFramePlanner};
+pub use output::OutputColor;
+pub use packing::{ArrayId, Region};
+pub use paint::{CanvasMode, CanvasPaint, CanvasProgram, Material};
+pub use profile::{FrameProfile, GpuPassKind, GpuPassTiming, GpuTimings};
+pub use schedule::{fallback_draw, schedule_pass};
+pub use spatial::{SpatialTable, SpatialWrite};
 
 /// A pass's pixel bounds in window coordinates, before rounding its allocation up.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct PassBounds {
-    pub(super) origin: [u32; 2],
-    pub(super) size: [u32; 2],
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassBounds {
+    pub origin: [u32; 2],
+    pub size: [u32; 2],
 }
 
 impl PassBounds {
-    pub(super) fn from_rect(rect: Rect) -> Self {
+    pub fn from_rect(rect: Rect) -> Self {
         if rect.is_empty() {
             return Self::default();
         }
@@ -34,15 +61,15 @@ impl PassBounds {
         Self { origin, size: [rect.right().ceil() as u32 - origin[0], rect.bottom().ceil() as u32 - origin[1]] }
     }
 
-    pub(super) fn rect(self) -> [f32; 4] {
+    pub fn rect(self) -> [f32; 4] {
         [self.origin[0] as f32, self.origin[1] as f32, self.size[0] as f32, self.size[1] as f32]
     }
 
-    pub(super) fn allocation(self, window: [u32; 2]) -> [u32; 2] {
+    pub fn allocation(self, window: [u32; 2]) -> [u32; 2] {
         std::array::from_fn(|axis| self.size[axis].max(1).next_multiple_of(64).min(window[axis].max(1)))
     }
 
-    pub(super) fn is_empty(self) -> bool {
+    pub fn is_empty(self) -> bool {
         self.size.contains(&0)
     }
 }
@@ -59,50 +86,51 @@ pub struct TargetInfo {
     pub encode_output: bool,
 }
 
-pub(super) struct CanvasRequest {
-    pub(super) pass: usize,
-    pub(super) paint: CanvasPaint,
-    pub(super) fallback: Paint,
-    pub(super) receipt: usize,
-    pub(super) retained_mount: Option<Weak<()>>,
+pub struct CanvasRequest {
+    pub pass: usize,
+    pub paint: CanvasPaint,
+    pub fallback: Paint,
+    pub receipt: usize,
+    pub retained_mount: Option<Weak<()>>,
 }
 
-pub(super) struct BackdropRequest {
-    pub(super) paint: CanvasPaint,
-    pub(super) fallback: Paint,
-    pub(super) receipt: usize,
-    pub(super) mount: Weak<()>,
-    pub(super) exiting: bool,
-    pub(super) target: usize,
+pub struct BackdropRequest {
+    pub paint: CanvasPaint,
+    pub fallback: Paint,
+    pub receipt: usize,
+    pub mount: Weak<()>,
+    pub exiting: bool,
+    pub target: usize,
 }
 
 #[derive(Clone)]
-pub(super) struct TransitionRequest {
-    pub(super) paint: TransitionPaint,
-    pub(super) receipt: Option<usize>,
-    pub(super) clip: ClipState,
-    pub(super) clip_scope: usize,
+pub struct TransitionRequest {
+    pub paint: TransitionPaint,
+    pub receipt: Option<usize>,
+    pub clip: ClipState,
+    pub clip_scope: usize,
 }
 
 #[derive(Default)]
-pub(super) struct PaintRequests {
-    pub(super) canvases: Vec<CanvasRequest>,
-    pub(super) backdrops: Vec<BackdropRequest>,
-    pub(super) skipped_transitions: Vec<(Weak<()>, u64)>,
-    pub(super) receipts: Vec<PaintReceipt>,
+pub struct PaintRequests {
+    pub canvases: Vec<CanvasRequest>,
+    pub backdrops: Vec<BackdropRequest>,
+    pub skipped_transitions: Vec<(Weak<()>, u64)>,
+    pub receipts: Vec<PaintReceipt>,
 }
 
 /// Device-independent pass geometry in painter order. Each child is composited at its
 /// original position in its parent. Active transitions can expand these bounds with
 /// accepted history when the encoder prepares the frame.
 pub struct FramePlan {
-    pub(super) passes: Vec<Pass>,
-    pub(super) requests: PaintRequests,
-    pub(super) clips: ClipStack,
-    pub(super) resources: ResourcePlan,
-    pub(super) bounds: Vec<PassBounds>,
-    pub(super) resolve_output: bool,
-    pub(super) backdrop_inputs: Vec<BackdropInput>,
+    /// Painter-order passes, with the output at index zero and descendants later.
+    pub passes: Vec<Pass>,
+    pub requests: PaintRequests,
+    pub clips: ClipStack,
+    pub resources: ResourcePlan,
+    pub bounds: Vec<PassBounds>,
+    pub resolve_output: bool,
+    pub backdrop_inputs: Vec<BackdropInput>,
 }
 
 impl FramePlan {
@@ -131,28 +159,28 @@ impl FramePlan {
 }
 
 #[derive(Default)]
-pub(super) struct ResourcePlan {
-    pub(super) samples: Vec<DrawSample>,
-    pub(super) materials: Vec<MaterialRequest>,
+pub struct ResourcePlan {
+    pub samples: Vec<DrawSample>,
+    pub materials: Vec<MaterialRequest>,
 }
 
-pub(super) struct MaterialRequest {
-    pub(super) material: custom::Material,
-    pub(super) fallback: Paint,
-    pub(super) receipt: usize,
+pub struct MaterialRequest {
+    pub material: Material,
+    pub fallback: Paint,
+    pub receipt: usize,
 }
 
-pub(super) enum DrawSample {
+pub enum DrawSample {
     Image(ImagePaint),
     Glyph(GlyphRequest),
     Path(PathPaint, paths::Placed),
 }
 
-pub(super) struct GlyphRequest {
-    pub(super) key: GlyphKey,
-    pub(super) image: GlyphImage,
-    pub(super) pos: [f32; 2],
-    pub(super) color: u32,
+pub struct GlyphRequest {
+    pub key: GlyphKey,
+    pub image: GlyphImage,
+    pub pos: [f32; 2],
+    pub color: u32,
 }
 
 /// Builds a render graph without a GPU device or access to presentation history.
@@ -162,20 +190,16 @@ pub fn plan_frame(list: &DisplayList, target: TargetInfo) -> FramePlan {
 
 /// Plan stable geometry without pruning by the current scroll position. Effects with
 /// position-dependent target allocations or authored callbacks use the regular planner.
-pub(super) fn plan_frame_spatial(
-    list: &DisplayList,
-    target: TargetInfo,
-    _sample: Option<PaintSample>,
-    glyphs: &mut GlyphCache,
-    spatial_slots: &FxHashMap<u32, u32>,
-) -> Option<FramePlan> {
+/// The returned table supplies the device-pixel offsets for that plan.
+pub fn plan_frame_spatial(list: &DisplayList, target: TargetInfo, glyphs: &mut GlyphCache) -> Option<(FramePlan, SpatialTable)> {
     let scale = target.scale;
+    let spatial = SpatialTable::new(list, scale)?;
     let mut pass = Pass { spatial: true, ..Pass::default() };
     let mut clips = ClipStack::default();
     let mut resources = ResourcePlan::default();
     for placed in list.placed_items_unculled_at(scale) {
-        let spatial = if placed.spatial_id == 0 { 0 } else { *spatial_slots.get(&placed.spatial_id)? };
-        if spatial > u32::MAX >> super::instances::SPATIAL_SHIFT {
+        let spatial = if placed.spatial_id == 0 { 0 } else { *spatial.slots.get(&placed.spatial_id)? };
+        if spatial > u32::MAX >> SPATIAL_SHIFT {
             return None;
         }
         let local = placed.local_offset;
@@ -242,7 +266,7 @@ pub(super) fn plan_frame_spatial(
         instance.spatial = spatial;
         pass.push(instance, draw);
     }
-    Some(FramePlan {
+    let plan = FramePlan {
         passes: vec![pass],
         requests: PaintRequests::default(),
         clips,
@@ -250,7 +274,8 @@ pub(super) fn plan_frame_spatial(
         bounds: vec![PassBounds { size: target.extent, ..PassBounds::default() }],
         resolve_output: target.encode_output,
         backdrop_inputs: Vec::new(),
-    })
+    };
+    Some((plan, spatial))
 }
 
 fn push_glyphs(
@@ -304,7 +329,8 @@ fn push_path(pass: &mut Pass, resources: &mut ResourcePlan, paint: &PathPaint, a
     );
 }
 
-pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<PaintSample>, glyphs: &mut GlyphCache) -> FramePlan {
+/// Plans a frame using a reusable glyph raster cache and optional author paint sample time.
+pub fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<PaintSample>, glyphs: &mut GlyphCache) -> FramePlan {
     let scale = target.scale;
     let mut passes = vec![Pass::default()];
     let mut requests = PaintRequests::default();
@@ -338,12 +364,12 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                 requests
                     .receipts
                     .push(PaintReceipt { source, outcome: PaintOutcome::Fallback { reason: PaintFallback::UnsupportedProgram } });
-                if let Some(&material) = paint.program.downcast_ref::<custom::Material>() {
+                if let Some(&material) = paint.program.downcast_ref::<Material>() {
                     let index = resources.materials.len();
                     resources.materials.push(MaterialRequest { material, fallback, receipt });
                     passes[current].push(instance, Draw::RequestedMaterial(index));
                     continue;
-                } else if let Some(canvas) = paint.program.downcast_ref::<custom::Canvas>()
+                } else if let Some(canvas) = paint.program.downcast_ref::<CanvasProgram>()
                     && canvas.mode != CanvasMode::Transition
                 {
                     let max_dimension = target.max_texture_dimension;
@@ -367,7 +393,7 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                     } else {
                         let index = requests.canvases.len();
                         let retained_mount =
-                            (canvas.mode == CanvasMode::Retained && CanvasCache::can_retain(entry.size)).then(|| paint.mount.downgrade());
+                            (canvas.mode == CanvasMode::Retained && can_retain_canvas(entry.size)).then(|| paint.mount.downgrade());
                         requests.canvases.push(CanvasRequest { pass: current, paint: entry, fallback, receipt, retained_mount });
                         Draw::Canvas(index)
                     };
@@ -496,7 +522,7 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
     FramePlan { passes, requests, clips, resources, bounds, resolve_output, backdrop_inputs }
 }
 
-pub(super) fn backdrop_inputs(backdrops: &[BackdropRequest], bounds: &[PassBounds], output: TargetInfo) -> (Vec<BackdropInput>, bool) {
+pub fn backdrop_inputs(backdrops: &[BackdropRequest], bounds: &[PassBounds], output: TargetInfo) -> (Vec<BackdropInput>, bool) {
     let mut reads_output = false;
     let inputs = backdrops
         .iter()
@@ -560,45 +586,14 @@ pub enum BackdropInput {
     Unavailable,
 }
 
-pub(super) struct PlannedBackdrop {
-    pub(super) request: BackdropRequest,
-    pub(super) input: BackdropInput,
-    pub(super) fallback: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Attachment {
-    Output,
-    Layer(usize),
-}
-
-pub(super) struct TargetPlan {
-    pub(super) attachment: Attachment,
-    pub(super) segments: Vec<DrawSegment>,
-}
-
-pub(super) struct DrawSegment {
-    pub(super) cores: Range<usize>,
-    pub(super) blended: Range<usize>,
-}
-
-pub(super) struct EncodedPlan {
-    pub(super) targets: Vec<TargetPlan>,
-    pub(super) batches: Vec<PlannedBatch>,
-    pub(super) backdrops: Vec<PlannedBackdrop>,
-    pub(super) resolve_output: bool,
-}
-
-impl EncodedPlan {
-    pub(super) fn supports_damage(&self) -> bool {
-        self.targets.len() == 1
-            && self.targets[0].segments.len() <= 1
-            && self.batches.iter().all(|batch| matches!(batch.draw, Draw::Quad | Draw::Shadow | Draw::Image(_) | Draw::Glyph(_)))
-    }
+/// Ranges into the scheduled batches for one opaque-core and blended draw sequence.
+pub struct DrawSegment {
+    pub cores: Range<usize>,
+    pub blended: Range<usize>,
 }
 
 /// Size the inner layers first, then use their composite bounds in the parent.
-pub(super) fn bound_passes(
+pub fn bound_passes(
     passes: &mut [Pass],
     size: [u32; 2],
     mut transition_bounds: impl FnMut(usize, &TransitionRequest, PassBounds, Rect) -> PassBounds,
@@ -629,7 +624,7 @@ pub(super) fn bound_passes(
     bounds
 }
 
-pub(super) fn transition_composite_bounds(
+pub fn transition_composite_bounds(
     current: PassBounds,
     visible: Rect,
     previous: PassBounds,
@@ -642,7 +637,7 @@ pub(super) fn transition_composite_bounds(
     PassBounds::from_rect(output)
 }
 
-pub(super) fn union(a: Rect, b: Rect) -> Rect {
+pub(crate) fn union(a: Rect, b: Rect) -> Rect {
     if a.is_empty() {
         return b;
     }
@@ -701,7 +696,7 @@ mod tests {
         };
         let backdrop = Item::Custom(CustomPaint {
             fallback: quad,
-            program: custom::backdrop(|_| |_, _| {}),
+            program: PaintProgram::new(CanvasProgram::new(CanvasMode::Backdrop, ())),
             mount: Default::default(),
             exiting: false,
             input: Default::default(),
@@ -712,7 +707,7 @@ mod tests {
             mount: Default::default(),
             run: Default::default(),
             revision: 3,
-            program: custom::transition(|_| |_, _| {}),
+            program: PaintProgram::new(()),
             progress: 0.6,
             opacity: 1.0,
         });

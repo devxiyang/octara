@@ -1,15 +1,15 @@
 //! Records the prepared scene and interleaves painter-prefix and transition commands.
 
 use super::backing::Clear;
-use super::batch::{Draw, PlannedBatch};
-use super::custom::{self, CanvasPaint};
-use super::damage::DamageRect;
+use super::custom;
 use super::outputs::{BackdropChange, RegionImage};
 use super::pipeline::PipelineKind;
-use super::plan::{Attachment, BackdropInput, PassBounds, PlannedBackdrop, TransitionRequest};
-use super::prepare::{PlannedTransition, PreparedFrame};
+use super::prepare::{Attachment, PlannedBackdrop, PlannedTransition, PreparedFrame};
 use super::recording::FrameRecording;
-use super::{FrameInput, GpuPassKind, GpuRenderer, Transition, TransitionImage, WORKING_FORMAT};
+use super::{FrameInput, GpuPassKind, Transition, TransitionImage, WORKING_FORMAT, WgpuRenderer};
+use crate::plan::DamageRect;
+use crate::plan::batch::{Draw, PlannedBatch};
+use crate::plan::{BackdropInput, CanvasMode, CanvasPaint, PassBounds, TransitionRequest};
 use octara_model::capture::{PaintFallback, PaintOutcome};
 use octara_model::geometry::Rect;
 use octara_model::paint::PaintInput;
@@ -122,7 +122,7 @@ fn draw_visible(
     })
 }
 
-impl GpuRenderer {
+impl WgpuRenderer {
     fn bind_composite(&self, empty_array: &wgpu::TextureView, view: &wgpu::TextureView) -> wgpu::BindGroup {
         self.buffers.bind(&self.device, self.pipelines.layout(PipelineKind::Image), PipelineKind::Image, Some(empty_array), Some(view))
     }
@@ -135,6 +135,9 @@ impl GpuRenderer {
         recording: &mut FrameRecording<'_>,
     ) -> Result<EncodedBackdrop, PaintFallback> {
         let request = &backdrop.request;
+        if custom::canvas_mode(&request.paint.program) != Some(CanvasMode::Backdrop) {
+            return Err(PaintFallback::UnsupportedProgram);
+        }
         let region = match backdrop.input {
             BackdropInput::Prefix(region) => region,
             BackdropInput::Unavailable => return Err(PaintFallback::BackdropUnavailable),
@@ -254,7 +257,8 @@ impl GpuRenderer {
                 if !segment.cores.is_empty() {
                     let mut pass = scene_pass(&mut encoder, target, load, depth, partial.is_none(), recording.pass(kind));
                     if let Some((damage, clear)) = partial {
-                        damage.scissor(&mut pass);
+                        let [x, y, w, h] = damage.pixels_rect();
+                        pass.set_scissor_rect(x, y, w, h);
                         clear.encode(&mut pass);
                         needs_damage_clear = false;
                     }
@@ -279,7 +283,8 @@ impl GpuRenderer {
                 let mut pass =
                     scene_pass(&mut encoder, target, load, depth, partial.is_none() && segment.cores.is_empty(), recording.pass(kind));
                 if let Some((damage, clear)) = partial {
-                    damage.scissor(&mut pass);
+                    let [x, y, w, h] = damage.pixels_rect();
+                    pass.set_scissor_rect(x, y, w, h);
                     if needs_damage_clear {
                         clear.encode(&mut pass);
                         needs_damage_clear = false;
@@ -343,7 +348,8 @@ impl GpuRenderer {
             }
             if let Some((damage, clear)) = partial.filter(|_| needs_damage_clear) {
                 let mut pass = scene_pass(&mut encoder, target, load, depth, false, recording.pass(kind));
-                damage.scissor(&mut pass);
+                let [x, y, w, h] = damage.pixels_rect();
+                pass.set_scissor_rect(x, y, w, h);
                 clear.encode(&mut pass);
             } else if matches!(load, wgpu::LoadOp::Clear(_)) {
                 drop(color_pass(&mut encoder, target, load, recording.pass(kind)));

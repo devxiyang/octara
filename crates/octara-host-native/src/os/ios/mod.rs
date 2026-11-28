@@ -12,9 +12,9 @@ use super::apple_frame_clock::{DisplayClock, retry_on_clock};
 use super::apple_media::encode_oriented_png;
 use super::apple_metal::set_transactional;
 use crate::os::{
-    ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent,
-    PlatformKey, PlatformSender, ServiceCleanup, ShellDriver, WindowAccessibility, WindowHostEvent, WindowPresentation, WindowScene,
-    WindowTextInput, reply, surface_drawable,
+    ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, HostWake, NativeSurfaceSession, OsHost, OsWindow, OsWindowContext,
+    PlatformEvent, PlatformKey, PlatformSender, ServiceCleanup, ShellDriver, WindowAccessibility, WindowHostEvent, WindowPresentation,
+    WindowScene, WindowTextInput, reply,
 };
 use back::BackNavigation;
 use editor::{ContentView, TextInput};
@@ -35,13 +35,14 @@ use objc2_ui_kit::{
 use octara::WindowOptions;
 use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
 use octara::runtime::WindowId;
+use octara_gpu::SurfaceSession;
 use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::WindowViewport;
 use octara_model::identity::TargetGuard;
 use octara_model::input::{HostReply, Key, Modifiers};
 use octara_model::theme::ColorScheme;
 use octara_model::window::{StatusBarStyle, WindowGeometry, WindowLevel, WindowMaterial};
-use octara_render::{gpu::OutputColor, wgpu};
+use octara_render::OutputColor;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
 use scene::AreaConnection;
 use std::cell::Cell;
@@ -198,8 +199,7 @@ impl OsHost for IosHost {
             sender.clone(),
         );
         let gestures = gestures::Recognizers::new(&plain_content, sender.clone(), id);
-        let clock = (backend.contains(wgpu::Backends::METAL) && !config.manual_clock)
-            .then(|| DisplayClock::new(&plain_content, id, sender.clone()));
+        let clock = (backend.metal && !config.manual_clock).then(|| DisplayClock::new(&plain_content, id, sender.clone()));
         let accessibility = a11y::Bridge::new(plain_content, id, sender.clone());
         let layer = content.layer().downcast::<CAMetalLayer>().map_err(|_| "UIKit content view has no CAMetalLayer")?;
         let mut host = IosWindow {
@@ -399,37 +399,27 @@ impl WindowPresentation for IosWindow {
         true
     }
 
-    fn set_transactional_presentation(&mut self, _: u64, transactional: bool) {
+    fn set_transactional_presentation(&mut self, _: u64, transactional: bool, _resizing: bool) {
         self.transactional = transactional;
     }
 
-    fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor, from_clock: bool) -> DrawableAcquisition {
+    fn try_acquire_drawable(&mut self, surface: &NativeSurfaceSession, color: OutputColor, from_clock: bool) -> DrawableAcquisition {
         let externally_paced = self.externally_paced();
         if externally_paced && !from_clock {
             return DrawableAcquisition::WaitingForClock;
         }
         set_transactional(&self.layer, self.transactional);
-        retry_on_clock(surface_drawable(surface, color), externally_paced)
+        retry_on_clock(surface.acquire(color), externally_paced)
     }
 
-    fn present(&mut self, drawable: Box<dyn Drawable>, queue: &wgpu::Queue) -> Result<(), String> {
-        drawable.present(queue)
-    }
-
-    fn present_with_native_views(
-        &mut self,
-        drawable: Box<dyn Drawable>,
-        queue: &wgpu::Queue,
-        _: u64,
-        commit_native_views: &mut dyn FnMut(),
-    ) -> Result<(), String> {
+    fn present_with_native_views(&mut self, drawable: Box<Drawable>, _: u64, commit_native_views: &mut dyn FnMut()) -> Result<(), String> {
         if !self.transactional {
-            return drawable.present(queue);
+            return drawable.present();
         }
         CATransaction::begin();
         CATransaction::setDisableActions(true);
         let _transaction = std::mem::DropGuard::new((), |()| CATransaction::commit());
-        drawable.present(queue)?;
+        drawable.present()?;
         commit_native_views();
         Ok(())
     }

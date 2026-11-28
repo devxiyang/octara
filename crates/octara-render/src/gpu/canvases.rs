@@ -1,11 +1,13 @@
 //! Canvas preparation for a recording or ahead of the next drawable.
 
-use super::GpuRenderer;
-use super::batch::{Draw, NO_CLIP, Pass, quad};
-use super::custom::{CanvasMode, CanvasPaint, CanvasTarget};
+use super::WgpuRenderer;
+use super::custom::{CanvasTarget, canvas_mode};
 use super::outputs::{CanvasCache, CanvasChanges, CanvasKey, rgba_bytes};
-use super::plan::CanvasRequest;
 use super::recording::FrameRecording;
+use crate::plan::CanvasRequest;
+use crate::plan::batch::{Draw, NO_CLIP, Pass, quad};
+use crate::plan::paint::CANVAS_BYTES;
+use crate::plan::{CanvasMode, CanvasPaint};
 use crate::shape::ClipStack;
 use octara_model::capture::PaintOutcome;
 use octara_model::geometry::Rect;
@@ -26,7 +28,7 @@ impl CanvasUpdates {
     }
 }
 
-impl GpuRenderer {
+impl WgpuRenderer {
     pub(super) async fn prepare_canvases(
         &mut self,
         passes: &mut [Pass],
@@ -119,7 +121,7 @@ impl GpuRenderer {
         let Ok((width, height)) = crate::pixels::dimensions((list.size.width, list.size.height), scale) else { return updates };
         let window = Rect::new(0.0, 0.0, width as f32, height as f32);
         let mut clips = ClipStack::default();
-        let mut remaining = CanvasCache::CANVAS_BYTES;
+        let mut remaining = CANVAS_BYTES;
         let max_dimension = self.device.limits().max_texture_dimension_2d;
         for placed in list.placed_items_at(scale) {
             if !matches!(placed.item, Item::PushClip { .. } | Item::PushAxisClip { .. } | Item::PopClip | Item::Custom(_)) {
@@ -128,10 +130,7 @@ impl GpuRenderer {
             match placed.resolve().as_ref() {
                 Item::PushClip { rect, .. } => clips.push(*rect, [0.0; 4], scale),
                 Item::PopClip => clips.pop(),
-                Item::Custom(paint)
-                    if !paint.exiting
-                        && paint.program.downcast_ref::<super::custom::Canvas>().is_some_and(|c| c.mode == CanvasMode::Retained) =>
-                {
+                Item::Custom(paint) if !paint.exiting && canvas_mode(&paint.program) == Some(CanvasMode::Retained) => {
                     let clip = clips.current().bounds.map_or(NO_CLIP, |r| [r.x, r.y, r.w, r.h]);
                     let fallback = quad(&paint.fallback, scale, clip, 0);
                     if fallback.visible_bounds(&window).is_empty() {

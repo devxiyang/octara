@@ -2,6 +2,6 @@
 
 mod cpu;
 mod fixtures;
-#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
 mod gpu;
 mod paths;

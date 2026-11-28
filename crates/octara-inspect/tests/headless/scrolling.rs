@@ -39,7 +39,9 @@ fn frame_wheel_batch_retests_each_sample_as_a_nested_scrollport_moves() {
         .unwrap();
     let outer = node(&driver, id, "outer");
     let inner = node(&driver, id, "inner");
-    assert!(!driver.app().runtime().window(id).unwrap().can_coalesce_wheel(Point::new(30.0, 70.0)));
+    let runtime = driver.app().runtime().window(id).unwrap();
+    assert!(!runtime.can_coalesce_wheel(Point::new(30.0, 70.0)));
+    assert!(!runtime.can_coalesce_wheel(Point::new(30.0, 90.0)));
     let wheel = InteractionEvent::Wheel {
         pos: Point::new(30.0, 70.0),
         delta: Vec2::new(0.0, 20.0),
@@ -51,6 +53,42 @@ fn frame_wheel_batch_retests_each_sample_as_a_nested_scrollport_moves() {
     assert!(receipt.handled);
     assert_eq!(offset(&driver, id, outer).y, 20.0);
     assert_eq!(offset(&driver, id, inner).y, 20.0);
+}
+
+#[test]
+fn frame_wheel_batch_retests_after_geometry_feedback_outside_the_scrollport() {
+    for observe_ancestor in [true, false] {
+        let mut driver = driver();
+        let (geometry, scroll) = driver.app_mut().build(|b| (b.signal(None::<LayoutBox>), b.signal(Vec2::default()))).unwrap();
+        let id = driver
+            .app_mut()
+            .open_window(options(), move |_| {
+                let port = col().test_id("port").w(120).h(60).shrink(0.0).scroll_y().observe_scroll(scroll).child(el().h(150).shrink(0.0));
+                // The first sample grows the probe. Its geometry moves the port away from the pointer.
+                let probe = el().shrink(0.0).style_with(move |r, style| style.h(if r.get(scroll).y > 0.0 { 60 } else { 20 }));
+                let area = col().shrink(0.0).child(port);
+                let (area, base_height) = if observe_ancestor {
+                    (area.child(probe).observe_geometry(geometry), 80.0)
+                } else {
+                    (area.child(probe.observe_geometry(geometry)), 20.0)
+                };
+                col()
+                    .child(el().shrink(0.0).style_with(move |r, style| style.h(r.get(geometry).map_or(0.0, |b| b.rect.h - base_height))))
+                    .child(area)
+            })
+            .unwrap();
+        let port = node(&driver, id, "port");
+        let runtime = driver.app().runtime().window(id).unwrap();
+        let pos = Point::new(30.0, 30.0);
+        let hit = runtime.hit_test(pos).unwrap().hit.node().unwrap();
+        assert!(runtime.tree().is_within(hit, port));
+        assert!(!runtime.can_coalesce_wheel(pos), "ancestor observer: {observe_ancestor}");
+        let wheel = InteractionEvent::Wheel { pos, delta: Vec2::new(0.0, 20.0), phase: WheelPhase::Discrete, mods: Modifiers::empty() };
+        let receipt =
+            driver.app_mut().runtime_mut().dispatch_frame_inputs(id, [Input::Interaction(wheel), Input::Interaction(wheel)], None).unwrap();
+        assert!(receipt.handled);
+        assert_eq!(offset(&driver, id, port).y, 20.0);
+    }
 }
 
 #[test]

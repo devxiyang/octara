@@ -5,7 +5,7 @@ use octara::{PaintOutcome, PaintSample};
 use octara_examples_desktop::gpu_lab;
 use octara_pipeline::NativeEngine;
 use octara_render::{
-    GpuRenderer,
+    WgpuRenderer,
     gpu::{FrameInput, FrameTarget, OutputColor},
     wgpu,
 };
@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn gpu(retained: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut renderer = GpuRenderer::new().ok_or("no compatible GPU")?;
+    let mut renderer = WgpuRenderer::new().ok_or("no compatible GPU")?;
     let mut app = App::new(|_, _| Box::new(NativeEngine::new(Default::default())));
     let window = app.open_window(gpu_lab::options(), if retained { gpu_lab::retained_view } else { gpu_lab::view })?;
     let state = app.runtime().window(window).expect("Shader Lab window");

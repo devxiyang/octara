@@ -1,4 +1,7 @@
-use super::custom::{CanvasPaint, TransitionImage};
+use super::custom::TransitionImage;
+use crate::plan::CanvasPaint;
+use crate::plan::paint::CANVAS_BYTES;
+pub(super) use crate::plan::paint::rgba_bytes;
 use octara_model::CacheLine;
 use octara_model::capture::PaintSample;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -114,12 +117,7 @@ impl CanvasChanges {
 }
 
 impl CanvasCache {
-    pub(super) const CANVAS_BYTES: u64 = 32 * 1024 * 1024;
     pub(super) const CANVAS_SLOTS: usize = 64;
-
-    pub(super) fn can_retain(size: [u32; 2]) -> bool {
-        rgba_bytes(size) <= Self::CANVAS_BYTES
-    }
 
     pub(super) fn prune(&mut self) {
         for (slot, entry) in self.entries.extract_if(|_, entry| entry.mount.strong_count() == 0) {
@@ -159,13 +157,12 @@ impl CanvasCache {
             });
             // Keep the optional working allocation when it can serve another draw at
             // the current extent without exceeding this mount's share of the cache.
-            let working = working.filter(|previous| {
-                previous.texture().size() == view.texture().size() && bytes + texture_bytes(previous) <= Self::CANVAS_BYTES
-            });
+            let working = working
+                .filter(|previous| previous.texture().size() == view.texture().size() && bytes + texture_bytes(previous) <= CANVAS_BYTES);
             self.bytes += bytes + working.as_ref().map_or(0, texture_bytes);
             self.lru.push_back(slot);
             self.entries.insert(slot, CanvasEntry { mount, submitted: OutputImage { view, revision }, key, working });
-            while self.bytes > Self::CANVAS_BYTES || self.lru.len() > Self::CANVAS_SLOTS {
+            while self.bytes > CANVAS_BYTES || self.lru.len() > Self::CANVAS_SLOTS {
                 let oldest = self.lru.pop_front().expect("a canvas over budget");
                 self.bytes -= self.entries.remove(&oldest).expect("a cached canvas").bytes();
             }
@@ -176,7 +173,7 @@ impl CanvasCache {
 /// Local paint outputs from a submitted frame, awaiting the host's acceptance.
 ///
 /// Dropping the token discards its outputs. Use
-/// [`GpuRenderer::accept_presentation`](super::GpuRenderer::accept_presentation) to retain them
+/// [`WgpuRenderer::accept_presentation`](super::WgpuRenderer::accept_presentation) to retain them
 /// for exits and transitions after the host accepts the frame.
 #[must_use = "accept the frame to publish its paint history"]
 pub struct PendingPresentation(Option<PendingOutputs>);
@@ -464,11 +461,6 @@ impl TransitionHistory {
     }
 }
 
-pub(super) fn rgba_bytes([width, height]: [u32; 2]) -> u64 {
-    let bytes = super::WORKING_FORMAT.block_copy_size(None).expect("a packed color texel");
-    (u64::from(width) * u64::from(height)).saturating_mul(u64::from(bytes))
-}
-
 fn texture_bytes(view: &wgpu::TextureView) -> u64 {
     let texture = view.texture();
     rgba_bytes([texture.width(), texture.height()])
@@ -477,7 +469,7 @@ fn texture_bytes(view: &wgpu::TextureView) -> u64 {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::GpuRenderer;
+    use crate::WgpuRenderer;
     use std::time::Duration;
 
     impl CanvasCache {
@@ -492,7 +484,7 @@ mod tests {
         }
     }
 
-    fn test_view(gpu: &GpuRenderer) -> wgpu::TextureView {
+    fn test_view(gpu: &WgpuRenderer) -> wgpu::TextureView {
         gpu.device()
             .create_texture(&wgpu::TextureDescriptor {
                 label: None,
@@ -513,9 +505,9 @@ mod tests {
 
     #[test]
     fn canvas_cache_evicts_the_least_recent_optional_output() {
-        assert!(CanvasCache::can_retain([2048, 2048]));
-        assert!(!CanvasCache::can_retain([2048, 2049]));
-        let Some(gpu) = GpuRenderer::new() else {
+        assert!(crate::plan::paint::can_retain_canvas([2048, 2048]));
+        assert!(!crate::plan::paint::can_retain_canvas([2048, 2049]));
+        let Some(gpu) = WgpuRenderer::new() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
@@ -565,7 +557,7 @@ mod tests {
     fn transition_runs_pin_only_accepted_history_at_their_cut() {
         assert!(RegionImage::can_retain([2048, 2048]));
         assert!(!RegionImage::can_retain([2048, 2049]));
-        let Some(gpu) = GpuRenderer::new() else {
+        let Some(gpu) = WgpuRenderer::new() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };

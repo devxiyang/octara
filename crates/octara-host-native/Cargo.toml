@@ -35,7 +35,7 @@ octara.workspace = true
 octara-gpu.workspace = true
 octara-model.workspace = true
 octara-pipeline = { workspace = true, features = ["system-fonts"] }
-octara-render = { workspace = true, features = ["gpu"] }
+octara-render = { workspace = true, features = ["wgpu"] }
 serde.workspace = true
 serde_json.workspace = true
 smallvec.workspace = true
@@ -89,6 +89,9 @@ objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true
+objc2-core-video = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "CVBase", "CVDisplayLink", "CVHostTime", "CVReturn", "objc2-core-graphics",
+] }
 objc2-foundation.workspace = true
 objc2-metal = { workspace = true, features = [
     "std", "block2", "objc2-core-foundation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice",

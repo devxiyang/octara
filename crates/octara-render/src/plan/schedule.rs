@@ -1,8 +1,8 @@
 //! Opaque core extraction and ordering for the four micro-pipelines.
 
+use super::DrawSegment;
 use super::batch::{Draw, NO_CLIP, Paint, Pass, PlannedBatch, Shape, grow, rect, xywh};
 use super::instances::{DrawInst, FRACTIONAL_CLIP, Instances, SPATIAL_CLIP, SPATIAL_SHIFT};
-use super::plan::DrawSegment;
 use crate::shape::{ClipStack, inner_rect};
 use octara_model::geometry::Rect;
 use rustc_hash::FxHashMap;
@@ -264,7 +264,10 @@ fn append_batches(
     start..batches.len()
 }
 
-pub(super) fn schedule_pass(
+/// Appends packed instances and ordered batches for a resource-resolved pass.
+///
+/// Resolve `Draw::Sample` and `Draw::RequestedMaterial` and update their paint payloads first.
+pub fn schedule_pass(
     pass: &Pass,
     target: Rect,
     clips: &ClipStack,
@@ -284,7 +287,7 @@ pub(super) fn schedule_pass(
     segments
 }
 
-pub(super) fn fallback_draw(paint: Paint, target: Rect, depth: f32, clips: &ClipStack, instances: &mut Instances) -> u32 {
+pub fn fallback_draw(paint: Paint, target: Rect, depth: f32, clips: &ClipStack, instances: &mut Instances) -> u32 {
     let Geometry { vertex_bounds, clip, head, flags, .. } = geometry(paint, clips, target);
     let payload = instances.push_paint(paint, head);
     instances.push_draw(DrawInst { bounds: xywh(vertex_bounds), clip: xywh(clip), core: [0.0; 4], depth, payload, clip_head: head, flags })

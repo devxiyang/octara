@@ -1,34 +1,35 @@
 //! Storage-buffer payloads shared with the vertex-pulling shaders.
 
-use super::atlas::Region;
 use super::batch::{NO_CLIP, Paint, Shape, straight};
-use super::glyph_pipeline::GlyphInst;
+use super::glyph_instance::GlyphInst;
+use super::packing::Region;
+use crate::shape::ClipNode;
 use bytemuck::{Pod, Zeroable};
 use octara_model::theme::{Color, Gradient};
 use rustc_hash::FxHashMap;
 
-pub(super) const FRACTIONAL_CLIP: u32 = 1;
-pub(super) const SPATIAL_CLIP: u32 = 2;
-pub(super) const SPATIAL_SHIFT: u32 = 2;
+pub const FRACTIONAL_CLIP: u32 = 1;
+pub const SPATIAL_CLIP: u32 = 2;
+pub const SPATIAL_SHIFT: u32 = 2;
 
-// Kept separately so one payload can back a core plus up to four strips.
+/// Vertex-pulling geometry. One paint payload can back a core and up to four strips.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct DrawInst {
-    pub(super) bounds: [f32; 4],
-    pub(super) clip: [f32; 4],
-    pub(super) core: [f32; 4],
-    pub(super) depth: f32,
-    pub(super) payload: u32,
-    pub(super) clip_head: u32,
-    pub(super) flags: u32,
+pub struct DrawInst {
+    pub bounds: [f32; 4],
+    pub clip: [f32; 4],
+    pub core: [f32; 4],
+    pub depth: f32,
+    pub payload: u32,
+    pub clip_head: u32,
+    pub flags: u32,
 }
 
 const _: () = assert!(size_of::<DrawInst>() == 64);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct GlyphDraw {
+pub struct GlyphDraw {
     depth: f32,
     clip: u32,
 }
@@ -37,16 +38,19 @@ const _: () = assert!(size_of::<GlyphDraw>() == 8);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct GlyphClip {
+pub struct GlyphClip {
     rect: [f32; 4],
     head: u32,
     flags: u32,
     pad: [u32; 2],
 }
 
+const _: () = assert!(size_of::<GlyphClip>() == 32);
+
+/// Quad payload with packed half-float corner radii and sRGBA8 colors.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct QuadInst {
+pub struct QuadInst {
     rect: [f32; 4],
     border: [f32; 4],
     radii: [u32; 2],
@@ -57,11 +61,11 @@ pub(super) struct QuadInst {
     pad: [u32; 2],
 }
 
-const _: () = assert!(size_of::<QuadInst>() <= 64);
+const _: () = assert!(size_of::<QuadInst>() == 64);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct GradientInst {
+pub struct GradientInst {
     start: [f32; 4],
     end: [f32; 4],
     border_color: [f32; 4],
@@ -69,9 +73,12 @@ pub(super) struct GradientInst {
     radii: [f32; 4],
 }
 
+const _: () = assert!(size_of::<GradientInst>() == 80);
+
+/// Shadow payload with linear-light color and Gaussian sigma in device pixels.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct ShadowInst {
+pub struct ShadowInst {
     rect: [f32; 4],
     radii: [f32; 4],
     color: [f32; 4],
@@ -79,9 +86,12 @@ pub(super) struct ShadowInst {
     pad: [f32; 3],
 }
 
+const _: () = assert!(size_of::<ShadowInst>() == 64);
+
+/// Sampled image, path, layer, or canvas payload. Atlas coordinates are in texels.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct ImageInst {
+pub struct ImageInst {
     rect: [f32; 4],
     image_bounds: [f32; 4],
     radius: [f32; 4],
@@ -93,9 +103,11 @@ pub(super) struct ImageInst {
     gradient: u32,
 }
 
+const _: () = assert!(size_of::<ImageInst>() == 96);
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct MaterialInst {
+pub struct MaterialInst {
     rect: [f32; 4],
     radius: [f32; 4],
     params: [f32; 4],
@@ -103,18 +115,19 @@ pub(super) struct MaterialInst {
     pad: [f32; 3],
 }
 
+/// Packed instance buffers populated by the scheduler.
 #[derive(Default)]
-pub(super) struct Instances {
-    pub(super) draws: Vec<DrawInst>,
-    pub(super) quads: Vec<QuadInst>,
-    pub(super) shadows: Vec<ShadowInst>,
-    pub(super) images: Vec<ImageInst>,
-    pub(super) glyphs: Vec<GlyphInst>,
-    pub(super) glyph_draws: Vec<GlyphDraw>,
-    pub(super) glyph_clips: Vec<GlyphClip>,
+pub struct Instances {
+    pub draws: Vec<DrawInst>,
+    pub quads: Vec<QuadInst>,
+    pub shadows: Vec<ShadowInst>,
+    pub images: Vec<ImageInst>,
+    pub glyphs: Vec<GlyphInst>,
+    pub glyph_draws: Vec<GlyphDraw>,
+    pub glyph_clips: Vec<GlyphClip>,
     glyph_clip_index: FxHashMap<[u32; 6], u32>,
-    pub(super) materials: Vec<MaterialInst>,
-    pub(super) gradients: Vec<GradientInst>,
+    pub materials: Vec<MaterialInst>,
+    pub gradients: Vec<GradientInst>,
     gradient_index: FxHashMap<[u32; 20], u32>,
 }
 
@@ -140,7 +153,7 @@ fn append<T>(list: &mut Vec<T>, value: T) -> u32 {
 }
 
 impl Instances {
-    pub(super) fn needs_fragment_clips(&self) -> bool {
+    pub fn needs_fragment_clips(&self) -> bool {
         self.draws.iter().any(|draw| draw.clip_head != 0 || draw.flags & FRACTIONAL_CLIP != 0)
             || self.glyph_clips.iter().any(|clip| clip.head != 0 || clip.flags & FRACTIONAL_CLIP != 0)
     }
@@ -158,11 +171,11 @@ impl Instances {
         })
     }
 
-    pub(super) fn push_draw(&mut self, draw: DrawInst) -> u32 {
+    pub(crate) fn push_draw(&mut self, draw: DrawInst) -> u32 {
         append(&mut self.draws, draw)
     }
 
-    pub(super) fn push_glyph(&mut self, glyph: GlyphInst, draw: DrawInst) -> u32 {
+    pub(crate) fn push_glyph(&mut self, glyph: GlyphInst, draw: DrawInst) -> u32 {
         let clip = if draw.clip == NO_CLIP && draw.clip_head == 0 && draw.flags == 0 {
             0
         } else {
@@ -179,7 +192,7 @@ impl Instances {
         append(&mut self.glyphs, glyph)
     }
 
-    pub(super) fn push_paint(&mut self, paint: Paint, clip_head: u32) -> u32 {
+    pub(crate) fn push_paint(&mut self, paint: Paint, clip_head: u32) -> u32 {
         let Paint { rect, radius, shape, .. } = paint;
         match shape {
             Shape::Quad { fill, gradient, border_widths, border_color } => {
@@ -255,4 +268,25 @@ impl Instances {
             _ => unreachable!("prepared paint has a resolved sample"),
         }
     }
+}
+
+pub(crate) fn payload_bytes(i: &Instances, uniforms: usize, clips: &[ClipNode]) -> u64 {
+    (uniforms
+        + size_of_val(i.draws.as_slice())
+        + size_of_val(i.quads.as_slice())
+        + size_of_val(i.shadows.as_slice())
+        + size_of_val(i.images.as_slice())
+        + size_of_val(i.glyphs.as_slice())
+        + size_of_val(i.glyph_draws.as_slice())
+        + size_of_val(i.glyph_clips.as_slice())
+        + size_of_val(i.materials.as_slice())
+        + size_of_val(i.gradients.as_slice())
+        + size_of_val(clips)) as u64
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct Globals {
+    pub(crate) size: [f32; 2],
+    pub(crate) origin: [f32; 2],
 }

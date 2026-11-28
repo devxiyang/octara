@@ -1,20 +1,13 @@
 //! The four built-in draw pipelines and the author-material extension.
 
-use super::glyph_pipeline::GlyphInst;
-use super::instances::{DrawInst, GlyphClip, GlyphDraw, GradientInst, ImageInst, MaterialInst, QuadInst, ShadowInst};
+use crate::plan::GlyphInst;
+use crate::plan::instances::Globals;
+use crate::plan::instances::{DrawInst, GlyphClip, GlyphDraw, GradientInst, ImageInst, MaterialInst, QuadInst, ShadowInst};
 use crate::shape::ClipNode;
-use bytemuck::{Pod, Zeroable};
 use rustc_hash::FxHashMap;
 
 pub(super) const SHARED_SHADER: &str = include_str!("shared.wgsl");
 pub(super) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct Globals {
-    pub(super) size: [f32; 2],
-    pub(super) origin: [f32; 2],
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PipelineKind {

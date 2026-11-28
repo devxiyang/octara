@@ -4,7 +4,7 @@
 mod fixture;
 
 use octara::model::paint::{DisplayList, Picture};
-use octara_render::GpuRenderer;
+use octara_render::WgpuRenderer;
 
 #[test]
 fn rich_span_pill_has_cpu_gpu_parity() {
@@ -22,7 +22,7 @@ fn marked_clauses_have_cpu_gpu_parity() {
 }
 
 fn compare_gpu() -> impl FnMut(&DisplayList, &Picture, f32) {
-    let mut gpu = GpuRenderer::new();
+    let mut gpu = WgpuRenderer::new();
     if let Some(gpu) = &gpu {
         eprintln!("Rich text CPU/GPU parity on {:?}", gpu.device().adapter_info().backend);
     } else {

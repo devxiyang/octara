@@ -1,6 +1,6 @@
 [package]
 name = "octara-render"
-description = "Renderers for Octara's display list: a deterministic CPU reference renderer (screenshots) and a wgpu renderer."
+description = "Device-free frame planning, a CPU reference renderer, and an optional wgpu renderer for Octara."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,25 +13,28 @@ categories.workspace = true
 publish = true
 
 [features]
-default = ["gpu"]
-# The wgpu renderer.
-gpu = ["dep:wgpu", "dep:bytemuck", "dep:web-time", "dep:half"]
+default = ["plan"]
+plan = ["dep:octara-model", "dep:bytemuck", "dep:half", "dep:color", "dep:rustc-hash", "dep:swash", "dep:kurbo", "dep:zeno"]
+wgpu = ["plan", "dep:wgpu", "dep:web-time"]
 
 [dependencies]
 bytemuck = { workspace = true, optional = true }
-color.workspace = true
+color = { workspace = true, optional = true }
 half = { version = "2.7.1", optional = true }
-octara-model.workspace = true
+octara-model = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
-rustc-hash.workspace = true
-swash.workspace = true
-kurbo.workspace = true
-zeno.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustc-hash = { workspace = true, optional = true }
+swash = { workspace = true, optional = true }
+kurbo = { workspace = true, optional = true }
+zeno = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-time = { version = "1.1.0", optional = true }
 
 [dev-dependencies]
 octara-fonts = { workspace = true, features = ["cjk"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+required-features = ["plan"]

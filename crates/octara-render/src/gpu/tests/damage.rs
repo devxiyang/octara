@@ -25,7 +25,7 @@ fn target(device: &wgpu::Device, extent: [u32; 2], copy: bool) -> wgpu::Texture 
 }
 
 fn record<'a>(
-    gpu: &'a mut GpuRenderer,
+    gpu: &'a mut WgpuRenderer,
     texture: &wgpu::Texture,
     list: &DisplayList,
     color: OutputColor,
@@ -61,7 +61,7 @@ fn pixels(device: &wgpu::Device, mut frame: RecordedFrame<'_>, texture: &wgpu::T
     mapped.chunks_exact(stride as usize).flat_map(|row_data| &row_data[..row as usize]).copied().collect()
 }
 
-fn full_pixels(gpu: &mut GpuRenderer, device: &wgpu::Device, texture: &wgpu::Texture, list: &DisplayList, color: OutputColor) -> Vec<u8> {
+fn full_pixels(gpu: &mut WgpuRenderer, device: &wgpu::Device, texture: &wgpu::Texture, list: &DisplayList, color: OutputColor) -> Vec<u8> {
     let encoder = device.create_command_encoder(&Default::default());
     let output = FrameTarget { texture, color };
     let input = FrameInput { list, scale: 2.0, sample: None };
@@ -80,9 +80,9 @@ fn parity(current: &[u8], full: &[u8], width: u32) {
 
 #[test]
 fn five_k_damage_matches_full_raster_for_caret_hover_and_sidebar_scroll() {
-    let Some(mut incremental) = GpuRenderer::new() else { return };
+    let Some(mut incremental) = WgpuRenderer::new() else { return };
     let device = incremental.device().clone();
-    let mut reference = GpuRenderer::with_device(device.clone(), incremental.queue().clone());
+    let mut reference = WgpuRenderer::with_device(device.clone(), incremental.queue().clone());
     let source = NodeId::default();
     let clip = Rect::new(0.0, 0.0, 260.0, 1280.0);
     let sidebar: Arc<[Part]> = Arc::from([
@@ -160,7 +160,7 @@ fn five_k_damage_matches_full_raster_for_caret_hover_and_sidebar_scroll() {
 
 #[test]
 fn damage_invalidates_for_large_edits_targets_and_complex_effects() {
-    let Some(mut gpu) = GpuRenderer::new() else { return };
+    let Some(mut gpu) = WgpuRenderer::new() else { return };
     let device = gpu.device().clone();
     let base = picture([]);
     let large = picture([Item::Quad(solid(Rect::new(0.0, 0.0, 32.0, 24.0), Color::WHITE))]);
@@ -189,7 +189,7 @@ fn damage_invalidates_for_large_edits_targets_and_complex_effects() {
 
 #[test]
 fn five_k_caret_hover_and_scroll_match_the_cpu_reference() {
-    let Some(mut gpu) = GpuRenderer::new() else { return };
+    let Some(mut gpu) = WgpuRenderer::new() else { return };
     let device = gpu.device().clone();
     let port = NodeId::default();
     let sidebar = Part::Group(Arc::from([
@@ -228,9 +228,9 @@ fn five_k_caret_hover_and_scroll_match_the_cpu_reference() {
 }
 
 fn assert_edge_changes(old: &DisplayList, new: &DisplayList, at: [u32; 2]) {
-    let Some(mut gpu) = GpuRenderer::new() else { return };
+    let Some(mut gpu) = WgpuRenderer::new() else { return };
     let device = gpu.device().clone();
-    let mut reference = GpuRenderer::with_device(device.clone(), gpu.queue().clone());
+    let mut reference = WgpuRenderer::with_device(device.clone(), gpu.queue().clone());
     let extent = [64, 48];
     let color = OutputColor::SrgbOpaque;
     let first = target(&device, extent, true);
@@ -296,9 +296,9 @@ fn nominally_disjoint_image_rects_can_overlap_at_an_antialiased_pixel() {
 
 #[test]
 fn native_overlay_snapshot_damages_its_pixels_and_reuses_scroll_spatials() {
-    let Some(mut gpu) = GpuRenderer::new() else { return };
+    let Some(mut gpu) = WgpuRenderer::new() else { return };
     let device = gpu.device().clone();
-    let mut reference = GpuRenderer::with_device(device.clone(), gpu.queue().clone());
+    let mut reference = WgpuRenderer::with_device(device.clone(), gpu.queue().clone());
     let source = NodeId::default();
     let extent = [64, 48];
     let color = OutputColor::SrgbOpaque;

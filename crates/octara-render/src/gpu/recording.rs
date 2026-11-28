@@ -1,16 +1,17 @@
 //! Frame recording and submission with staged uploads and presentation changes.
 
 use super::backing::{Backing, Raster};
-use super::damage::SceneSnapshot;
 use super::outputs::{CanvasCache, OutputChanges, PendingPresentation, PresentationHistory};
-use super::plan::{plan_frame_cached, plan_frame_spatial};
 use super::prepare::PreparedFrame;
-use super::profile::{FrameMeasurement, FrameProfile, GpuTimings, Instant, PendingTimestamps, TimestampPool};
+use super::profile::{FrameMeasurement, Instant, PendingTimestamps, TimestampPool};
 use super::resolve::AttachmentInfo;
-use super::retained::{CachedFrame, RetainedTarget, ScrollScene};
+use super::retained::{CachedFrame, RetainedTarget};
 use super::surface::record_surface;
 use super::upload::{FrameData, FrameUploads};
-use super::{FrameInput, FrameTarget, GpuRenderer, RecordError, SceneTextures, custom};
+use super::{FrameInput, FrameTarget, RecordError, SceneTextures, WgpuRenderer, custom};
+use super::{FrameProfile, GpuTimings};
+use crate::plan::SceneSnapshot;
+use crate::plan::{SpatialTable, plan_frame_cached, plan_frame_spatial};
 use octara_model::capture::{PaintReceipt, PaintSample};
 
 #[derive(Default)]
@@ -74,7 +75,7 @@ impl RecordedFrame<'_> {
     }
 
     /// Submits the frame and returns its candidate backdrop outputs and transition regions. Give the token to
-    /// [`GpuRenderer::accept_presentation`] once the host accepts the frame.
+    /// [`WgpuRenderer::accept_presentation`] once the host accepts the frame.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn submit_for_presentation(self) -> (wgpu::SubmissionIndex, PendingPresentation) {
         crate::block_on(self.submit_for_presentation_async()).unwrap_or_else(|error| panic!("Octara frame submission failed: {error}"))
@@ -135,7 +136,7 @@ impl RecordedFrame<'_> {
     }
 }
 
-impl GpuRenderer {
+impl WgpuRenderer {
     /// Records a display list into the given encoder for this frame's color attachment.
     ///
     /// The target is a single-sample, single-level 2D texture with `RENDER_ATTACHMENT` usage.
@@ -237,20 +238,23 @@ impl GpuRenderer {
         // Any preparation that may replace buffers or evict atlas slots first drops the plan
         // referring to them. A reused plan keeps the last submission's atlas working set intact.
         let cached = self.prepared.take().and_then(|mut cached| {
-            let writes = cached.scroll.update(input, retained_target)?;
+            if cached.target != retained_target {
+                return None;
+            }
+            let writes = cached.scroll.update(input.list, input.scale)?;
             Some((cached, writes))
         });
         let reused = cached.is_some();
         let mut full_upload = None;
         let mut spatial_writes = Vec::new();
-        let (mut frame, scroll, atlas_bytes) = if let Some((CachedFrame { scroll, frame, atlas_bytes }, writes)) = cached {
+        let (mut frame, scroll, atlas_bytes) = if let Some((CachedFrame { scroll, frame, atlas_bytes, .. }, writes)) = cached {
             spatial_writes = writes;
             (frame, Some(scroll), atlas_bytes)
         } else {
             // A panic drops any uncommitted atlas slots with the local texture transaction.
             let mut textures = self.textures.take().unwrap_or_default();
             textures.atlases.begin_frame();
-            let (frame, data, scroll) = match self.prepare_miss(input, attachment, retained_target, &mut textures, &mut recording).await {
+            let (frame, data, scroll) = match self.prepare_miss(input, attachment, &mut textures, &mut recording).await {
                 Ok(frame) => frame,
                 Err(error) => {
                     textures.finish_frame();
@@ -268,7 +272,7 @@ impl GpuRenderer {
             let spatial = scroll.is_some();
             let compatible_target = self.backing.as_ref().filter(|backing| backing.target == retained_target);
             let previous = compatible_target.filter(|backing| backing.spatial == spatial);
-            let mut scene = SceneSnapshot::new(input, attachment.requirements.extent);
+            let mut scene = SceneSnapshot::new(input.list, input.scale, attachment.requirements.extent);
             let damage = previous.and_then(|backing| {
                 let textures = full_upload.as_mut().map(|(textures, _)| textures).or(self.textures.as_mut())?;
                 scene.damage_since(&backing.scene, &mut textures.glyphs, spatial)
@@ -312,7 +316,7 @@ impl GpuRenderer {
             } else {
                 None
             };
-            let offsets = scroll.as_ref().map_or(&[][..], |scroll| scroll.offsets.as_slice());
+            let offsets = scroll.as_ref().map_or(&[][..], |scroll| scroll.offsets());
             encoder = self.encode_frame(encoder, &mut frame, draw_target, partial, offsets, input, &mut recording).await;
         }
         if let Some(backing) = &backing {
@@ -349,7 +353,7 @@ impl GpuRenderer {
             measurement.profile.atlas_upload_bytes = atlas_upload_bytes;
             measurement.record_frame(prepare, encoding.elapsed(), &frame.plan, &frame.layer_views);
         }
-        let retained = scroll.map(|scroll| CachedFrame { scroll, frame, atlas_bytes });
+        let retained = scroll.map(|scroll| CachedFrame { scroll, target: retained_target, frame, atlas_bytes });
         Ok(RecordedFrame {
             before: recording.before,
             encoder,
@@ -374,14 +378,11 @@ impl GpuRenderer {
         &mut self,
         input: FrameInput<'_>,
         attachment: AttachmentInfo,
-        target: RetainedTarget,
         textures: &mut SceneTextures,
         recording: &mut FrameRecording<'_>,
-    ) -> Result<(PreparedFrame, FrameData, Option<ScrollScene>), RecordError> {
-        if let Some(scroll) = ScrollScene::new(input, target)
-            && let Some(plan) = plan_frame_spatial(input.list, attachment.requirements, input.sample, &mut textures.glyphs, &scroll.slots)
-        {
-            match self.prepare_frame(input, attachment, textures, recording, plan, scroll.offsets.clone()).await {
+    ) -> Result<(PreparedFrame, FrameData, Option<SpatialTable>), RecordError> {
+        if let Some((plan, scroll)) = plan_frame_spatial(input.list, attachment.requirements, &mut textures.glyphs) {
+            match self.prepare_frame(input, attachment, textures, recording, plan, scroll.offsets().to_vec()).await {
                 Ok((frame, data)) => return Ok((frame, data, Some(scroll))),
                 Err(_) => {
                     // Unculled geometry can exceed the storage or atlas budget even when the

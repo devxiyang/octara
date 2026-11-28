@@ -1,6 +1,5 @@
 //! Imports and presents an AppKit drawable on the renderer’s Metal queue.
 
-use crate::os::Drawable;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{
@@ -8,8 +7,8 @@ use objc2_metal::{
     MTLRenderPassDescriptor, MTLResource, MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureType, MTLTextureUsage,
 };
 use objc2_quartz_core::CAMetalDrawable;
-use octara_gpu::DrawTarget;
-use octara_render::{gpu::OutputColor, wgpu};
+use octara_gpu::{DrawTarget, DrawableTarget};
+use octara_render::{OutputColor, wgpu};
 use wgpu::hal::api::Metal;
 
 pub(super) struct MetalFrame {
@@ -99,11 +98,9 @@ impl DrawTarget for MetalFrame {
     }
 }
 
-impl Drawable for MetalFrame {
-    fn present(self: Box<Self>, queue: &wgpu::Queue) -> Result<(), String> {
-        if self.queue.as_ref() != Some(queue) {
-            return Err("the Metal drawable must be presented on its rendering queue".into());
-        }
+impl DrawableTarget for MetalFrame {
+    fn present(self: Box<Self>) -> Result<(), String> {
+        let queue = self.queue.as_ref().ok_or("the Metal drawable was not rendered")?;
         autoreleasepool(|_| {
             // SAFETY: This is the same live queue used to import and render the drawable.
             let queue = unsafe { queue.as_hal::<Metal>() }.ok_or("the wgpu queue is not Metal")?;

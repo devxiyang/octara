@@ -4,10 +4,10 @@ mod frame_input;
 
 use self::frame_input::FrameInput;
 use crate::os::{
-    self, FileDropPhase, HostEvent, LoopState, OsHost, OsWindowContext, PlatformEvent, PlatformKey, PlatformSender, PointerPhase,
-    ShellDriver,
+    self, FileDropPhase, HostEvent, LoopState, NativeGpuBackend, NativeGpuDevice, NativeSurfaceLease, NativeSurfaceSession, OsHost,
+    OsWindowContext, PlatformEvent, PlatformKey, PlatformSender, PointerPhase, ShellDriver,
 };
-use crate::window::{Device, FileDrop, HostWindow, create_surface, transparent_background};
+use crate::window::{FileDrop, HostWindow, create_surface, transparent_background};
 use crate::{NativeAppOptions, ShellConfig, ShellHook, trace};
 use octara::module::HostLifecycleEvent;
 use octara::runtime::cycle::AppError;
@@ -15,8 +15,8 @@ use octara::runtime::{HostCommand, Input, RestartState, WindowId};
 use octara::tree::editor::EditorSession;
 use octara::{App, AppDefinition, WindowOptions};
 use octara_gpu::{
-    CaptureOutput, CapturePixels, CaptureWriter, DeviceGeneration, DeviceNotice, FrameProgress, GpuTask, StagedCapture, SurfaceLease,
-    SurfaceRendererFactory,
+    CaptureOutput, CapturePixels, CaptureWriter, DeviceGeneration, DeviceNotice, FrameProgress, GpuBackend, GpuDevice, GpuTask,
+    StagedCapture, SurfaceRendererFactory,
 };
 use octara_model::ask::{Answer, ServiceError, ServiceOutcome, ServiceRequest};
 use octara_model::capture::FrameReceipt;
@@ -29,7 +29,6 @@ use octara_model::native::{NativeEvent, TypedNativeCommand};
 use octara_model::theme::ColorScheme;
 use octara_model::window::{SystemPreferences, WindowMaterial};
 use octara_pipeline::{NativeEngine, NativeEngineConfig, NativePublication};
-use octara_render::wgpu;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -59,11 +58,11 @@ struct Shell {
     retired: Vec<HostWindow>,
     pending_windows: BTreeSet<WindowId>,
     frame_input: FrameInput,
-    instance: wgpu::Instance,
-    device: Option<Device>,
+    backend: NativeGpuBackend,
+    device: Option<NativeGpuDevice>,
     surface_renderer: Option<SurfaceRendererFactory>,
     generation: u64,
-    drain: Option<GpuTask<SurfaceLease>>,
+    drain: Option<GpuTask<NativeSurfaceLease>>,
     started: Instant,
     frames: u64,
     capture_writer: Option<CaptureWriter>,
@@ -108,7 +107,7 @@ impl Shell {
             retired: Vec::new(),
             pending_windows: BTreeSet::new(),
             frame_input: FrameInput::default(),
-            instance: wgpu::Instance::default(),
+            backend: NativeGpuBackend::default(),
             device: None,
             surface_renderer,
             generation: 0,
@@ -122,7 +121,7 @@ impl Shell {
         }
     }
 
-    fn create_device(&mut self, os: &dyn OsHost, surface: &wgpu::Surface<'static>) -> Result<(), String> {
+    fn create_device(&mut self, os: &dyn OsHost, surface: &NativeSurfaceSession) -> Result<(), String> {
         self.generation = self.generation.checked_add(1).expect("device generation exhausted");
         let sender = self.sender.clone();
         let generation = Arc::new(DeviceGeneration::new(
@@ -131,8 +130,7 @@ impl Shell {
                 sender.send_event(PlatformEvent::Device { generation, notice });
             })),
         ));
-        self.device = Some(Device::create(
-            &self.instance,
+        self.device = Some(self.backend.create_device(
             surface,
             generation,
             self.config.trace_gpu,
@@ -149,7 +147,7 @@ impl Shell {
         let transparent = transparent_background(&presentation.theme)
             || (os.supports_window_vibrancy() && matches!(presentation.material, WindowMaterial::Vibrancy(_)));
         let initial_fullscreen = runtime.window_geometry().fullscreen;
-        let backend = self.device.as_ref().map_or(wgpu::Backends::all(), |device| device.adapter.get_info().backend.into());
+        let backend = self.device.as_ref().map_or_else(|| self.backend.capabilities(), GpuDevice::capabilities);
         let mut window =
             os.create_window(id, &options, OsWindowContext { backend, config: &self.config, sender: self.sender.clone(), transparent })?;
         window.configure_chrome(&options);
@@ -161,7 +159,7 @@ impl Shell {
             presentation.level,
         );
         let raw = window.host_surface().raw_native();
-        let surface = create_surface(&self.instance, window.as_ref())?;
+        let surface = create_surface(&self.backend, window.as_ref())?;
         if self.device.is_none() {
             self.create_device(os, &surface)?;
         }
@@ -489,10 +487,10 @@ impl Shell {
     }
 
     fn configure_surfaces(&mut self, os: &dyn OsHost, now: Instant) -> Result<(), String> {
-        if self.device.as_ref().is_some_and(|device| device.executor.generation().is_lost()) {
+        if self.device.as_ref().is_some_and(|device| device.generation().is_lost()) {
             self.drain = None;
             let old = self.device.take().expect("lost device");
-            old.executor.shutdown();
+            old.shutdown();
             self.retired.clear();
             for host in self.windows.values_mut() {
                 host.invalidate_surface(true);
@@ -503,18 +501,27 @@ impl Shell {
         }
         let Some(device) = &self.device else { return Ok(()) };
         if self.drain.is_none() && (!self.retired.is_empty() || self.windows.values().any(|host| host.can_configure(now))) {
-            self.drain = Some(device.executor.drain_surfaces().map_err(|error| error.to_string())?);
+            self.drain = Some(device.drain_surfaces().map_err(|error| error.to_string())?);
         }
         if let Some(result) = self.drain.as_mut().and_then(GpuTask::try_take) {
             self.drain = None;
             let lease = result.map_err(|error| error.to_string())?;
             self.retired.clear();
+            let mut resize_draws = Vec::new();
             for host in self.windows.values_mut().filter(|host| host.can_configure(now)) {
-                if host.configure(&self.instance, &device.adapter, lease.device())? {
+                if host.configure(&self.backend, device, &lease)? {
                     host.request_frame();
+                    if let Some(target) = host.take_resize_draw() {
+                        resize_draws.push((host.id, target));
+                    }
                 }
             }
-            lease.resume();
+            drop(lease);
+            // The lease can arrive between display ticks. Submit the resize frame for the
+            // tick that requested it, so the next resize cannot overtake its drawable.
+            for (window, target) in resize_draws {
+                self.draw(window, target, true)?;
+            }
         }
         Ok(())
     }
@@ -601,7 +608,7 @@ impl Shell {
                 {
                     let at = self.app.runtime().now();
                     let draw = frame.scene.as_ref().map_or_else(|| frame.draw.clone(), |scene| scene.sample(at.as_secs_f64()));
-                    match device.executor.capture(
+                    match device.capture(
                         draw,
                         host.viewport().scale,
                         Some(octara_model::capture::PaintSample { revision: frame.number, sampled_at: at }),
@@ -627,19 +634,33 @@ impl Shell {
         Ok(())
     }
 
-    fn run_ready(&mut self, os: &mut dyn OsHost) -> Result<(), String> {
+    fn run_ready(&mut self, os: &mut dyn OsHost, display_tick: Option<(WindowId, Instant)>) -> Result<(), String> {
         if self.config.manual_clock {
             self.app.runtime_mut().settle().map_err(|error| error.to_string())?;
         } else {
             self.app.advance_to(self.started.elapsed()).map_err(|error| error.to_string())?;
         }
-        self.run_ready_after_clock(os)
+        self.run_ready_after_clock(os, display_tick)
     }
 
-    fn run_ready_after_clock(&mut self, os: &mut dyn OsHost) -> Result<(), String> {
+    fn run_ready_after_clock(&mut self, os: &mut dyn OsHost, display_tick: Option<(WindowId, Instant)>) -> Result<(), String> {
         self.drain_commands(os)?;
-        self.configure_surfaces(os, Instant::now())?;
         self.finish_frames()?;
+        let resized: Vec<_> = self
+            .windows
+            .iter_mut()
+            .filter_map(|(&id, host)| {
+                let target = display_tick.filter(|(window, _)| *window == id).map(|(_, target)| target);
+                host.resize_for_frame(target).then_some(id)
+            })
+            .collect();
+        if !resized.is_empty() {
+            for id in resized {
+                self.refresh_viewport(id)?;
+            }
+            self.drain_commands(os)?;
+        }
+        self.configure_surfaces(os, Instant::now())?;
         self.capture(os)?;
         let now = Instant::now();
         if self.hook_deadline.is_none_or(|deadline| deadline <= now)
@@ -839,14 +860,7 @@ impl Shell {
         }
         self.windows.get_mut(&id).expect("buffered window").activate_frame_clock();
         self.frame_input.window = Some(id);
-        let merge_wheel = if let InteractionEvent::Wheel { pos, .. } = event
-            && matches!(self.frame_input.packets.last(), Some(InteractionEvent::Wheel { .. }))
-        {
-            self.app.runtime().window(id).is_some_and(|runtime| runtime.can_coalesce_wheel(pos))
-        } else {
-            false
-        };
-        self.frame_input.push(event, merge_wheel);
+        self.frame_input.push(event, |pos| self.app.runtime().window(id).is_some_and(|runtime| runtime.can_coalesce_wheel(pos)));
         Ok(())
     }
 
@@ -938,7 +952,7 @@ impl Shell {
         if os.application_active().unwrap_or(true) {
             self.lifecycle(HostLifecycleEvent::AppForeground)?;
         }
-        self.run_ready(os)
+        self.run_ready(os, None)
     }
 
     fn platform_event(&mut self, os: &mut dyn OsHost, event: PlatformEvent) -> Result<bool, String> {
@@ -964,7 +978,7 @@ impl Shell {
             PlatformEvent::Launched | PlatformEvent::Resumed => self.resume(os)?,
             PlatformEvent::PlatformReady => {
                 self.launch_definition(os)?;
-                self.run_ready(os)?;
+                self.run_ready(os, None)?;
             }
             PlatformEvent::Suspended => {
                 for host in self.windows.values_mut() {
@@ -984,11 +998,16 @@ impl Shell {
             }
             PlatformEvent::WindowResized(window) => {
                 if let Some(host) = self.windows.get_mut(&window) {
-                    host.invalidate_surface(false);
+                    host.mark_resize();
+                }
+            }
+            PlatformEvent::WindowMoved(window) | PlatformEvent::RefreshViewport { window } => {
+                if let Some(host) = self.windows.get_mut(&window).filter(|host| host.resize_pending()) {
+                    host.mark_resize();
+                } else {
                     self.refresh_viewport(window)?;
                 }
             }
-            PlatformEvent::WindowMoved(window) | PlatformEvent::RefreshViewport { window } => self.refresh_viewport(window)?,
             PlatformEvent::WindowRedrawRequested(window) => self.draw(window, Instant::now(), false)?,
             PlatformEvent::WindowFocused { window, active } => {
                 self.focus_changed |= os.follows_window_focus();
@@ -1027,9 +1046,9 @@ impl Shell {
                 self.app.runtime_mut().set_frame_interval(tick.interval);
                 let time = (!self.config.manual_clock).then(|| self.started.elapsed());
                 if self.frame_input.window == Some(window) && self.flush_frame_input(time)? {
-                    self.run_ready_after_clock(os)?;
+                    self.run_ready_after_clock(os, Some((window, tick.target)))?;
                 } else {
-                    self.run_ready(os)?;
+                    self.run_ready(os, Some((window, tick.target)))?;
                 }
                 self.draw(window, tick.target, true)?;
                 if let Some(host) = self.windows.get_mut(&window) {
@@ -1081,7 +1100,7 @@ impl Shell {
             self.lifecycle(if active { HostLifecycleEvent::AppForeground } else { HostLifecycleEvent::AppBackground })?;
         }
         if !self.terminating {
-            self.run_ready(os)?;
+            self.run_ready(os, None)?;
         }
         Ok(self.schedule())
     }
@@ -1092,7 +1111,7 @@ impl Shell {
         self.drain = None;
         if let Some(device) = self.device.take() {
             // GPU work must release all borrowed surfaces before the native windows are dropped.
-            device.executor.shutdown();
+            device.shutdown();
         }
         self.retired.clear();
     }

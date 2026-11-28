@@ -7,14 +7,14 @@ use octara_model::{
     paint::{CustomPaint, DisplayList, Image, ImagePaint, Item, Part, Quad},
     theme::Color,
 };
-use octara_render::{GpuRenderer, wgpu};
+use octara_render::{WgpuRenderer, wgpu};
 
 #[test]
 fn gpu_submits_only_the_kept_frame_with_its_surrounding_commands() {
     use octara_render::gpu::{CanvasFrame, FrameInput, FrameTarget, OutputColor, canvas};
     use std::time::Duration;
 
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         assert!(std::env::var_os("OCTARA_REQUIRE_GPU").is_none(), "a GPU adapter is required");
         return;
     };

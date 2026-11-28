@@ -1,10 +1,12 @@
 //! Frame-local CPU uploads into reusable GPU storage buffers.
 
 use super::atlas::{RecordError, SceneTextures};
-use super::glyph_pipeline::GlyphInst;
-use super::instances::{DrawInst, GlyphClip, GlyphDraw, GradientInst, ImageInst, Instances, MaterialInst, QuadInst, ShadowInst};
-use super::pipeline::{Globals, PipelineKind};
-use super::plan::PassBounds;
+use super::pipeline::PipelineKind;
+use crate::plan::GlyphInst;
+use crate::plan::instances::Globals;
+use crate::plan::instances::payload_bytes;
+use crate::plan::instances::{DrawInst, GlyphClip, GlyphDraw, GradientInst, ImageInst, Instances, MaterialInst, QuadInst, ShadowInst};
+use crate::plan::{PassBounds, SpatialWrite};
 use crate::shape::ClipNode;
 
 const STORAGE: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE.union(wgpu::BufferUsages::COPY_DST);
@@ -199,25 +201,6 @@ pub(super) struct FrameData {
     pub(super) uniforms: Vec<u8>,
     pub(super) clips: Vec<ClipNode>,
     pub(super) spatials: Vec<[f32; 4]>,
-}
-
-pub(super) struct SpatialWrite {
-    pub(super) row: usize,
-    pub(super) offset: [f32; 4],
-}
-
-pub(super) fn payload_bytes(i: &Instances, uniforms: usize, clips: &[ClipNode]) -> u64 {
-    (uniforms
-        + size_of_val(i.draws.as_slice())
-        + size_of_val(i.quads.as_slice())
-        + size_of_val(i.shadows.as_slice())
-        + size_of_val(i.images.as_slice())
-        + size_of_val(i.glyphs.as_slice())
-        + size_of_val(i.glyph_draws.as_slice())
-        + size_of_val(i.glyph_clips.as_slice())
-        + size_of_val(i.materials.as_slice())
-        + size_of_val(i.gradients.as_slice())
-        + size_of_val(clips)) as u64
 }
 
 pub(super) struct FrameUploads<'renderer> {

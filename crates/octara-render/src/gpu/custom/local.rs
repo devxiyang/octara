@@ -2,7 +2,8 @@
 
 use super::super::{FrameInput, FrameTarget, OutputColor, SurfaceRenderer, resolve::Blit, surface::record_surface};
 use super::{
-    Canvas, CanvasMode, CanvasPaint, CanvasSource, ErrorScopes, PaintProgram, PreparedCanvas, canvas_size, canvas_target, record_canvas,
+    CanvasMode, CanvasPaint, CanvasPrepare, CanvasProgram, CanvasSource, ErrorScopes, PaintProgram, PreparedCanvas, canvas_mode,
+    canvas_size, canvas_target, record_canvas,
 };
 use octara_model::capture::PaintSample;
 use octara_model::geometry::Size;
@@ -13,7 +14,7 @@ use std::sync::Weak;
 use std::time::Duration;
 
 pub fn supports(program: &PaintProgram) -> bool {
-    program.downcast_ref::<Canvas>().is_some_and(|canvas| matches!(canvas.mode, CanvasMode::Volatile | CanvasMode::Retained))
+    matches!(canvas_mode(program), Some(CanvasMode::Volatile | CanvasMode::Retained))
 }
 
 /// Frozen arguments belonging to an accepted layout. Retained programs ignore movement and time.
@@ -26,7 +27,7 @@ pub struct Frame {
 impl Frame {
     pub fn new(mut paint: CustomPaint, scale: f32, sampled_at: Duration) -> Option<Self> {
         let rect = &mut paint.fallback.rect;
-        let sampled_at = match paint.program.downcast_ref::<Canvas>()?.mode {
+        let sampled_at = match canvas_mode(&paint.program)? {
             CanvasMode::Retained => {
                 rect.x = 0.0;
                 rect.y = 0.0;
@@ -113,9 +114,10 @@ impl Renderer {
         let owner = frame.paint.program.downgrade();
         let key = owner.as_ptr().cast::<()>().addr();
         if let std::collections::hash_map::Entry::Vacant(entry) = self.programs.entry(key) {
-            let canvas = frame.paint.program.downcast_ref::<Canvas>().expect("a local canvas program");
+            let canvas = frame.paint.program.downcast_ref::<CanvasProgram>().expect("a local canvas program");
             let scopes = ErrorScopes::new(device);
-            let draw = (canvas.prepare)(device);
+            let prepare = canvas.payload::<Box<CanvasPrepare>>().ok_or("unsupported local Canvas program")?;
+            let draw = prepare(device);
             let error = scopes.pop().await;
             entry.insert(PreparedCanvas { owner, draw: error.is_none().then_some(draw), reported_failure: false });
             if let Some(error) = error {

@@ -1,7 +1,7 @@
 //! Offscreen capture recording, buffer mapping, and row unpacking.
 
 use super::recording::{FrameRecording, RecordedFrame};
-use super::{FrameInput, FrameTarget, GpuRenderer, OutputColor, custom};
+use super::{FrameInput, FrameTarget, OutputColor, WgpuRenderer, custom};
 use octara_model::capture::{PaintReceipt, PaintSample, PaintedPicture};
 use octara_model::paint::{DisplayList, Picture};
 use std::alloc::Layout;
@@ -125,7 +125,7 @@ impl MappedReadback {
     }
 }
 
-impl GpuRenderer {
+impl WgpuRenderer {
     /// Renders offscreen and reads the pixels back (tests, screenshots, a window's captures), in
     /// straight-alpha sRGB RGBA8. Each axis has a one-pixel minimum.
     ///

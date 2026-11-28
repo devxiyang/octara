@@ -5,7 +5,7 @@ use octara::WindowOptions;
 use octara::module::{HostSurface, HostSurfaceKind};
 use octara::runtime::{Input, WindowId};
 use octara::tree::editor::{Composition, EditorSlot};
-use octara_gpu::DrawTarget;
+use octara_gpu::{BackendCapabilities, DeviceDrawnFrame, GpuBackend, GpuDevice, WgpuBackend};
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceRequest};
 use octara_model::geometry::{Rect, Size, WindowViewport};
 use octara_model::identity::{EditorSessionId, NativeId, TargetGuard};
@@ -19,7 +19,7 @@ use octara_model::window::{
     StatusBarStyle, UserAttention, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowLevel, WindowMaterial,
 };
 use octara_pipeline::NativePublication;
-use octara_render::{gpu::OutputColor, wgpu};
+use octara_render::OutputColor;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,8 +62,16 @@ pub fn create_os_host() -> Box<dyn OsHost> {
     platform::create()
 }
 
+pub(crate) type NativeGpuBackend = WgpuBackend;
+pub(crate) type NativeGpuDevice = <NativeGpuBackend as GpuBackend>::Device;
+pub(crate) type NativeSurfaceLease = <NativeGpuDevice as GpuDevice>::SurfaceLease;
+pub(crate) type NativeDrawnFrame = DeviceDrawnFrame<NativeGpuDevice>;
+pub type NativeSurfaceSession = <NativeGpuBackend as GpuBackend>::Surface;
+pub type Drawable = <NativeGpuDevice as GpuDevice>::Drawable;
+pub type DrawableAcquisition = octara_gpu::DrawableAcquisition<Drawable>;
+
 pub struct OsWindowContext<'a> {
-    pub backend: wgpu::Backends,
+    pub backend: BackendCapabilities,
     pub config: &'a ShellConfig,
     pub sender: PlatformSender,
     pub transparent: bool,
@@ -307,82 +315,25 @@ pub trait WindowPresentation {
     fn externally_paced(&self) -> bool;
     fn set_frame_clock_activity(&mut self, activity: FrameClockActivity);
     fn surface_will_reconfigure(&mut self) -> bool;
-    fn set_transactional_presentation(&mut self, _native_rev: u64, _transactional: bool) {}
+    fn resize_waits_for_display(&self) -> bool {
+        false
+    }
+    fn set_transactional_presentation(&mut self, _native_rev: u64, _transactional: bool, _resizing: bool) {}
     fn abandon_native_view_frame(&mut self) {}
-    fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor, from_clock: bool) -> DrawableAcquisition;
-    fn present(&mut self, drawable: Box<dyn Drawable>, queue: &wgpu::Queue) -> Result<(), String>;
+    fn try_acquire_drawable(&mut self, surface: &NativeSurfaceSession, color: OutputColor, from_clock: bool) -> DrawableAcquisition;
 
     /// Present the drawable and commit native view placements for its revision.
     /// Backends with a platform transaction call the callback inside that transaction.
     fn present_with_native_views(
         &mut self,
-        drawable: Box<dyn Drawable>,
-        queue: &wgpu::Queue,
+        drawable: Box<Drawable>,
         _native_rev: u64,
         commit_native_views: &mut dyn FnMut(),
     ) -> Result<(), String> {
-        self.present(drawable, queue)?;
+        drawable.present()?;
         commit_native_views();
         Ok(())
     }
-}
-
-pub trait Drawable: DrawTarget {
-    fn present(self: Box<Self>, queue: &wgpu::Queue) -> Result<(), String>;
-    fn suboptimal(&self) -> bool {
-        false
-    }
-}
-
-impl DrawTarget for Box<dyn Drawable> {
-    fn texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(wgpu::Texture, OutputColor), String> {
-        self.as_mut().texture(device, queue)
-    }
-}
-
-pub enum DrawableAcquisition {
-    Ready(Box<dyn Drawable>),
-    WaitingForClock,
-    Retry,
-    Reconfigure,
-    Lost,
-    Suspended,
-}
-
-struct SurfaceDrawable {
-    frame: wgpu::SurfaceTexture,
-    _surface: Arc<wgpu::Surface<'static>>,
-    color: OutputColor,
-    suboptimal: bool,
-}
-
-impl DrawTarget for SurfaceDrawable {
-    fn texture(&mut self, _: &wgpu::Device, _: &wgpu::Queue) -> Result<(wgpu::Texture, OutputColor), String> {
-        Ok((self.frame.texture.clone(), self.color))
-    }
-}
-
-impl Drawable for SurfaceDrawable {
-    fn present(self: Box<Self>, queue: &wgpu::Queue) -> Result<(), String> {
-        queue.present(self.frame);
-        Ok(())
-    }
-
-    fn suboptimal(&self) -> bool {
-        self.suboptimal
-    }
-}
-
-pub fn surface_drawable(surface: &Arc<wgpu::Surface<'static>>, color: OutputColor) -> DrawableAcquisition {
-    use wgpu::CurrentSurfaceTexture as Status;
-    let (frame, suboptimal) = match surface.get_current_texture() {
-        Status::Success(frame) => (frame, false),
-        Status::Suboptimal(frame) => (frame, true),
-        Status::Timeout | Status::Occluded => return DrawableAcquisition::Retry,
-        Status::Outdated => return DrawableAcquisition::Reconfigure,
-        Status::Lost | Status::Validation => return DrawableAcquisition::Lost,
-    };
-    DrawableAcquisition::Ready(Box::new(SurfaceDrawable { frame, _surface: surface.clone(), color, suboptimal }))
 }
 
 pub fn reply(sender: &PlatformSender, window: WindowId, reply: HostReply) {

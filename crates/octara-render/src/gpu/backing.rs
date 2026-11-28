@@ -1,10 +1,10 @@
 //! Submitted scene pixels and the transfer to each newly acquired frame target.
 
-use super::damage::{DamageRect, SceneSnapshot};
 use super::pipeline::{DEPTH_FORMAT, color_texture};
 use super::resolve::{AttachmentInfo, Blit};
 use super::retained::RetainedTarget;
 use super::{FrameTarget, OutputColor};
+use crate::plan::{DamageRect, SceneSnapshot};
 use rustc_hash::FxHashMap;
 use wgpu::util::DeviceExt;
 

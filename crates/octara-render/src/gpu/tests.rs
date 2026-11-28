@@ -1,9 +1,9 @@
 use super::atlas::SceneTextures;
-use super::batch::{Batch, Draw};
 use super::encode::color_pass;
 use super::pipeline::color_texture;
-use super::plan::{FramePlan, TargetInfo};
 use super::*;
+use crate::plan::batch::{Batch, Draw};
+use crate::plan::{self, FramePlan, TargetInfo};
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt};
 use octara_model::geometry::Rect;
 use octara_model::identity::NodeId;
@@ -82,7 +82,7 @@ fn program_box(rect: Rect, program: PaintProgram, params: [f32; 4]) -> CustomPai
 fn one_device_records_into_independent_output_formats() {
     use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba8UnormSrgb};
 
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -166,7 +166,7 @@ fn one_device_records_into_independent_output_formats() {
 }
 
 fn profile_frame<'a>(
-    gpu: &'a mut GpuRenderer,
+    gpu: &'a mut WgpuRenderer,
     target: &wgpu::Texture,
     list: &DisplayList,
     scale: f32,
@@ -184,7 +184,7 @@ fn retained_scroll_submits_sparse_offsets_with_shared_atlas_pixels() {
     use octara_model::image::Image;
     use octara_model::paint::{ImagePaint, ScrollPlacement, ScrollPlacements};
 
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         assert!(std::env::var_os("OCTARA_REQUIRE_GPU").is_none(), "a GPU adapter is required");
         return;
     };
@@ -255,7 +255,7 @@ fn retained_scroll_inherits_an_enclosing_translation() {
     use octara_model::geometry::Vec2;
     use octara_model::paint::{ScrollPlacement, ScrollPlacements};
 
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         assert!(std::env::var_os("OCTARA_REQUIRE_GPU").is_none(), "a GPU adapter is required");
         return;
     };
@@ -308,7 +308,7 @@ fn retained_color(draws: Arc<AtomicUsize>) -> PaintProgram {
 
 #[test]
 fn independent_canvas_updates_keep_exact_inputs_and_drop_superseded_recordings() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -355,7 +355,7 @@ fn independent_canvas_updates_keep_exact_inputs_and_drop_superseded_recordings()
 
 #[test]
 fn retained_canvas_tracks_data_versions_through_discard_and_capture() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -394,7 +394,7 @@ fn retained_canvas_tracks_data_versions_through_discard_and_capture() {
 
 #[test]
 fn retained_canvas_reuses_pixels_through_scroll_clip_and_group_opacity() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -455,7 +455,7 @@ fn retained_canvas_reuses_pixels_through_scroll_clip_and_group_opacity() {
 
 #[test]
 fn retained_canvas_keeps_submitted_pixels_and_independent_outputs_for_duplicate_mounts() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -562,7 +562,7 @@ fn nested_rounded_clips_keep_both_corners_in_layered_draws() {
     };
     let red = Item::Quad(solid(rect, rgb(0xff0000)));
     assert_corners(crate::CpuRenderer::new().render(&dl(red.clone()), 1.0));
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped GPU corner check");
         return;
     };
@@ -649,7 +649,7 @@ fn crossfade() -> PaintProgram {
 
 #[test]
 fn local_transition_composites_accepted_history_and_current_pixels_in_place() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -680,7 +680,7 @@ fn local_transition_composites_accepted_history_and_current_pixels_in_place() {
         list
     };
     let target = device_target(gpu.device(), wgpu::TextureUsages::empty());
-    let submit = |gpu: &mut GpuRenderer, list: &DisplayList, revision| {
+    let submit = |gpu: &mut WgpuRenderer, list: &DisplayList, revision| {
         let (recorded, profile) = profile_frame(gpu, &target, list, 1.0, revision);
         let effects = recorded.paint_receipts().to_vec();
         (recorded.submit_for_presentation().1, effects, profile)
@@ -749,7 +749,7 @@ fn local_transition_composites_accepted_history_and_current_pixels_in_place() {
 #[test]
 fn author_programs_and_profiles_preserve_renderer_send_and_sync() {
     fn assert_send_and_sync<T: Send + Sync>() {}
-    assert_send_and_sync::<GpuRenderer>();
+    assert_send_and_sync::<WgpuRenderer>();
     assert_send_and_sync::<RecordedFrame<'static>>();
     assert_send_and_sync::<PendingPresentation>();
 }
@@ -760,7 +760,7 @@ fn color_glyphs_keep_their_atlas_color_with_sampled_opacity() {
     use octara_model::geometry::point;
     use octara_model::paint::{FontFace, FontId, Glyph, GlyphRun};
 
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         assert!(std::env::var_os("OCTARA_REQUIRE_GPU").is_none(), "a GPU adapter is required");
         return;
     };
@@ -789,7 +789,7 @@ fn color_glyphs_keep_their_atlas_color_with_sampled_opacity() {
 
 #[test]
 fn materials_batch_in_painter_order_with_per_instance_params() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -810,7 +810,7 @@ fn materials_batch_in_painter_order_with_per_instance_params() {
     assert!(requests.canvases.is_empty() && requests.backdrops.is_empty());
     crate::block_on(gpu.prepare_resources(&mut passes, resources, &mut SceneTextures::default(), WORKING_FORMAT, &mut requests.receipts))
         .unwrap();
-    let material = *material(SHADER).downcast_ref::<custom::Material>().unwrap();
+    let material = *material(SHADER).downcast_ref::<plan::Material>().unwrap();
     assert_eq!(
         passes[0].batches,
         [
@@ -833,7 +833,7 @@ fn materials_batch_in_painter_order_with_per_instance_params() {
 
 #[test]
 fn canvas_uses_clip_group_opacity_frame_params_and_validation_fallback() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -913,7 +913,7 @@ fn canvas_uses_clip_group_opacity_frame_params_and_validation_fallback() {
 
 #[test]
 fn backdrops_read_the_painter_prefix_and_keep_surrounding_commands_in_order() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -988,7 +988,7 @@ fn backdrops_read_the_painter_prefix_and_keep_surrounding_commands_in_order() {
 
 #[test]
 fn backdrop_crops_to_nested_clips_and_the_resized_attachment() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -1031,7 +1031,7 @@ fn backdrop_crops_to_nested_clips_and_the_resized_attachment() {
 
 #[test]
 fn backdrop_exit_replays_only_the_accepted_image_of_its_mount() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
@@ -1143,7 +1143,7 @@ fn profiled_frames_measure_recorded_work_and_read_back_asynchronously() {
         eprintln!("no GPU device: skipped");
         return;
     };
-    let mut gpu = GpuRenderer::with_device(device.clone(), queue);
+    let mut gpu = WgpuRenderer::with_device(device.clone(), queue);
     let timestamps_supported = features.contains(wgpu::Features::TIMESTAMP_QUERY);
     if timestamps_supported {
         let mut held: Vec<_> = (0..3).map(|_| gpu.timestamps.begin(&device, &gpu.queue).unwrap()).collect();
@@ -1309,13 +1309,13 @@ fn metal_profiles_share_following_work_and_flush_when_idle() {
         adapter.request_device(&wgpu::DeviceDescriptor { required_features: wgpu::Features::TIMESTAMP_QUERY, ..Default::default() }),
     )
     .unwrap();
-    let mut gpu = GpuRenderer::with_device(device.clone(), queue);
+    let mut gpu = WgpuRenderer::with_device(device.clone(), queue);
     let target = device_target(&device, wgpu::TextureUsages::empty());
     let list = picture([Item::Quad(solid(Rect::new(2.0, 2.0, 8.0, 8.0), Color::WHITE))]);
     let wait = |submission_index| {
         device.poll(wgpu::PollType::Wait { submission_index, timeout: Some(Duration::from_secs(2)) }).unwrap();
     };
-    let profile = |gpu: &mut GpuRenderer| {
+    let profile = |gpu: &mut WgpuRenderer| {
         let (send, receive) = mpsc::channel();
         let encoder = device.create_command_encoder(&Default::default());
         let input = FrameInput { list: &list, scale: 1.0, sample: None };
@@ -1365,7 +1365,7 @@ fn metal_profiles_share_following_work_and_flush_when_idle() {
 
 #[test]
 fn offscreen_readbacks_keep_their_own_pixels_and_receipts() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };

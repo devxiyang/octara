@@ -6,7 +6,7 @@ use octara_model::{
     paint::{DisplayList, Item, Part, Quad},
     theme::rgb,
 };
-use octara_render::{CpuRenderer, GpuRenderer};
+use octara_render::{CpuRenderer, WgpuRenderer};
 use std::fmt::Debug;
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -25,7 +25,7 @@ fn wait<T, E: Debug>(wakes: &mpsc::Receiver<()>, mut take: impl FnMut() -> Optio
 
 #[test]
 fn gpu_capture_stages_a_cpu_equivalent_png_until_publication() {
-    let Some(renderer) = GpuRenderer::new() else {
+    let Some(renderer) = WgpuRenderer::new() else {
         eprintln!("No GPU adapter available for capture parity");
         return;
     };

@@ -12,13 +12,13 @@ use octara_model::paint::Sample;
 use octara_model::paint::{CustomPaint, Image, PaintInput, Quad, Shadow};
 use octara_model::paint::{DisplayList, ImagePaint, Item, Part};
 use octara_model::theme::{Color, Gradient, rgb};
-use octara_render::{CpuRenderer, GpuRenderer, wgpu};
+use octara_render::{CpuRenderer, WgpuRenderer, wgpu};
 
 mod micro_pipelines;
 mod transition;
 
-fn gpu_or_skip() -> Option<GpuRenderer> {
-    let gpu = GpuRenderer::new();
+fn gpu_or_skip() -> Option<WgpuRenderer> {
+    let gpu = WgpuRenderer::new();
     if gpu.is_none() {
         assert!(std::env::var_os("OCTARA_REQUIRE_GPU").is_none(), "a GPU adapter is required");
         eprintln!("no GPU adapter: skipped");
@@ -145,7 +145,7 @@ fn image_row(images: &[Sample]) -> DisplayList {
     DisplayList { size: octara_model::geometry::Size::new(images.len() as f32 * 8.0, 8.0), background: Color::WHITE, parts }
 }
 
-fn image_row_pixels(gpu: &mut GpuRenderer, row: &DisplayList) -> Vec<[u8; 4]> {
+fn image_row_pixels(gpu: &mut WgpuRenderer, row: &DisplayList) -> Vec<[u8; 4]> {
     let picture = gpu.render(row, 1.0);
     (4..picture.width()).step_by(8).map(|x| picture.pixel(x, 4).unwrap()).collect()
 }
@@ -249,7 +249,7 @@ fn gpu_matches_the_reference_renderer() {
     }
 }
 
-fn capture_with_upload_bytes(gpu: &mut GpuRenderer, list: &DisplayList, scale: f32) -> (Picture, u64) {
+fn capture_with_upload_bytes(gpu: &mut WgpuRenderer, list: &DisplayList, scale: f32) -> (Picture, u64) {
     let mut capture = gpu.record_capture(list, scale, None).unwrap().submit().unwrap();
     gpu.device().poll(wgpu::PollType::Wait { submission_index: Some(capture.submission().clone()), timeout: None }).unwrap();
     let picture = capture.take_mapped().unwrap().unwrap().finish().unwrap().picture;
@@ -381,7 +381,7 @@ fn a_published_frame_rebuilds_its_resources_on_a_replacement_device() {
     };
     let device = |adapter: &wgpu::Adapter| {
         let (device, queue) = octara_render::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a GPU device");
-        GpuRenderer::with_device(device, queue)
+        WgpuRenderer::with_device(device, queue)
     };
     let mut gpu = device(&adapter);
     let preparations = Arc::new(AtomicU32::new(0));
@@ -553,7 +553,7 @@ fn gpu_draws_glyphs_and_paths_across_mask_pages_without_reuploading() {
     let limits = wgpu::Limits { max_texture_dimension_2d: edge, ..Default::default() };
     let (device, queue) =
         octara_render::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_limits: limits, ..Default::default() })).unwrap();
-    let mut gpu = GpuRenderer::with_device(device, queue);
+    let mut gpu = WgpuRenderer::with_device(device, queue);
     let mut list = list(
         (edge as f32, edge as f32),
         Color::WHITE,

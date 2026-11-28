@@ -1,28 +1,37 @@
-//! Renderers for Octara's display list ([`octara_model::paint`]).
+//! Octara's device-free frame planner, CPU reference renderer, and optional wgpu backend.
 //!
-//! - [`CpuRenderer`]: the reference renderer. Deterministic (bundled fonts, plain float math), it
-//!   gives agents and tests screenshots without a GPU and is the oracle the GPU renderer is
-//!   compared with.
-//! - [`GpuRenderer`] (feature `gpu`): wgpu, batched instances, materials, canvases, and backdrop effects.
-//!   The built-in pipelines use the reference renderer's [`shape`] formulas, [`glyphs`] and
-//!   [`paths`] rasterizers, and image mip generation.
+//! The default `plan` feature compiles display lists into render passes and supplies shared
+//! rasterizers, instance packing, and damage tracking. The `wgpu` feature records those
+//! plans into GPU commands on native and WebGPU devices.
 
-#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
 mod blocking;
+#[cfg(feature = "plan")]
 pub mod cpu;
+#[cfg(feature = "plan")]
 pub mod glyphs;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "wgpu")]
 pub mod gpu;
+#[cfg(feature = "plan")]
 mod image_mips;
+#[cfg(feature = "plan")]
 pub mod paths;
+#[cfg(feature = "plan")]
 mod pixels;
+#[cfg(feature = "plan")]
+pub mod plan;
+#[cfg(feature = "plan")]
 pub mod shape;
 
-#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use blocking::block_on;
-pub use cpu::CpuRenderer;
-#[cfg(feature = "gpu")]
-pub use gpu::{GpuRenderer, RecordedFrame, SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory, plan};
-#[cfg(feature = "gpu")]
+#[cfg(feature = "wgpu")]
+pub use gpu::{RecordedFrame, SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory, WgpuRenderer};
+#[cfg(feature = "plan")]
+pub use plan::{
+    CpuRenderer, DamageRect, FramePlan, FrameProfile, GlyphCache, GlyphInst, ImageInst, ImageMips, OutputColor, PlannedBatch, QuadInst,
+    ShadowInst, SpatialTable, plan_frame, plan_frame_cached, plan_frame_spatial,
+};
+#[cfg(feature = "wgpu")]
 pub use wgpu;

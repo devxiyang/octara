@@ -43,9 +43,52 @@ fn encode(pixel: [f32; 4]) -> [u8; 4] {
 }
 
 /// An sRGB encoding of associated linear RGB and linear alpha, as stored by the GPU.
-pub(crate) struct ImageLevel {
-    pub(crate) size: [u32; 2],
-    pub(crate) pixels: Arc<[u8]>,
+#[derive(Clone)]
+pub struct ImageLevel {
+    pub size: [u32; 2],
+    pub pixels: Arc<[u8]>,
+}
+
+/// Generates the base level and mip chain in order, computing levels on demand.
+pub struct ImageMips {
+    level: ImageLevel,
+    packed: bool,
+    lod: u8,
+    max_lod: u8,
+}
+
+impl ImageMips {
+    /// Creates a chain from straight-alpha sRGB RGBA8 pixels. Packed levels round
+    /// odd extents up for an atlas grid. Dedicated levels use floor-rounded extents.
+    /// Returns `None` for zero-sized images or a mismatched byte count.
+    pub fn new(size: [u32; 2], rgba: &Arc<[u8]>, packed: bool, max_lod: u8) -> Option<Self> {
+        let [width, height] = size;
+        let bytes = u64::from(width) * u64::from(height);
+        if bytes == 0 || bytes.checked_mul(4) != Some(rgba.len() as u64) {
+            return None;
+        }
+        Some(Self::from_base(ImageLevel::base(size, rgba, opaque(rgba)), packed, max_lod))
+    }
+
+    pub(crate) fn from_base(level: ImageLevel, packed: bool, max_lod: u8) -> Self {
+        let max_lod = max_lod.min(full_lod(level.size));
+        Self { level, packed, lod: 0, max_lod }
+    }
+}
+
+impl Iterator for ImageMips {
+    type Item = ImageLevel;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.lod > self.max_lod {
+            return None;
+        }
+        if self.lod > 0 {
+            self.level = self.level.downsample(self.packed);
+        }
+        self.lod += 1;
+        Some(self.level.clone())
+    }
 }
 
 impl ImageLevel {

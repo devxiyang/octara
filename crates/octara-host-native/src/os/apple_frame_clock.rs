@@ -6,14 +6,21 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 #[cfg(target_os = "macos")]
-use objc2_app_kit::NSView as DisplayView;
+use objc2_app_kit::{NSView as DisplayView, NSWindowOcclusionState};
 use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes};
 use objc2_quartz_core::{CACurrentMediaTime, CADisplayLink, CAFrameRateRange};
 #[cfg(target_os = "ios")]
 use objc2_ui_kit::UIView as DisplayView;
 use octara::runtime::WindowId;
 use std::cell::Cell;
+#[cfg(target_os = "macos")]
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "macos")]
+mod core_video;
+#[cfg(target_os = "macos")]
+use self::core_video::VideoClock;
 
 const IDLE_GRACE: Duration = Duration::from_millis(120);
 
@@ -64,8 +71,7 @@ define_class!(
                 .ok()
                 .filter(|interval| !interval.is_zero())
                 .unwrap_or_else(|| Duration::from_secs_f64(1.0 / f64::from(maximum_frames_per_second(&clock.view))));
-            // AppKit's view link follows the screen. Read its current capability in
-            // the callback so a move between displays updates the requested range.
+            // Read the current display capability for the requested range.
             clock.update_rate(link);
             clock.proxy.send_event(PlatformEvent::FrameClockTick { window: clock.window, tick: FrameTick { target, interval } });
         }
@@ -102,8 +108,10 @@ fn instant_from_media_time(now: Instant, time: f64) -> Instant {
 pub(super) struct DisplayClock {
     link: Retained<CADisplayLink>,
     target: Retained<Target>,
-    shown: bool,
-    activity: FrameClockActivity,
+    shown: Cell<bool>,
+    activity: Cell<FrameClockActivity>,
+    #[cfg(target_os = "macos")]
+    video: RefCell<Option<VideoClock>>,
 }
 
 impl DisplayClock {
@@ -121,26 +129,47 @@ impl DisplayClock {
         link.setPaused(true);
         // SAFETY: The link and target are registered on their owning main run loop.
         unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
-        Self { link, target, shown: false, activity: FrameClockActivity::Paused }
+        Self {
+            link,
+            target,
+            shown: Cell::default(),
+            activity: Cell::new(FrameClockActivity::Paused),
+            #[cfg(target_os = "macos")]
+            video: RefCell::default(),
+        }
     }
 
     pub(super) fn externally_paced(&self) -> bool {
-        self.shown
+        self.shown.get()
     }
 
-    pub(super) fn did_show(&mut self) {
-        self.shown = true;
-        self.apply_activity(self.activity);
+    pub(super) fn did_show(&self) {
+        self.shown.set(true);
+        #[cfg(target_os = "macos")]
+        self.screen_changed();
+        self.apply_activity(self.activity.get());
     }
 
-    pub(super) fn set_activity(&mut self, activity: FrameClockActivity) {
-        if self.activity == activity {
+    pub(super) fn set_activity(&self, activity: FrameClockActivity) {
+        if self.activity.replace(activity) == activity {
             return;
         }
-        self.activity = activity;
-        if self.shown {
+        if self.shown.get() {
             self.apply_activity(activity);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn screen_changed(&self) {
+        if !self.shown.get() {
+            return;
+        }
+        drop(self.video.take());
+        let clock = self.target.ivars();
+        if let Some(screen) = clock.view.window().and_then(|window| window.screen()) {
+            self.video.replace(VideoClock::new(&screen, clock.window, clock.proxy.clone()));
+        }
+        self.update_driver();
     }
 
     fn apply_activity(&self, activity: FrameClockActivity) {
@@ -155,8 +184,22 @@ impl DisplayClock {
             FrameClockActivity::Interactive => ClockState::Interactive,
         };
         clock.state.set(next);
+        self.update_driver();
+    }
+
+    pub(super) fn update_driver(&self) {
+        let clock = self.target.ivars();
+        // Keep AppKit's low-rate and idle behavior. Core Video emits the full hardware cadence.
+        #[cfg(target_os = "macos")]
+        let video_running = {
+            let interactive = matches!(clock.state.get(), ClockState::Interactive)
+                && clock.view.window().is_some_and(|window| window.occlusionState().contains(NSWindowOcclusionState::Visible));
+            self.video.borrow().as_ref().is_some_and(|video| video.set_running(interactive))
+        };
+        #[cfg(target_os = "ios")]
+        let video_running = false;
         clock.update_rate(&self.link);
-        let paused = matches!(next, ClockState::Paused);
+        let paused = video_running || matches!(clock.state.get(), ClockState::Paused);
         if self.link.isPaused() != paused {
             self.link.setPaused(paused);
         }

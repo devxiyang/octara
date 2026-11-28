@@ -98,7 +98,7 @@ octara-model = { path = "crates/octara-model", version = "0.0.10" }
 octara-pipeline = { path = "crates/octara-pipeline", version = "0.0.10" }
 octara-picker = { path = "modules/octara-picker", version = "0.0.10", default-features = false }
 octara-release = { path = "crates/octara-release", version = "0.0.10" }
-octara-render = { path = "crates/octara-render", version = "0.0.10", default-features = false }
+octara-render = { path = "crates/octara-render", version = "0.0.10", default-features = false, features = ["plan"] }
 octara-runtime = { path = "crates/octara-runtime", version = "0.0.10" }
 octara-svg = { path = "crates/octara-svg", version = "0.0.10" }
 octara-tree = { path = "crates/octara-tree", version = "0.0.10" }

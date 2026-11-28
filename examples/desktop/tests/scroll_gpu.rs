@@ -4,11 +4,11 @@ use octara::prelude::*;
 use octara::{App, Input, InteractionEvent, WheelPhase};
 use octara_pipeline::{NativeEngine, NativeEngineConfig, NativePublication};
 use octara_render::gpu::{FrameInput, FrameTarget, OutputColor};
-use octara_render::{CpuRenderer, GpuRenderer, wgpu};
+use octara_render::{CpuRenderer, WgpuRenderer, wgpu};
 
 #[test]
 fn retained_scroll_uploads_only_spatials_and_matches_cpu_at_retina_scales() {
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let Some(mut gpu) = WgpuRenderer::new() else {
         assert!(std::env::var_os("OCTARA_REQUIRE_GPU").is_none(), "a GPU adapter is required");
         return;
     };

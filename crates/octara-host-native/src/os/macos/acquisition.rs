@@ -1,18 +1,24 @@
 //! AppKit drawable acquisition, including the delayed test path.
 
 use super::metal_frame::MetalFrame;
-use crate::os::apple_metal::{metal_layer, set_transactional};
-use crate::os::{DrawableAcquisition, surface_drawable};
+use crate::os::apple_metal::set_transactional;
+use crate::os::{DrawableAcquisition, NativeSurfaceSession};
+use block2::RcBlock;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
-use objc2_metal::MTLPixelFormat;
-use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
-use octara_render::{gpu::OutputColor, wgpu};
+use objc2_metal::{MTLDrawable, MTLPixelFormat};
+use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer, CATransaction, kCAGravityResize, kCAGravityTopLeft};
+use octara_gpu::SurfaceSession;
+use octara_render::OutputColor;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
 
 type NativeDrawable = Retained<ProtocolObject<dyn CAMetalDrawable>>;
+
+// A hidden or disconnected display may never acknowledge the drawable.
+const DISPLAY_WAIT_LIMIT: Duration = Duration::from_millis(80);
 
 struct LayerRequest(Retained<CAMetalLayer>);
 
@@ -86,11 +92,12 @@ pub(super) struct Acquisition {
     delay: Duration,
     shown: bool,
     init_attempted: bool,
+    displaying: Option<(Instant, Arc<AtomicBool>)>,
 }
 
 impl Acquisition {
     pub(super) fn new(delay: Duration, wake: impl Fn(Instant) + Send + Sync + 'static) -> Self {
-        Self { wake: Arc::new(wake), layer: None, worker: None, delay, shown: false, init_attempted: false }
+        Self { wake: Arc::new(wake), layer: None, worker: None, delay, shown: false, init_attempted: false, displaying: None }
     }
 
     pub(super) fn did_show(&mut self) {
@@ -109,19 +116,31 @@ impl Acquisition {
         }
         self.layer = None;
         self.init_attempted = false;
+        self.displaying = None;
         true
+    }
+
+    pub(super) fn waiting_for_display(&self) -> bool {
+        self.displaying.as_ref().is_some_and(|(started, done)| started.elapsed() < DISPLAY_WAIT_LIMIT && !done.load(Ordering::Acquire))
+    }
+
+    pub(super) fn did_submit_for_display(&mut self) {
+        if let Some((started, _)) = &mut self.displaying {
+            *started = Instant::now();
+        }
     }
 
     pub(super) fn acquire(
         &mut self,
-        surface: &Arc<wgpu::Surface<'static>>,
+        surface: &NativeSurfaceSession,
         color: OutputColor,
         externally_paced: bool,
         transactional: bool,
+        resizing: bool,
     ) -> DrawableAcquisition {
         if !self.init_attempted {
             self.init_attempted = true;
-            self.layer = metal_layer(surface);
+            self.layer = surface.metal_layer();
             if let Some(layer) = &self.layer {
                 if !layer.allowsNextDrawableTimeout() {
                     layer.setAllowsNextDrawableTimeout(true);
@@ -133,10 +152,34 @@ impl Acquisition {
                 }
             }
         }
-        let Some(layer) = &self.layer else { return surface_drawable(surface, color) };
+        let Some(layer) = &self.layer else { return surface.acquire(color) };
+        align_contents(layer, resizing || self.waiting_for_display());
+        if externally_paced && resizing && direct_target(layer) {
+            // Hold the drawable through native display acknowledgement, which wgpu's
+            // surface texture does not expose. A subsequent configure can replace its storage.
+            set_transactional(layer, transactional);
+            let Some(drawable) = layer.nextDrawable() else { return DrawableAcquisition::WaitingForClock };
+            let done = Arc::new(AtomicBool::new(false));
+            let callback_done = done.clone();
+            let wake = self.wake.clone();
+            let callback = RcBlock::new(move |_: std::ptr::NonNull<ProtocolObject<dyn MTLDrawable>>| {
+                callback_done.store(true, Ordering::Release);
+                wake(Instant::now());
+            });
+            // SAFETY: Metal copies the block; the atomic flag is safe on the callback thread.
+            unsafe { drawable.addPresentedHandler(RcBlock::as_ptr(&callback)) };
+            self.displaying = Some((Instant::now(), done));
+            let size = layer.drawableSize();
+            return DrawableAcquisition::Ready(Box::new(MetalFrame::new(
+                drawable,
+                (size.width as u32, size.height as u32),
+                color,
+                transactional,
+            )));
+        }
         if externally_paced {
             set_transactional(layer, transactional);
-            return surface_drawable(surface, color);
+            return surface.acquire(color);
         }
         if let Some(worker) = self.worker.as_mut().filter(|_| direct_target(layer)) {
             if let Some(drawable) = worker.take() {
@@ -151,7 +194,18 @@ impl Acquisition {
             self.worker = None;
         }
         set_transactional(layer, transactional);
-        surface_drawable(surface, color)
+        surface.acquire(color)
+    }
+}
+
+pub(super) fn align_contents(layer: &CALayer, live_resize: bool) {
+    // SAFETY: Core Animation exports both gravity constants for the process lifetime.
+    let gravity = unsafe { if live_resize { kCAGravityTopLeft } else { kCAGravityResize } };
+    if &*layer.contentsGravity() != gravity {
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        let _transaction = std::mem::DropGuard::new((), |()| CATransaction::commit());
+        layer.setContentsGravity(gravity);
     }
 }
 

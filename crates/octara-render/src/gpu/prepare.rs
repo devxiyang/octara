@@ -1,25 +1,59 @@
 //! Resolves a device-free frame plan into GPU resources available to the encoder.
 
-use super::atlas::{ArrayId, Region, SceneTextures, Tile};
-use super::batch::{Draw, Paint, Pass, Shape, rect, straight};
-use super::custom::{self, CanvasMode};
-use super::glyph_pipeline::GlyphInst;
-use super::instances::Instances;
+use super::atlas::{SceneTextures, Tile};
+use super::custom::canvas_mode;
 use super::outputs::RegionImage;
 use super::pipeline::{PipelineKind, color_texture, depth_texture};
-use super::plan::{
-    Attachment, DrawSample, EncodedPlan, FramePlan, GlyphRequest, PaintRequests, PassBounds, PlannedBackdrop, ResourcePlan, TargetPlan,
-    TransitionRequest, backdrop_inputs, bound_passes, transition_composite_bounds,
-};
 use super::recording::FrameRecording;
 use super::resolve::AttachmentInfo;
-use super::schedule::{fallback_draw, schedule_pass};
 use super::upload::FrameData;
-use super::{FrameInput, GpuRenderer, RecordError, WORKING_FORMAT};
+use super::{FrameInput, RecordError, WORKING_FORMAT, WgpuRenderer};
+use crate::plan::CanvasMode;
+use crate::plan::GlyphInst;
+use crate::plan::batch::{Draw, Paint, Pass, Shape, rect, straight};
+use crate::plan::instances::Instances;
+use crate::plan::{ArrayId, Region};
+use crate::plan::{
+    BackdropInput, BackdropRequest, DrawSample, DrawSegment, FramePlan, GlyphRequest, PaintRequests, PassBounds, PlannedBatch,
+    ResourcePlan, TransitionRequest, backdrop_inputs, bound_passes, transition_composite_bounds,
+};
+use crate::plan::{fallback_draw, schedule_pass};
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample};
 use octara_model::geometry::Rect;
 use octara_model::paint::TransitionPaint;
 use rustc_hash::FxHashMap;
+
+pub(super) struct PlannedBackdrop {
+    pub request: BackdropRequest,
+    pub input: BackdropInput,
+    pub fallback: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Attachment {
+    Output,
+    Layer(usize),
+}
+
+pub(super) struct TargetPlan {
+    pub attachment: Attachment,
+    pub segments: Vec<DrawSegment>,
+}
+
+pub(super) struct EncodedPlan {
+    pub targets: Vec<TargetPlan>,
+    pub batches: Vec<PlannedBatch>,
+    pub backdrops: Vec<PlannedBackdrop>,
+    pub resolve_output: bool,
+}
+
+impl EncodedPlan {
+    pub fn supports_damage(&self) -> bool {
+        self.targets.len() == 1
+            && self.targets[0].segments.len() <= 1
+            && self.batches.iter().all(|batch| matches!(batch.draw, Draw::Quad | Draw::Shadow | Draw::Image(_) | Draw::Glyph(_)))
+    }
+}
 
 pub(super) struct PlannedTransition {
     pub(super) request: TransitionRequest,
@@ -53,7 +87,7 @@ pub(super) struct PreparedFrame {
     pub(super) transitions: FxHashMap<usize, PlannedTransition>,
 }
 
-impl GpuRenderer {
+impl WgpuRenderer {
     pub(super) async fn prepare_resources(
         &mut self,
         passes: &mut [Pass],
@@ -318,7 +352,7 @@ impl GpuRenderer {
         scale: f32,
         recording: &mut FrameRecording<'_>,
     ) -> Result<TransitionComposite, PaintFallback> {
-        if paint.program.downcast_ref::<custom::Canvas>().is_none_or(|canvas| canvas.mode != CanvasMode::Transition) {
+        if canvas_mode(&paint.program) != Some(CanvasMode::Transition) {
             return Err(PaintFallback::UnsupportedProgram);
         }
         if !RegionImage::can_retain(current.size) || !scale.is_finite() || scale <= 0.0 {

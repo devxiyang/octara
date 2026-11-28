@@ -1,12 +1,10 @@
+use super::batch::{Draw, Paint, Shape, rect};
+use super::glyph_instance::GlyphInst;
+use super::instances::{Globals, Instances, payload_bytes};
+use super::packing::{Region, TextAtlas};
+use super::schedule::schedule_pass;
 use super::{DrawSample, FramePlan, TargetInfo, plan_frame_cached};
 use crate::glyphs::{GlyphCache, GlyphKey};
-use crate::gpu::atlas::{Region, TextAtlas};
-use crate::gpu::batch::{Draw, Paint, Shape, rect};
-use crate::gpu::glyph_pipeline::GlyphInst;
-use crate::gpu::instances::Instances;
-use crate::gpu::pipeline::Globals;
-use crate::gpu::schedule::schedule_pass;
-use crate::gpu::upload::payload_bytes;
 use octara_model::paint::DisplayList;
 use rustc_hash::FxHashMap;
 
@@ -80,7 +78,7 @@ impl TextFramePlanner {
             }
             schedule_pass(pass, rect(bound.rect()), &clips, &mut instances, &mut batches);
         }
-        let alignment = wgpu::Limits::default().min_uniform_buffer_offset_alignment as usize;
+        let alignment = 256; // WebGPU's default uniform buffer offset alignment.
         let globals = size_of::<Globals>();
         let uniforms = (passes.len() - 1) * globals.next_multiple_of(alignment) + globals;
         let draw_calls = batches.len() + usize::from(resolve_output);

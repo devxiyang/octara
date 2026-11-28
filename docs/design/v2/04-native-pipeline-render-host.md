@@ -82,7 +82,7 @@ crates/octara-render/src/
 
 ### Key Architectural Wins
 - `plan.rs` is a **100% pure function** (`plan_frame(list, target_info) -> FramePlan`) with zero `wgpu::Device` dependency — pass dependencies, group opacity layers, backdrop `COPY_SRC` splits, and transition history bounds are unit-testable in milliseconds without a GPU.
-- `cpu.rs` shares exact glyph & path rasterizers with GPU so pixel-diff tests (`CpuRenderer` vs `GpuRenderer`) stay deterministic.
+- `cpu.rs` shares exact glyph & path rasterizers with GPU so pixel-diff tests (`CpuRenderer` vs `WgpuRenderer`) stay deterministic.
 
 ---
 

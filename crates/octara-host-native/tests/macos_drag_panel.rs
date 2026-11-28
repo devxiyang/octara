@@ -29,7 +29,6 @@ mod macos {
     use octara::{StatusBarStyle, WindowId, WindowMaterial, WindowOptions, WindowPresentation};
     use octara_host_native::ShellConfig;
     use octara_host_native::os::{LoopState, OsHost, OsWindow, OsWindowContext, PlatformEvent, PlatformSender, PointerPhase, ShellDriver};
-    use octara_render::wgpu;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -126,7 +125,7 @@ mod macos {
                 WindowId::default(),
                 &options,
                 OsWindowContext {
-                    backend: wgpu::Backends::empty(),
+                    backend: Default::default(),
                     config: &ShellConfig::from_env(),
                     sender: self.sender.clone().unwrap(),
                     transparent: false,

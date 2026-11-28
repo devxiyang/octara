@@ -1,18 +1,18 @@
+use super::GpuPassKind;
 use super::WORKING_FORMAT;
-use super::batch::Paint;
 use super::pipeline::{Phase, SHARED_SHADER, render_pipeline};
-use super::plan::BackdropRegion;
-use super::profile::{FrameMeasurement, GpuPassKind, Instant, TimestampFrame};
-use octara_model::capture::{PaintFallback, PaintSample};
+use super::profile::{FrameMeasurement, Instant, TimestampFrame};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use crate::plan::paint::canvas_size;
+use crate::plan::{BackdropRegion, CanvasMode, CanvasPaint, CanvasProgram, Material};
+use octara_model::capture::PaintFallback;
 use octara_model::geometry::Rect;
 use octara_model::identity::NodeId;
-use octara_model::paint::{CustomPaint, PaintInput, PaintProgram};
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use octara_model::paint::{PaintInput, PaintProgram};
+use rustc_hash::FxHashMap;
 use std::any::Any;
 use std::collections::VecDeque;
 use std::future::Future;
-use std::hash::{BuildHasher, Hash, Hasher};
-use std::ptr;
 use std::sync::Weak;
 use std::time::Duration;
 
@@ -27,25 +27,7 @@ pub mod local;
 /// can be batched with different parameter values. An invalid shader uses the box's
 /// ordinary paint.
 pub fn material(wgsl: &'static str) -> PaintProgram {
-    PaintProgram::new(Material { wgsl, hash: FxBuildHasher.hash_one(wgsl) })
-}
-
-#[derive(Clone, Copy, Debug, Eq)]
-pub(super) struct Material {
-    wgsl: &'static str,
-    hash: u64,
-}
-
-impl PartialEq for Material {
-    fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash && (ptr::eq(self.wgsl, other.wgsl) || self.wgsl == other.wgsl)
-    }
-}
-
-impl Hash for Material {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
-    }
+    PaintProgram::new(Material::new(wgsl))
 }
 
 /// A canvas draw records render, compute or copy commands into a local GPU target. The
@@ -87,13 +69,11 @@ fn local_canvas<C>(prepare: impl Fn(&wgpu::Device) -> C + Send + Sync + 'static,
 where
     C: for<'a> Fn(&mut CanvasFrame<'a>) + wgpu::WasmNotSendSync + 'static,
 {
-    PaintProgram::new(Canvas {
-        prepare: Box::new(move |device| {
-            let draw = prepare(device);
-            Box::new(move |frame: &mut CanvasFrame<'_>, _: CanvasInput<'_>| draw(frame))
-        }),
-        mode,
-    })
+    let prepare: Box<CanvasPrepare> = Box::new(move |device| {
+        let draw = prepare(device);
+        Box::new(move |frame: &mut CanvasFrame<'_>, _: CanvasInput<'_>| draw(frame))
+    });
+    PaintProgram::new(CanvasProgram::new(mode, prepare))
 }
 
 /// A canvas that can sample already-drawn pixels in its current compositing group. The
@@ -108,16 +88,14 @@ pub fn backdrop<C>(prepare: impl Fn(&wgpu::Device) -> C + Send + Sync + 'static)
 where
     C: for<'a> Fn(&mut CanvasFrame<'a>, Backdrop<'a>) + wgpu::WasmNotSendSync + 'static,
 {
-    PaintProgram::new(Canvas {
-        prepare: Box::new(move |device| {
-            let draw = prepare(device);
-            Box::new(move |frame: &mut CanvasFrame<'_>, input: CanvasInput<'_>| {
-                let CanvasInput::Backdrop(sample) = input else { unreachable!("backdrop input") };
-                draw(frame, sample);
-            })
-        }),
-        mode: CanvasMode::Backdrop,
-    })
+    let prepare: Box<CanvasPrepare> = Box::new(move |device| {
+        let draw = prepare(device);
+        Box::new(move |frame: &mut CanvasFrame<'_>, input: CanvasInput<'_>| {
+            let CanvasInput::Backdrop(sample) = input else { unreachable!("backdrop input") };
+            draw(frame, sample);
+        })
+    });
+    PaintProgram::new(CanvasProgram::new(CanvasMode::Backdrop, prepare))
 }
 
 /// Composes the host-accepted old image of a local region with its current image.
@@ -129,16 +107,14 @@ pub fn transition<C>(prepare: impl Fn(&wgpu::Device) -> C + Send + Sync + 'stati
 where
     C: for<'a> Fn(&mut CanvasFrame<'a>, Transition<'a>) + wgpu::WasmNotSendSync + 'static,
 {
-    PaintProgram::new(Canvas {
-        prepare: Box::new(move |device| {
-            let draw = prepare(device);
-            Box::new(move |frame: &mut CanvasFrame<'_>, input: CanvasInput<'_>| {
-                let CanvasInput::Transition(images) = input else { unreachable!("transition inputs") };
-                draw(frame, images);
-            })
-        }),
-        mode: CanvasMode::Transition,
-    })
+    let prepare: Box<CanvasPrepare> = Box::new(move |device| {
+        let draw = prepare(device);
+        Box::new(move |frame: &mut CanvasFrame<'_>, input: CanvasInput<'_>| {
+            let CanvasInput::Transition(images) = input else { unreachable!("transition inputs") };
+            draw(frame, images);
+        })
+    });
+    PaintProgram::new(CanvasProgram::new(CanvasMode::Transition, prepare))
 }
 
 /// The old and current region images and sampled progress of a [`transition`] draw.
@@ -241,56 +217,9 @@ impl<T> CanvasDraw for T where T: for<'a> Fn(&mut CanvasFrame<'a>, CanvasInput<'
 
 type CanvasPrepare = dyn Fn(&wgpu::Device) -> Box<dyn CanvasDraw> + Send + Sync;
 
-pub(super) struct CanvasPaint {
-    pub(super) program: PaintProgram,
-    pub(super) source: NodeId,
-    pub(super) size: [u32; 2],
-    pub(super) input: PaintInput,
-    pub(super) rect: Rect,
-    pub(super) radius: [f32; 4],
-    pub(super) sampled_at: Option<Duration>,
-}
-
-impl CanvasPaint {
-    pub(super) fn from_custom(
-        paint: &CustomPaint,
-        fallback: Paint,
-        mode: CanvasMode,
-        scale: f32,
-        sample: Option<PaintSample>,
-        max_dimension: u32,
-    ) -> Option<Self> {
-        let size = canvas_size(fallback.rect, max_dimension)?;
-        let (rect, radius, sampled_at) = if mode == CanvasMode::Retained {
-            let Rect { w, h, .. } = paint.fallback.rect;
-            (Rect::new(0.0, 0.0, w, h), paint.fallback.radius, None)
-        } else {
-            let [x, y, w, h] = fallback.rect.map(|value| value / scale);
-            (Rect::new(x, y, w, h), fallback.radius.map(|radius| radius / scale), sample.map(|sample| sample.sampled_at))
-        };
-        Some(Self {
-            program: paint.program.clone(),
-            source: paint.fallback.source,
-            size,
-            input: paint.input.clone(),
-            rect,
-            radius,
-            sampled_at,
-        })
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum CanvasMode {
-    Volatile,
-    Retained,
-    Backdrop,
-    Transition,
-}
-
-pub(super) struct Canvas {
-    prepare: Box<CanvasPrepare>,
-    pub(super) mode: CanvasMode,
+pub(super) fn canvas_mode(program: &PaintProgram) -> Option<CanvasMode> {
+    let canvas = program.downcast_ref::<CanvasProgram>()?;
+    canvas.payload::<Box<CanvasPrepare>>().map(|_| canvas.mode)
 }
 
 struct PreparedCanvas {
@@ -420,7 +349,7 @@ impl Programs {
                     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some("octara material"),
                         source: wgpu::ShaderSource::Wgsl(
-                            format!("{}\n{SHARED_SHADER}{}", material.wgsl, include_str!("material.wgsl")).into(),
+                            format!("{}\n{SHARED_SHADER}{}", material.wgsl(), include_str!("material.wgsl")).into(),
                         ),
                     });
                     render_pipeline(device, layout, format, &shader, "octara material", Phase::Material, true)
@@ -454,7 +383,7 @@ impl Programs {
         target: CanvasTarget<'_>,
         mut measurement: Option<&mut FrameMeasurement>,
     ) -> Result<(wgpu::TextureView, wgpu::CommandBuffer), PaintFallback> {
-        let prepared = Self::prepare_canvas(&mut self.canvases, device, paint).await;
+        let prepared = Self::prepare_canvas(&mut self.canvases, device, paint).await?;
         let start = measurement.is_some().then(Instant::now);
         let reuse = match target {
             CanvasTarget::Transient(slot) => self.targets.get(slot),
@@ -487,7 +416,7 @@ impl Programs {
         measurement: Option<&mut FrameMeasurement>,
     ) -> Result<(wgpu::TextureView, wgpu::CommandBuffer), PaintFallback> {
         Self::prepare_canvas(&mut self.canvases, device, paint)
-            .await
+            .await?
             .encode(device, paint, scale, target, CanvasSource::Backdrop(copy, &mut self.backdrop_inputs), measurement)
             .await
     }
@@ -501,7 +430,7 @@ impl Programs {
         measurement: Option<&mut FrameMeasurement>,
     ) -> Result<(wgpu::TextureView, wgpu::CommandBuffer), PaintFallback> {
         Self::prepare_canvas(&mut self.canvases, device, paint)
-            .await
+            .await?
             .encode(device, paint, scale, None, CanvasSource::Transition(images), measurement)
             .await
     }
@@ -510,8 +439,8 @@ impl Programs {
         canvases: &'a mut FxHashMap<usize, PreparedCanvas>,
         device: &wgpu::Device,
         paint: &CanvasPaint,
-    ) -> &'a mut PreparedCanvas {
-        let canvas = paint.program.downcast_ref::<Canvas>().expect("a canvas request");
+    ) -> Result<&'a mut PreparedCanvas, PaintFallback> {
+        let canvas = paint.program.downcast_ref::<CanvasProgram>().ok_or(PaintFallback::UnsupportedProgram)?;
         let owner = paint.program.downgrade();
         let name = match canvas.mode {
             CanvasMode::Volatile | CanvasMode::Retained => "canvas",
@@ -519,16 +448,17 @@ impl Programs {
             CanvasMode::Transition => "transition",
         };
         use std::collections::hash_map::Entry;
-        match canvases.entry(owner.as_ptr().cast::<()>().addr()) {
+        Ok(match canvases.entry(owner.as_ptr().cast::<()>().addr()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let draw = checked_async(device, || (canvas.prepare)(device))
+                let prepare = canvas.payload::<Box<CanvasPrepare>>().ok_or(PaintFallback::UnsupportedProgram)?;
+                let draw = checked_async(device, || prepare(device))
                     .await
                     .map_err(|error| eprintln!("Octara {name} preparation at {:?}: {error}", paint.source))
                     .ok();
                 entry.insert(PreparedCanvas { owner, draw, reported_failure: false })
             }
-        }
+        })
     }
 }
 
@@ -656,12 +586,6 @@ fn record_canvas(
         );
     });
     ((view, encoder.finish()), sample)
-}
-
-pub(super) fn canvas_size(rect: [f32; 4], max: u32) -> Option<[u32; 2]> {
-    let [x, y, width, height] = rect;
-    let size = [width.ceil(), height.ceil()];
-    (x.is_finite() && y.is_finite() && size.into_iter().all(|axis| axis >= 1.0 && axis <= max as f32)).then(|| size.map(|axis| axis as u32))
 }
 
 fn canvas_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {

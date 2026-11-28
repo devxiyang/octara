@@ -14,6 +14,11 @@ publish = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 octara-model.workspace = true
-octara-render = { workspace = true, features = ["gpu"] }
+octara-render = { workspace = true, features = ["wgpu"] }
 png.workspace = true
+raw-window-handle = "0.6.2"
 tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-quartz-core = { workspace = true, features = ["CAMetalLayer", "objc2-metal"] }

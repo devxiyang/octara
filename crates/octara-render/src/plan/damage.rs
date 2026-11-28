@@ -1,8 +1,7 @@
 //! Damage from shared display-list spans and changes to their scroll placements.
 
-use super::FrameInput;
-use super::batch::{grow, union};
-use super::plan::PassBounds;
+use super::batch::grow;
+use super::{PassBounds, union};
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 use crate::paths;
 use octara_model::geometry::{Rect, Vec2};
@@ -10,11 +9,12 @@ use octara_model::identity::NodeId;
 use octara_model::paint::{DisplayList, Item, Part, ScrollPlacement, ScrollPlacements};
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Default)]
-pub(super) struct DamageRect(PassBounds);
+/// The damaged pixel bounds clipped to the output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DamageRect(PassBounds);
 
 impl DamageRect {
-    pub(super) fn is_empty(self) -> bool {
+    pub fn is_empty(self) -> bool {
         self.0.is_empty()
     }
 
@@ -22,26 +22,28 @@ impl DamageRect {
         u64::from(self.0.size[0]) * u64::from(self.0.size[1])
     }
 
-    pub(super) fn is_partial(self, [width, height]: [u32; 2]) -> bool {
+    pub fn is_partial(self, [width, height]: [u32; 2]) -> bool {
         5 * self.pixels() < 3 * u64::from(width) * u64::from(height)
     }
 
-    pub(super) fn area_ratio(self, [width, height]: [u32; 2]) -> f64 {
+    pub fn area_ratio(self, [width, height]: [u32; 2]) -> f64 {
         self.pixels() as f64 / (f64::from(width) * f64::from(height))
     }
 
-    pub(super) fn scissor(self, pass: &mut wgpu::RenderPass<'_>) {
+    /// Pixel bounds as `[x, y, width, height]`.
+    pub fn pixels_rect(self) -> [u32; 4] {
         let PassBounds { origin: [x, y], size: [w, h] } = self.0;
-        pass.set_scissor_rect(x, y, w, h);
+        [x, y, w, h]
     }
 
-    pub(super) fn rect(self) -> Rect {
+    pub fn rect(self) -> Rect {
         super::batch::rect(self.0.rect())
     }
 }
 
+/// Retained display-list geometry used to compute damage against a previous frame.
 #[derive(Clone)]
-pub(super) struct SceneSnapshot {
+pub struct SceneSnapshot {
     list: DisplayList,
     scale: f32,
     extent: [u32; 2],
@@ -49,16 +51,16 @@ pub(super) struct SceneSnapshot {
 }
 
 impl SceneSnapshot {
-    pub(super) fn new(input: FrameInput<'_>, extent: [u32; 2]) -> Self {
-        Self { list: input.list.clone(), scale: input.scale, extent, ports: None }
+    pub fn new(list: &DisplayList, scale: f32, extent: [u32; 2]) -> Self {
+        Self { list: list.clone(), scale, extent, ports: None }
     }
 
-    pub(super) fn can_retain(&self) -> bool {
+    pub fn can_retain(&self) -> bool {
         let (parts, scrolls) = root(&self.list);
         balanced(parts, scrolls)
     }
 
-    pub(super) fn damage_since(&mut self, old: &Self, glyphs: &mut GlyphCache, spatial: bool) -> Option<DamageRect> {
+    pub fn damage_since(&mut self, old: &Self, glyphs: &mut GlyphCache, spatial: bool) -> Option<DamageRect> {
         if self.extent != old.extent
             || self.scale != old.scale
             || self.list.size != old.list.size

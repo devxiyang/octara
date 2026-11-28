@@ -81,6 +81,7 @@ Break `octara-render`'s coupling between pure planning and `wgpu`, and make `oct
      - (d) `CVDisplayLinkCreateWithCGDisplay(display_id)` (hardware `CGDirectDisplayID` VSync).
 2. **Adopt the Empirically Winning Clock Strategy**:
    - Re-bind automatically on `NSWindowDidChangeScreenNotification` whenever a window moves between displays (e.g., 60 Hz Retina ↔ 144 Hz external), and verify real `6.945 ms` / 144 Hz delivery (or document the exact OS ceiling if macOS 27.2 enforces a compositor-level limit across all 4 APIs).
+   - The M4 probe measured a 6.945 ms median presentation interval on the external panel with Core Video and Metal display links. The macOS host uses the display-ID-bound Core Video link for interactive work with its existing drawable acquisition path. See the [hardware results and raw recordings](../../../tools/macos-display-clock/README.md).
 
 ---
 

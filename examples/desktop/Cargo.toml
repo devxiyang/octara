@@ -25,7 +25,7 @@ octara-inspect.workspace = true
 octara-kit.workspace = true
 octara-picker = { workspace = true, features = ["platform"] }
 octara-pipeline.workspace = true
-octara-render = { workspace = true, features = ["gpu"] }
+octara-render = { workspace = true, features = ["wgpu"] }
 octara-video = { workspace = true, features = ["platform"] }
 octara-webview = { workspace = true, features = ["platform"] }
 

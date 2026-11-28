@@ -25,7 +25,7 @@ pub struct GlyphImage {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub(crate) struct GlyphKey {
+pub struct GlyphKey {
     font: u64,
     index: u32,
     glyph: u32,
@@ -59,7 +59,7 @@ pub struct GlyphCache {
 }
 
 impl GlyphCache {
-    #[cfg(all(test, feature = "gpu", not(target_arch = "wasm32")))]
+    #[cfg(all(test, feature = "wgpu", not(target_arch = "wasm32")))]
     pub(crate) fn insert_test_glyph(&mut self, key: GlyphKey, image: GlyphImage) {
         self.cache.insert(key, Some(image));
     }

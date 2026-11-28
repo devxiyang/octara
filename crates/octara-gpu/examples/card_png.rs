@@ -5,7 +5,7 @@ use octara_gpu::{CaptureWriter, DeviceExecutor, DeviceGeneration, StagedCapture}
 use octara_model::geometry::{Rect, Size};
 use octara_model::paint::{DisplayList, Item, Part, Quad};
 use octara_model::theme::rgb;
-use octara_render::{CpuRenderer, GpuRenderer};
+use octara_render::{CpuRenderer, WgpuRenderer};
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     publish(wait(&wakes, || cpu.try_take())?, &wake, &wakes)?;
 
-    if let Some(renderer) = GpuRenderer::new() {
+    if let Some(renderer) = WgpuRenderer::new() {
         let device_wake = wake.clone();
         let generation = Arc::new(DeviceGeneration::new(
             0,

@@ -16,28 +16,30 @@ mod window;
 
 use super::apple_frame_clock::{DisplayClock, retry_on_clock};
 use super::{
-    Drawable, DrawableAcquisition, FrameClockActivity, HostWake, OsHost, OsWindow, OsWindowContext, PlatformEvent, PlatformSender,
-    ServiceCleanup, ShellDriver, WindowAccessibility, WindowAsks, WindowPresentation, WindowTextInput, reply, surface_drawable,
+    Drawable, DrawableAcquisition, FrameClockActivity, HostWake, NativeSurfaceSession, OsHost, OsWindow, OsWindowContext, PlatformEvent,
+    PlatformSender, ServiceCleanup, ShellDriver, WindowAccessibility, WindowAsks, WindowPresentation, WindowTextInput, reply,
 };
 use application::{Application, EventQueue, Launch};
 use objc2::rc::Retained;
 use objc2::{ClassType, MainThreadMarker};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSColor,
-    NSRequestUserAttentionType, NSView, NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWindowStyleMask, NSWorkspace,
+    NSRequestUserAttentionType, NSView, NSVisualEffectView, NSWindow, NSWindowOcclusionState, NSWindowOrderingMode, NSWindowStyleMask,
+    NSWorkspace,
 };
 use objc2_foundation::{NSPoint, NSRect, NSString, NSURL};
 use objc2_quartz_core::CATransaction;
 use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
 use octara::runtime::WindowId;
 use octara::{StatusBarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
+use octara_gpu::SurfaceSession;
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::WindowViewport;
 use octara_model::input::{CursorStyle, DragItem, HostReply, InteractionEvent, PasteEvent};
 use octara_model::paint::Image;
 use octara_model::theme::ColorScheme;
 use octara_model::window::{UserAttention, WindowLevel};
-use octara_render::{gpu::OutputColor, wgpu};
+use octara_render::OutputColor;
 use raw_window_handle::{AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -139,6 +141,9 @@ impl OsHost for MacHost {
         let accessibility = view::Accessibility::new(&view, sender.clone());
         let fullscreen = Rc::default();
         let closed = Rc::default();
+        let metal = backend.metal;
+        let clock = (metal && !config.manual_clock && config.metal_acquire_delay.is_zero())
+            .then(|| Rc::new(DisplayClock::new(&view.clone().into_super(), id, sender.clone())));
         let delegate = window::Delegate::install(
             &window,
             window::DelegateState {
@@ -147,13 +152,11 @@ impl OsHost for MacHost {
                 sender: sender.clone(),
                 fullscreen: Rc::clone(&fullscreen),
                 closed: Rc::clone(&closed),
+                clock: clock.as_ref().map(Rc::downgrade).unwrap_or_default(),
             },
         );
         let chrome = chrome::Chrome::new(window.clone(), fullscreen);
         self.routing.borrow_mut().insert(NonNull::from(&*window), id);
-        let metal = backend.contains(wgpu::Backends::METAL);
-        let clock = (metal && !config.manual_clock && config.metal_acquire_delay.is_zero())
-            .then(|| DisplayClock::new(&view.clone().into_super(), id, sender.clone()));
         let acquisition = metal.then(|| {
             let frame_sender = sender.clone();
             acquisition::Acquisition::new(config.metal_acquire_delay, move |target| {
@@ -177,6 +180,7 @@ impl OsHost for MacHost {
             clock,
             acquisition,
             transactional: false,
+            resizing: false,
             activate_on_show: !options.non_activating_panel && std::mem::take(&mut self.activate_on_first_regular_window),
         };
         window.set_transparent(transparent);
@@ -248,9 +252,10 @@ struct MacWindow {
     accessibility: view::Accessibility,
     vibrancy: Option<Retained<NSVisualEffectView>>,
     asks: Rc<asks::Shown>,
-    clock: Option<DisplayClock>,
+    clock: Option<Rc<DisplayClock>>,
     acquisition: Option<acquisition::Acquisition>,
     transactional: bool,
+    resizing: bool,
     activate_on_show: bool,
 }
 
@@ -432,7 +437,7 @@ unsafe impl OsWindow for MacWindow {
         if let Some(acquisition) = &mut self.acquisition {
             acquisition.did_show();
         }
-        if let Some(clock) = &mut self.clock {
+        if let Some(clock) = &self.clock {
             clock.did_show();
         }
     }
@@ -461,11 +466,11 @@ impl WindowAsks for MacWindow {
 
 impl WindowPresentation for MacWindow {
     fn externally_paced(&self) -> bool {
-        self.clock.as_ref().is_some_and(DisplayClock::externally_paced)
+        self.clock.as_deref().is_some_and(DisplayClock::externally_paced)
     }
 
     fn set_frame_clock_activity(&mut self, activity: FrameClockActivity) {
-        if let Some(clock) = &mut self.clock {
+        if let Some(clock) = &self.clock {
             clock.set_activity(activity);
         }
     }
@@ -474,38 +479,52 @@ impl WindowPresentation for MacWindow {
         self.acquisition.as_mut().is_none_or(acquisition::Acquisition::reset)
     }
 
-    fn set_transactional_presentation(&mut self, _native_rev: u64, transactional: bool) {
-        self.transactional = transactional;
+    fn resize_waits_for_display(&self) -> bool {
+        self.window.occlusionState().contains(NSWindowOcclusionState::Visible)
+            && self.acquisition.as_ref().is_some_and(acquisition::Acquisition::waiting_for_display)
     }
 
-    fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor, from_clock: bool) -> DrawableAcquisition {
+    fn set_transactional_presentation(&mut self, _native_rev: u64, transactional: bool, resizing: bool) {
+        let live_resize = self.window.inLiveResize();
+        self.resizing = resizing || live_resize;
+        self.transactional = transactional || live_resize;
+    }
+
+    fn try_acquire_drawable(&mut self, surface: &NativeSurfaceSession, color: OutputColor, from_clock: bool) -> DrawableAcquisition {
         let externally_paced = self.externally_paced();
         if externally_paced && !from_clock {
             return DrawableAcquisition::WaitingForClock;
         }
-        let Some(acquisition) = &mut self.acquisition else { return surface_drawable(surface, color) };
-        let acquired = acquisition.acquire(surface, color, externally_paced, self.transactional);
+        let Some(acquisition) = &mut self.acquisition else { return surface.acquire(color) };
+        let resizing = self.resizing && self.window.occlusionState().contains(NSWindowOcclusionState::Visible);
+        let acquired = acquisition.acquire(surface, color, externally_paced, self.transactional, resizing);
         retry_on_clock(acquired, externally_paced)
-    }
-
-    fn present(&mut self, drawable: Box<dyn Drawable>, queue: &wgpu::Queue) -> Result<(), String> {
-        drawable.present(queue)
     }
 
     fn present_with_native_views(
         &mut self,
-        drawable: Box<dyn Drawable>,
-        queue: &wgpu::Queue,
+        drawable: Box<Drawable>,
         _native_rev: u64,
         commit_native_views: &mut dyn FnMut(),
     ) -> Result<(), String> {
         if !self.transactional {
-            return drawable.present(queue);
+            drawable.present()?;
+            if self.resizing
+                && let Some(acquisition) = &mut self.acquisition
+            {
+                acquisition.did_submit_for_display();
+            }
+            return Ok(());
         }
         CATransaction::begin();
         CATransaction::setDisableActions(true);
         let _transaction = std::mem::DropGuard::new((), |()| CATransaction::commit());
-        drawable.present(queue)?;
+        drawable.present()?;
+        if self.resizing
+            && let Some(acquisition) = &mut self.acquisition
+        {
+            acquisition.did_submit_for_display();
+        }
         commit_native_views();
         Ok(())
     }

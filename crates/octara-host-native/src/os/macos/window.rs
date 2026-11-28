@@ -2,6 +2,7 @@
 
 use super::chrome::Fullscreen;
 use super::view::OctaraView;
+use crate::os::apple_frame_clock::DisplayClock;
 use crate::os::{PlatformEvent, PlatformSender};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
@@ -14,7 +15,7 @@ use objc2_foundation::{NSNotification, NSPoint, NSRect, NSSize, NSString};
 use octara::{TitlebarStyle, WindowId, WindowOptions};
 use octara_model::window::WindowLevel;
 use std::cell::Cell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 define_class!(
     // SAFETY: OctaraWindow uses the designated NSWindow initializer on the main thread.
@@ -162,6 +163,7 @@ pub(super) struct DelegateState {
     pub(super) view: Retained<OctaraView>,
     pub(super) window: WindowId,
     pub(super) sender: PlatformSender,
+    pub(super) clock: Weak<DisplayClock>,
 }
 
 impl DelegateState {
@@ -215,6 +217,24 @@ define_class!(
             self.ivars().resize();
         }
 
+        #[unsafe(method(windowWillStartLiveResize:))]
+        fn will_start_live_resize(&self, _: &NSNotification) {
+            let state = self.ivars();
+            if let Some(layer) = state.view.layer() {
+                super::acquisition::align_contents(&layer, true);
+            }
+            state.resize();
+        }
+
+        #[unsafe(method(windowDidEndLiveResize:))]
+        fn did_end_live_resize(&self, _: &NSNotification) {
+            let state = self.ivars();
+            if let Some(layer) = state.view.layer() {
+                super::acquisition::align_contents(&layer, false);
+            }
+            state.resize();
+        }
+
         #[unsafe(method(windowDidMove:))]
         fn did_move(&self, _: &NSNotification) {
             let state = self.ivars();
@@ -228,7 +248,11 @@ define_class!(
 
         #[unsafe(method(windowDidChangeScreen:))]
         fn did_change_screen(&self, _: &NSNotification) {
-            self.ivars().resize();
+            let state = self.ivars();
+            if let Some(clock) = state.clock.upgrade() {
+                clock.screen_changed();
+            }
+            state.resize();
         }
 
         #[unsafe(method(windowDidBecomeKey:))]
@@ -253,8 +277,12 @@ define_class!(
 
         #[unsafe(method(windowDidChangeOcclusionState:))]
         fn did_change_occlusion_state(&self, _: &NSNotification) {
-            if self.ivars().view.window().is_some_and(|window| window.occlusionState().contains(NSWindowOcclusionState::Visible)) {
-                self.ivars().redraw();
+            let state = self.ivars();
+            if let Some(clock) = state.clock.upgrade() {
+                clock.update_driver();
+            }
+            if state.view.window().is_some_and(|window| window.occlusionState().contains(NSWindowOcclusionState::Visible)) {
+                state.redraw();
             }
         }
 

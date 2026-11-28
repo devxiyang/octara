@@ -875,20 +875,19 @@ impl WindowRuntime {
     /// Whether a burst at a fixed point can share one wheel hit test.
     pub fn can_coalesce_wheel(&self, pos: Point) -> bool {
         let Some(hit) = self.hit_test(pos).and_then(|target| target.hit.node()) else { return false };
-        let mut chain =
-            std::iter::successors(Some(hit), |&node| self.tree.physical_parent(node)).filter(|&node| self.tree.scroll(node).is_some());
+        let tree = &self.tree;
+        let mut chain = std::iter::successors(Some(hit), |&node| tree.physical_parent(node)).filter(|&node| tree.scroll(node).is_some());
         let Some(port) = chain.next() else { return true };
-        let inside = |node| std::iter::successors(Some(node), |&node| self.tree.physical_parent(node)).any(|node| node == port);
-        // Nested scrollports can move under the pointer after the first delta.
-        // Scroll feedback can also change the tree between two deltas.
-        chain.next().is_none()
-            && !self.tree.scroll_nodes().any(|node| node != port && inside(node))
-            && !self.feedback.iter().any(|binding| {
-                matches!(
-                    binding.signal,
-                    FeedbackSignal::Scroll(_) | FeedbackSignal::ScrollAnchor(_) | FeedbackSignal::Geometry(_) | FeedbackSignal::Pinned(_)
-                ) && matches!(binding.node, NodeRef::Existing { id, .. } if inside(id))
-            })
+        // Nested scrollports can move under the pointer or receive different portions of each delta.
+        if chain.next().is_some() || tree.scroll_nodes().any(|node| node != port && tree.is_within(node, port)) {
+            return false;
+        }
+        // Feedback within the port, including virtual row measurements, settles at the net offset.
+        // External geometry can reposition the port or change which port owns the hit.
+        !self.feedback.iter().any(|binding| {
+            matches!(binding.signal, FeedbackSignal::Geometry(_))
+                && matches!(binding.node, NodeRef::Existing { id, .. } if tree.is_live(id) && !tree.is_within(id, port))
+        })
     }
 
     /// Find the nearest interactive drop receiver at a point in window coordinates.

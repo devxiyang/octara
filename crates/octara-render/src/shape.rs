@@ -39,16 +39,16 @@ pub fn inner_rect(x: f32, y: f32, w: f32, h: f32, radii: [f32; 4], b: [f32; 4]) 
 }
 
 #[derive(Clone, Copy, Default)]
-pub(crate) struct ClipState {
-    pub(crate) bounds: Option<Rect>,
+pub struct ClipState {
+    pub bounds: Option<Rect>,
     /// One-based index into the clip nodes. Zero uses only the rectangular bounds.
-    pub(crate) head: u32,
+    pub head: u32,
 }
 
+/// Storage-buffer node for a rounded or spatial clip, with a one-based parent handle.
 #[repr(C)]
-#[derive(Clone, Copy)]
-#[cfg_attr(feature = "gpu", derive(bytemuck::Pod, bytemuck::Zeroable))]
-pub(crate) struct ClipNode {
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ClipNode {
     rect: [f32; 4],
     radius: [f32; 4],
     parent: u32,
@@ -57,8 +57,9 @@ pub(crate) struct ClipNode {
     _pad: u32,
 }
 
+const _: () = assert!(size_of::<ClipNode>() == 48);
+
 /// Axis clips follow the scroll space only along their constrained axis.
-#[cfg(feature = "gpu")]
 pub(crate) enum ClipAxes {
     Both,
     Horizontal,
@@ -66,7 +67,7 @@ pub(crate) enum ClipAxes {
 }
 
 #[derive(Default)]
-pub(crate) struct ClipStack {
+pub struct ClipStack {
     stack: Vec<ClipState>,
     nodes: Vec<ClipNode>,
 }
@@ -97,14 +98,12 @@ impl ClipStack {
         self.stack.pop();
     }
 
-    #[cfg(feature = "gpu")]
     pub(crate) fn enter_scope(&mut self) -> usize {
         let depth = self.stack.len();
         self.stack.push(ClipState::default());
         depth
     }
 
-    #[cfg(feature = "gpu")]
     pub(crate) fn leave_scope(&mut self, depth: usize) {
         self.stack.truncate(depth);
     }
@@ -115,7 +114,6 @@ impl ClipStack {
     }
 
     /// Retained plans intersect clip rectangles in window space after applying each offset.
-    #[cfg(feature = "gpu")]
     pub(crate) fn push_spatial(&mut self, rect: Rect, radius: [f32; 4], scale: f32, spatial: u32, axes: ClipAxes) {
         const RECT_PREFIX: u32 = 1;
         let ClipState { head: parent, .. } = self.current();
@@ -135,7 +133,6 @@ impl ClipStack {
     }
 
     /// A conservative box covered completely by all rounded nodes in the chain.
-    #[cfg(feature = "gpu")]
     pub(crate) fn safe_box(&self, mut head: u32, mut bounds: Rect) -> Rect {
         while head != 0 && !bounds.is_empty() {
             let node = self.nodes[head as usize - 1];
@@ -147,8 +144,12 @@ impl ClipStack {
         bounds
     }
 
-    #[cfg(feature = "gpu")]
-    pub(crate) fn into_nodes(self) -> Vec<ClipNode> {
+    /// Accumulated clip nodes, indexed by one-based shader clip handles.
+    pub fn nodes(&self) -> &[ClipNode] {
+        &self.nodes
+    }
+
+    pub fn into_nodes(self) -> Vec<ClipNode> {
         self.nodes
     }
 

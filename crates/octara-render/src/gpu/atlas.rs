@@ -1,7 +1,9 @@
 use super::custom::with_error_scopes_async;
 use crate::glyphs::{GlyphCache, GlyphImage, GlyphKey};
-use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, PACKED_IMAGE_MAX_LOD, full_lod, opaque, packed_footprint, packed_lod};
+use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, ImageMips, PACKED_IMAGE_MAX_LOD, full_lod, opaque, packed_footprint, packed_lod};
 use crate::paths::{self, MaskKey};
+use crate::plan::packing::{Box2, Guillotine, glyph_atlas_edge};
+use crate::plan::{ArrayId, Region};
 use octara_model::paint::{ImagePaint, PathPaint};
 use rustc_hash::FxHashMap;
 use std::num::NonZeroU64;
@@ -49,7 +51,7 @@ impl Family {
         // A power-of-two image edge keeps the packed mip coordinate grid exact.
         let edge = match self {
             Self::Mask => 2048,
-            Self::Glyph => 1024,
+            Self::Glyph => return glyph_atlas_edge(limit),
             Self::Image => IMAGE_ATLAS_EDGE,
         };
         1 << edge.min(limit).ilog2()
@@ -67,131 +69,6 @@ impl Family {
             Self::Mask => 1,
             Self::Glyph | Self::Image => 4,
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(super) struct ArrayId(NonZeroU64);
-
-#[derive(Clone, Copy)]
-pub(super) struct Region {
-    pub array: ArrayId,
-    pub layer: u16,
-    pub origin: [u32; 2],
-    pub size: [u32; 2],
-    pub max_lod: u8,
-    pub opaque: bool,
-    id: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Box2 {
-    origin: [u32; 2],
-    size: [u32; 2],
-}
-
-impl Box2 {
-    fn end(self) -> [u32; 2] {
-        std::array::from_fn(|i| self.origin[i] + self.size[i])
-    }
-
-    fn join(self, other: Self) -> Option<Self> {
-        for cross in 0..2 {
-            let axis = 1 - cross;
-            if self.origin[cross] == other.origin[cross]
-                && self.size[cross] == other.size[cross]
-                && (self.end()[axis] == other.origin[axis] || other.end()[axis] == self.origin[axis])
-            {
-                let mut output = self;
-                output.origin[axis] = self.origin[axis].min(other.origin[axis]);
-                output.size[axis] += other.size[axis];
-                return Some(output);
-            }
-        }
-        None
-    }
-}
-
-#[derive(Clone)]
-struct Guillotine {
-    free: Vec<Box2>,
-    size: [u32; 2],
-    allocated: usize,
-}
-
-impl Guillotine {
-    fn new(size: [u32; 2]) -> Self {
-        Self { free: vec![Box2 { origin: [0; 2], size }], size, allocated: 0 }
-    }
-
-    fn allocate(&mut self, size: [u32; 2], alignment: u32) -> Option<Box2> {
-        let (index, rect) = self
-            .free
-            .iter()
-            .enumerate()
-            .filter_map(|(index, rect)| {
-                let origin = rect.origin.map(|axis| axis.div_ceil(alignment) * alignment);
-                let fits = (0..2).all(|i| origin[i] + size[i] <= rect.origin[i] + rect.size[i]);
-                fits.then_some((index, Box2 { origin, size }))
-            })
-            .min_by_key(|(index, _)| self.free[*index].size.into_iter().product::<u32>())?;
-        let free = self.free.swap_remove(index);
-        let [left, top] = free.origin;
-        let [right, bottom] = free.end();
-        let [x, y] = rect.origin;
-        let [x1, y1] = rect.end();
-
-        // Peel off any strips used for alignment, then split the remaining L shape.
-        self.add([left, top], [x, bottom]);
-        self.add([x, top], [right, y]);
-        if right - x1 > bottom - y1 {
-            self.add([x1, y], [right, bottom]);
-            self.add([x, y1], [x1, bottom]);
-        } else {
-            self.add([x1, y], [right, y1]);
-            self.add([x, y1], [right, bottom]);
-        }
-        self.allocated += 1;
-        Some(rect)
-    }
-
-    fn add(&mut self, origin: [u32; 2], end: [u32; 2]) {
-        if origin[0] < end[0] && origin[1] < end[1] {
-            self.free.push(Box2 { origin, size: std::array::from_fn(|axis| end[axis] - origin[axis]) });
-        }
-    }
-
-    fn release(&mut self, mut rect: Box2) {
-        self.allocated -= 1;
-        if self.allocated == 0 {
-            self.free.clear();
-            self.free.push(Box2 { origin: [0; 2], size: self.size });
-            return;
-        }
-        while let Some((index, joined)) = self.free.iter().enumerate().find_map(|(i, &other)| rect.join(other).map(|joined| (i, joined))) {
-            self.free.swap_remove(index);
-            rect = joined;
-        }
-        self.free.push(rect);
-    }
-}
-
-/// Device-free packing for text scenes that fit in one layer of a glyph atlas.
-#[derive(Clone)]
-pub(super) struct TextAtlas(Guillotine);
-
-impl TextAtlas {
-    pub(super) fn new(texture_limit: u32) -> Self {
-        Self(Guillotine::new([Family::Glyph.edge(texture_limit); 2]))
-    }
-
-    pub(super) fn place(&mut self, image: &GlyphImage) -> Option<(Region, u64)> {
-        let size = [image.width, image.height];
-        let footprint = self.0.allocate(size, 1)?;
-        let array = ArrayId(NonZeroU64::MIN);
-        let region = Region { array, layer: 0, origin: footprint.origin, size, max_lod: 0, opaque: false, id: 0 };
-        let bytes = u64::from(image.width) * u64::from(image.height) * u64::from(Family::Glyph.bytes_per_pixel());
-        Some((region, bytes))
     }
 }
 
@@ -320,8 +197,8 @@ impl Atlases {
         // A padded image always starts one coarse texel into its reservation, even
         // when its mip chain has to spill into a dedicated array.
         let padded = region.origin != [0; 2];
-        let mut level = ImageLevel::base(size, pixels, region.opaque);
-        for lod in 0..=region.max_lod {
+        let base = ImageLevel::base(size, pixels, region.opaque);
+        for (lod, level) in (0..=region.max_lod).zip(ImageMips::from_base(base, padded, region.max_lod)) {
             let origin = region.origin.map(|axis| axis >> lod);
             if padded {
                 let size = level.size.map(|axis| axis + 2);
@@ -330,10 +207,7 @@ impl Atlases {
                 self.push_upload(region, lod, rect, pixels, size[0] * 4, 0);
             } else {
                 let size = level.size;
-                self.push_upload(region, lod, Box2 { origin, size }, level.pixels.clone(), size[0] * 4, 0);
-            }
-            if lod < region.max_lod {
-                level = level.downsample(padded);
+                self.push_upload(region, lod, Box2 { origin, size }, level.pixels, size[0] * 4, 0);
             }
         }
         Ok(region)
@@ -740,18 +614,20 @@ mod tests {
     #[test]
     fn image_mips_filter_premultiplied_light_and_repeat_their_edges() {
         let rgba: Arc<[u8]> = [255, 0, 0, 255, 0, 0, 255, 0].into();
-        let base = ImageLevel::base([2, 1], &rgba, false);
+        let mut levels = ImageMips::new([2, 1], &rgba, true, 1).unwrap();
+        let base = levels.next().unwrap();
         assert_eq!(&*base.pixels, &[255, 0, 0, 255, 0, 0, 0, 0]);
-        let level = base.downsample(true);
+        let level = levels.next().unwrap();
         assert_eq!(level.size, [1, 1]);
         assert_eq!(&*level.pixels, &[188, 0, 0, 128]);
         assert_eq!(&*extrude_edges(&level), &[188, 0, 0, 128].repeat(9));
+        assert!(levels.next().is_none());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn padded_images_keep_their_mip_geometry_when_a_shared_array_does_not_fit() {
-        let Some(gpu) = super::super::GpuRenderer::new() else {
+        let Some(gpu) = super::super::WgpuRenderer::new() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
@@ -780,7 +656,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn regions_share_array_layers_and_discard_preserves_committed_neighbors() {
-        let Some(gpu) = super::super::GpuRenderer::new() else {
+        let Some(gpu) = super::super::WgpuRenderer::new() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };
@@ -820,7 +696,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn frame_budget_and_cold_eviction_keep_touched_arrays() {
-        let Some(gpu) = super::super::GpuRenderer::new() else {
+        let Some(gpu) = super::super::WgpuRenderer::new() else {
             eprintln!("no GPU adapter: skipped");
             return;
         };

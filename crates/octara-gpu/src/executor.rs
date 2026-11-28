@@ -6,11 +6,9 @@ use crate::schedule::{Lane, Schedule};
 use octara_model::capture::{FrameReceipt, PaintReceipt, PaintSample};
 use octara_model::identity::FrameStamp;
 use octara_model::paint::DisplayList;
-use octara_render::gpu::{
-    CanvasUpdates, FrameInput, FrameProfile, FrameTarget, GpuTimings, OutputColor, PendingPresentation, Readback, RecordError,
-    with_error_scopes,
-};
-use octara_render::{GpuRenderer, SurfaceRendererFactory, wgpu};
+use octara_render::gpu::{CanvasUpdates, FrameInput, FrameTarget, PendingPresentation, Readback, RecordError, with_error_scopes};
+use octara_render::plan::{FrameProfile, GpuTimings, OutputColor};
+use octara_render::{SurfaceRendererFactory, WgpuRenderer, wgpu};
 use std::collections::VecDeque;
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -78,16 +76,16 @@ pub struct DrawWork<T> {
     pub report: Option<Box<dyn FnOnce(GpuTimings) + Send>>,
 }
 
-pub struct DrawnFrame<T> {
+pub struct DrawnFrame<T, P = PendingPresentation> {
     pub target: T,
     pub stamp: FrameStamp,
     pub effects: Vec<PaintReceipt>,
     pub profile: Option<FrameProfile>,
-    pub presentation: PendingPresentation,
+    pub presentation: P,
     progress: FrameProgress,
 }
 
-impl<T> DrawnFrame<T> {
+impl<T, P> DrawnFrame<T, P> {
     pub fn gpu_complete(&self) -> bool {
         self.progress.gpu_complete()
     }
@@ -190,19 +188,19 @@ impl DeviceExecutor {
         setup: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
         let backend = factory.map(|factory| factory(&device));
-        let mut renderer = GpuRenderer::with_device(device, queue);
+        let mut renderer = WgpuRenderer::with_device(device, queue);
         if let Some(backend) = backend {
             renderer = renderer.with_surface_renderer(backend);
         }
         Self::spawn_with_thread_setup(renderer, generation, setup)
     }
 
-    pub fn spawn(renderer: GpuRenderer, generation: Arc<DeviceGeneration>) -> std::io::Result<Self> {
+    pub fn spawn(renderer: WgpuRenderer, generation: Arc<DeviceGeneration>) -> std::io::Result<Self> {
         Self::spawn_with_thread_setup(renderer, generation, || {})
     }
 
     fn spawn_with_thread_setup(
-        mut renderer: GpuRenderer,
+        mut renderer: WgpuRenderer,
         generation: Arc<DeviceGeneration>,
         setup: impl FnOnce() + Send + 'static,
     ) -> std::io::Result<Self> {
@@ -257,6 +255,10 @@ impl DeviceExecutor {
     /// Pause after existing submissions drain. The host configures the surfaces under the lease.
     pub fn drain_surfaces(&self) -> Result<GpuTask<SurfaceLease>, GpuError> {
         self.enqueue(Lane::Drain, |worker, reply| worker.drain = Some(reply))
+    }
+
+    pub(crate) fn owns_surface_lease(&self, lease: &SurfaceLease) -> bool {
+        lease.inbox.ptr_eq(&Arc::downgrade(&self.inbox))
     }
 
     /// Put an accepted frame's texture history in the renderer before the next drawing.
@@ -620,7 +622,7 @@ struct PendingCapture {
 }
 
 struct Worker<'a> {
-    renderer: GpuRenderer,
+    renderer: WgpuRenderer,
     generation: &'a Arc<DeviceGeneration>,
     inbox: &'a Arc<Inbox>,
     drain: Option<Reply<SurfaceLease>>,
@@ -631,7 +633,7 @@ struct Worker<'a> {
 }
 
 impl<'a> Worker<'a> {
-    fn new(renderer: GpuRenderer, generation: &'a Arc<DeviceGeneration>, inbox: &'a Arc<Inbox>) -> Self {
+    fn new(renderer: WgpuRenderer, generation: &'a Arc<DeviceGeneration>, inbox: &'a Arc<Inbox>) -> Self {
         Self { renderer, generation, inbox, drain: None, configuring: false, resource: None, readback: None, profile_queued: false }
     }
 
@@ -853,7 +855,7 @@ mod tests {
 
     #[test]
     fn surface_lease_drains_existing_work_and_excludes_new_gpu_jobs() {
-        let Some(renderer) = GpuRenderer::new() else { return };
+        let Some(renderer) = WgpuRenderer::new() else { return };
         let (wake, wakes) = mpsc::channel();
         let generation = Arc::new(DeviceGeneration::new(
             7,
@@ -894,7 +896,7 @@ mod tests {
 
     #[test]
     fn draw_returns_a_stamped_target_with_independent_completion() {
-        let Some(renderer) = GpuRenderer::new() else { return };
+        let Some(renderer) = WgpuRenderer::new() else { return };
         let (wake, wakes) = mpsc::channel();
         let generation = Arc::new(DeviceGeneration::new(
             7,
@@ -935,7 +937,7 @@ mod tests {
 
     #[test]
     fn mapped_capture_releases_its_slot_after_unpacking_padded_rows() {
-        let Some(renderer) = GpuRenderer::new() else { return };
+        let Some(renderer) = WgpuRenderer::new() else { return };
         let (wake, wakes) = mpsc::channel();
         let generation = Arc::new(DeviceGeneration::new(
             7,
@@ -993,7 +995,7 @@ mod tests {
             }
         }
 
-        let Some(renderer) = GpuRenderer::new() else { return };
+        let Some(renderer) = WgpuRenderer::new() else { return };
         let (wake, wakes) = mpsc::channel();
         let generation = Arc::new(DeviceGeneration::new(
             7,

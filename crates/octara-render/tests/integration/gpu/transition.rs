@@ -5,7 +5,7 @@ use octara_model::identity::NodeId;
 use octara_model::paint::{CustomPaint, DisplayList, Item, PaintProgram, Part, Quad};
 use octara_model::theme::{Color, rgb};
 use octara_render::gpu::{CanvasFrame, FrameInput, FrameTarget, OutputColor, canvas};
-use octara_render::{GpuRenderer, wgpu};
+use octara_render::{WgpuRenderer, wgpu};
 use wgpu::util::DeviceExt;
 
 const SCALE: f32 = 2.0;
@@ -31,7 +31,7 @@ impl TransitionInput {
         Self { view: texture.create_view(&Default::default()), bounds }
     }
 
-    fn render(&self, gpu: &mut GpuRenderer, painted_height: f32, color: Color) {
+    fn render(&self, gpu: &mut WgpuRenderer, painted_height: f32, color: Color) {
         let Rect { w, h, .. } = self.bounds;
         let panel = filled_quad(Rect::new(0.0, 0.0, w, painted_height), color);
         let list = DisplayList {
@@ -118,7 +118,7 @@ fn gpu_crossfades_two_local_outputs_in_window_coordinates() {
     let info = adapter.get_info();
     eprintln!("transition adapter: {} ({:?})", info.name, info.backend);
     let (device, queue) = octara_render::block_on(adapter.request_device(&Default::default())).expect("a GPU device");
-    let mut gpu = GpuRenderer::with_device(device, queue);
+    let mut gpu = WgpuRenderer::with_device(device, queue);
 
     // Keep the previous submission's texture while producing the incoming panel on the same queue.
     // Both inputs stay on the GPU. Only the finished composition is read back.

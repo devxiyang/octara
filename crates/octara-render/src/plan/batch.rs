@@ -1,18 +1,18 @@
 //! Device-independent paint requests, before atlas allocation and draw scheduling.
 
-use super::atlas::{ArrayId, Region};
-use super::glyph_pipeline::GlyphInst;
-use super::{custom, plan::TransitionRequest};
+use super::glyph_instance::GlyphInst;
+use super::packing::{ArrayId, Region};
+use super::{Material, TransitionRequest, union};
 use color::LinearSrgb;
 use octara_model::geometry::Rect;
 use octara_model::paint::{CustomPaint, ImagePaint, Quad, Shadow};
 use octara_model::theme::{Color, Gradient};
 use std::ops::Range;
 
-pub(super) const NO_CLIP: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
+pub(crate) const NO_CLIP: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
 
 #[derive(Clone, Copy)]
-pub(super) enum Shape {
+pub enum Shape {
     Quad { fill: Option<Color>, gradient: Option<Gradient>, border_widths: [f32; 4], border_color: Color },
     Shadow { color: Color, sigma: f32 },
     Image { bounds: [f32; 4], opacity: f32, region: Option<Region> },
@@ -30,13 +30,13 @@ impl Default for Shape {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Paint {
-    pub(super) rect: [f32; 4],
-    pub(super) clip: [f32; 4],
-    pub(super) clip_head: u32,
-    pub(super) spatial: u32,
-    pub(super) radius: [f32; 4],
-    pub(super) shape: Shape,
+pub struct Paint {
+    pub rect: [f32; 4],
+    pub clip: [f32; 4],
+    pub clip_head: u32,
+    pub spatial: u32,
+    pub radius: [f32; 4],
+    pub shape: Shape,
 }
 
 impl Default for Paint {
@@ -45,32 +45,21 @@ impl Default for Paint {
     }
 }
 
-pub(super) fn rect([x, y, w, h]: [f32; 4]) -> Rect {
+pub(crate) fn rect([x, y, w, h]: [f32; 4]) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-pub(super) fn xywh(r: Rect) -> [f32; 4] {
+pub(crate) fn xywh(r: Rect) -> [f32; 4] {
     [r.x, r.y, r.w, r.h]
 }
 
-pub(super) fn grow(rect: Rect, padding: f32) -> Rect {
+pub(crate) fn grow(rect: Rect, padding: f32) -> Rect {
     let inset = xywh(rect);
     Rect::new(inset[0] - padding, inset[1] - padding, inset[2] + 2.0 * padding, inset[3] + 2.0 * padding)
 }
 
-pub(super) fn union(a: Rect, b: Rect) -> Rect {
-    if a.is_empty() {
-        return b;
-    }
-    if b.is_empty() {
-        return a;
-    }
-    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
-    Rect::new(x, y, a.right().max(b.right()) - x, a.bottom().max(b.bottom()) - y)
-}
-
 impl Paint {
-    pub(super) fn padding(&self, aa: f32) -> f32 {
+    pub(crate) fn padding(&self, aa: f32) -> f32 {
         match self.shape {
             Shape::Quad { .. } | Shape::Image { .. } | Shape::Canvas { .. } | Shape::Material { .. } => aa,
             Shape::Shadow { sigma, .. } => 3.0 * sigma + aa,
@@ -78,24 +67,24 @@ impl Paint {
         }
     }
 
-    pub(super) fn visible_bounds(&self, window: &Rect) -> Rect {
+    pub(crate) fn visible_bounds(&self, window: &Rect) -> Rect {
         grow(rect(self.rect), self.padding(1.0)).intersect(&clip_envelope(rect(self.clip))).intersect(window)
     }
 }
 
-pub(super) fn clip_envelope(clip: Rect) -> Rect {
+pub(crate) fn clip_envelope(clip: Rect) -> Rect {
     if clip.is_empty() { Rect::default() } else { grow(clip, 1.0) }
 }
 
-pub(super) fn straight(c: Color) -> [f32; 4] {
+pub(crate) fn straight(c: Color) -> [f32; 4] {
     c.convert::<LinearSrgb>().components
 }
 
-pub(super) fn custom_quad(paint: &CustomPaint, fallback: &Paint) -> Paint {
+pub(crate) fn custom_quad(paint: &CustomPaint, fallback: &Paint) -> Paint {
     Paint { shape: Shape::Material { opacity: paint.opacity, params: paint.input.params }, ..*fallback }
 }
 
-pub(super) fn image(i: &ImagePaint, scale: f32, clip: [f32; 4], clip_head: u32) -> Paint {
+pub(crate) fn image(i: &ImagePaint, scale: f32, clip: [f32; 4], clip_head: u32) -> Paint {
     Paint {
         rect: xywh(i.rect).map(|px| px * scale),
         clip,
@@ -106,7 +95,7 @@ pub(super) fn image(i: &ImagePaint, scale: f32, clip: [f32; 4], clip_head: u32) 
     }
 }
 
-pub(super) fn shadow(s: &Shadow, scale: f32, clip: [f32; 4], clip_head: u32) -> Paint {
+pub(crate) fn shadow(s: &Shadow, scale: f32, clip: [f32; 4], clip_head: u32) -> Paint {
     Paint {
         rect: xywh(s.rect).map(|px| px * scale),
         clip,
@@ -117,7 +106,7 @@ pub(super) fn shadow(s: &Shadow, scale: f32, clip: [f32; 4], clip_head: u32) -> 
     }
 }
 
-pub(super) fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_head: u32) -> Paint {
+pub(crate) fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_head: u32) -> Paint {
     Paint {
         rect: xywh(q.rect).map(|px| px * scale),
         clip,
@@ -130,23 +119,23 @@ pub(super) fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_head: u32) -> Pain
 
 /// Requests drawn into one target: the window, an opacity layer or a transition region.
 #[derive(Default)]
-pub(super) struct Pass {
-    pub(super) paints: Vec<Paint>,
-    pub(super) batches: Vec<Batch>,
-    pub(super) spatial: bool,
-    pub(super) opacity: f32,
-    pub(super) clip_limit: Option<Rect>,
-    pub(super) transition: Option<TransitionRequest>,
+pub struct Pass {
+    pub paints: Vec<Paint>,
+    pub batches: Vec<Batch>,
+    pub spatial: bool,
+    pub opacity: f32,
+    pub clip_limit: Option<Rect>,
+    pub transition: Option<TransitionRequest>,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub(super) enum Draw {
+pub enum Draw {
     Quad,
     Shadow,
     Image(ArrayId),
     Cutout,
     Layer(usize),
-    Material(custom::Material),
+    Material(Material),
     RequestedMaterial(usize),
     Sample(usize),
     Glyph(ArrayId),
@@ -155,15 +144,16 @@ pub(super) enum Draw {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Batch {
-    pub(super) instances: Range<usize>,
-    pub(super) draw: Draw,
+pub struct Batch {
+    pub instances: Range<usize>,
+    pub draw: Draw,
 }
 
+/// A consecutive run of instances sharing a pipeline and resource binding.
 #[derive(Debug, PartialEq)]
-pub(super) struct PlannedBatch {
-    pub(super) draw: Draw,
-    pub(super) instances: Range<u32>,
+pub struct PlannedBatch {
+    pub draw: Draw,
+    pub instances: Range<u32>,
     bounds: Vec<Rect>,
     spans: Vec<DrawSpan>,
 }
@@ -176,11 +166,11 @@ struct DrawSpan {
 }
 
 impl PlannedBatch {
-    pub(super) fn new(draw: Draw, first: u32) -> Self {
+    pub(crate) fn new(draw: Draw, first: u32) -> Self {
         Self { draw, instances: first..first, bounds: Vec::new(), spans: Vec::new() }
     }
 
-    pub(super) fn extend(&mut self, index: u32, bounds: Rect, spatial: u32) {
+    pub(crate) fn extend(&mut self, index: u32, bounds: Rect, spatial: u32) {
         const SPAN_LEN: usize = 32;
         self.instances.end = index + 1;
         if self.bounds.len().is_multiple_of(SPAN_LEN) || self.spans.last().is_none_or(|last| last.spatial != spatial) {
@@ -192,7 +182,8 @@ impl PlannedBatch {
         self.bounds.push(bounds);
     }
 
-    pub(super) fn visible_ranges(&self, damage: Rect, spatials: &[[f32; 4]], mut emit: impl FnMut(Range<u32>)) -> u32 {
+    /// Emits consecutive ranges intersecting the damage bounds, including spatial offsets.
+    pub fn visible_ranges(&self, damage: Rect, spatials: &[[f32; 4]], mut emit: impl FnMut(Range<u32>)) -> u32 {
         let mut start = self.instances.start;
         let mut next = start..start;
         let mut draws = 0;
@@ -227,7 +218,7 @@ impl PlannedBatch {
 }
 
 impl Pass {
-    pub(super) fn push(&mut self, paint: Paint, draw: Draw) {
+    pub fn push(&mut self, paint: Paint, draw: Draw) {
         let start = self.paints.len();
         self.paints.push(paint);
         if let Some(last) = self.batches.last_mut()
@@ -239,7 +230,7 @@ impl Pass {
         }
     }
 
-    pub(super) fn visible_window(&self, window: &Rect) -> Rect {
+    pub(crate) fn visible_window(&self, window: &Rect) -> Rect {
         self.clip_limit.map_or(*window, |limit| window.intersect(&limit))
     }
 }

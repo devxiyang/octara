@@ -13,7 +13,7 @@ categories.workspace = true
 publish = true
 
 [features]
-webgpu = ["dep:octara-render", "octara-render/gpu"]
+webgpu = ["dep:octara-render", "octara-render/wgpu"]
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
 octara-headless.workspace = true
