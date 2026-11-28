@@ -59,7 +59,7 @@ linebender_resource_handle = "0.1.1"
 icu_locale = { version = "~2.3.0", default-features = false, features = ["compiled_data"] }
 parley = { version = "0.13.0", default-features = false, features = ["std", "complex-scripts"] }
 png = "0.18.1"
-taffy = { version = "0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
+taffy = { version = "0.15.1", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
 zeno = { version = "0.3.3", default-features = false, features = ["std", "eval"] }
 bitflags = { version = "2.13.2", features = ["serde"] }
 bytemuck = { version = "1.25.2", features = ["derive"] }

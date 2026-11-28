@@ -65,6 +65,39 @@ impl DirtyBitmap {
         self.has_slot(slot) && (self.generation(slot) == generation || self.reused.contains(node))
     }
 
+    /// Return the primary recorded key at the supplied key's slot.
+    #[doc(hidden)]
+    pub fn key_at_slot(&self, node: NodeId) -> Option<NodeId> {
+        let (slot, _) = parts(node);
+        self.has_slot(slot).then(|| key(slot, self.generation(slot)))
+    }
+
+    pub fn remove(&mut self, node: NodeId) -> bool {
+        let (slot, generation) = parts(node);
+        if !self.has_slot(slot) {
+            return false;
+        }
+        if generation != self.generation(slot) {
+            let Some(index) = self.reused.iter().position(|&key| key == node) else { return false };
+            self.reused.remove(index);
+            return true;
+        }
+        self.generations.remove(&slot);
+        if let Some(index) = self.reused.iter().position(|&node| parts(node).0 == slot) {
+            let (_, generation) = parts(self.reused.remove(index));
+            if generation != FIRST_GENERATION {
+                self.generations.insert(slot, generation);
+            }
+        } else {
+            let word = slot / WORD_BITS;
+            self.l0[word] &= !(1 << (slot % WORD_BITS));
+            if self.l0[word] == 0 {
+                self.l1[word / WORD_BITS] &= !(1 << (word % WORD_BITS));
+            }
+        }
+        true
+    }
+
     pub fn is_empty(&self) -> bool {
         self.l1.iter().all(|&word| word == 0)
     }
@@ -176,6 +209,20 @@ fn key(slot: usize, generation: u32) -> NodeId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_a_generation_promotes_the_remaining_key() {
+        let first = key(4095, 1);
+        let second = key(4095, 3);
+        let mut dirty: DirtyBitmap = [first, second].into_iter().collect();
+        assert!(dirty.remove(first));
+        assert_eq!(dirty.key_at_slot(first), Some(second));
+        assert!(!dirty.contains(&first));
+        assert_eq!(dirty.iter().collect::<Vec<_>>(), [second]);
+        assert!(dirty.remove(second));
+        assert!(dirty.is_empty());
+        assert_eq!(dirty.key_at_slot(second), None);
+    }
 
     #[test]
     fn union_spans_summary_words_and_preserves_reused_keys() {

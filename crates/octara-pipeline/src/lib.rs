@@ -2,6 +2,7 @@
 
 pub mod a11y;
 pub mod paint;
+mod projected;
 
 mod airspace;
 mod flat_tree;
@@ -13,7 +14,7 @@ mod text;
 use a11y::{AccessKitProjector, AccessPublication};
 use airspace::{Airspace, AirspaceFrame};
 use flat_tree::FlatTree;
-use layout::LayoutEngine;
+use layout::LayoutKernel;
 use octara_model::geometry::{LayoutBox, Point, Rect, WindowViewport};
 use octara_model::identity::{MeasureTicket, NativeId, ViewportRev, WindowRev};
 use octara_model::input::{ContactTarget, HostReply};
@@ -35,12 +36,14 @@ use std::sync::Arc;
 use text::TextEngine;
 
 pub use a11y::{AccessibilityCommit, AccessibilityContext, AccessibilityWork};
-pub use flat_tree::FlatNode;
+pub use flat_tree::{FlatNode, FlatTreeMetrics};
 pub use layout::LayoutWork;
 pub use text::TextWork;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeEngineConfig {
+    /// Verify incremental geometry and sampled hits against an independent cold layout.
+    pub check_layout_cache: bool,
     pub check_paint_cache: bool,
     pub check_a11y_cache: bool,
     pub system_fonts: bool,
@@ -173,7 +176,7 @@ pub struct NativeEngine {
     config: NativeEngineConfig,
     window_active: bool,
     vibrant_window: bool,
-    layout: LayoutEngine,
+    layout: LayoutKernel,
     flat: FlatTree,
     text: TextEngine,
     paint: PaintCompiler,
@@ -196,7 +199,7 @@ impl NativeEngine {
             config,
             window_active: true,
             vibrant_window: false,
-            layout: LayoutEngine::default(),
+            layout: LayoutKernel::default(),
             flat: FlatTree::default(),
             text: TextEngine::new(config.system_fonts),
             paint: PaintCompiler::default(),
@@ -207,6 +210,31 @@ impl NativeEngine {
             committed_scale: 1.0,
             publication,
             staged: None,
+        }
+    }
+
+    fn check_layout(&self, tree: &Tree, cold: &LayoutKernel, cold_text: &TextEngine) {
+        let mut cold_flat = FlatTree::default();
+        cold_flat.project(tree, &TreeDelta::default(), cold);
+        let incremental_flat = self.flat.fork_for_layout_check();
+        for (node, _) in tree.nodes().filter(|(node, _)| tree.is_live(*node)) {
+            assert_eq!(self.layout.geometry(node), cold.geometry(node), "layout box for {node:?}");
+            assert_eq!(self.layout.bounds(node), cold.bounds(node), "world bounds for {node:?}");
+            assert_eq!(self.layout.content_bounds(node), cold.content_bounds(node), "content bounds for {node:?}");
+            assert_eq!(self.layout.clip(node), cold.clip(node), "clip for {node:?}");
+            assert_eq!(self.layout.scroll_range(node), cold.scroll_range(node), "scroll range for {node:?}");
+            assert_eq!(self.layout.scroll_offset(node), cold.scroll_offset(node), "scroll offset for {node:?}");
+            if let (Some(bounds), Some(clip)) = (cold.bounds(node), cold.clip(node)) {
+                let visible = bounds.intersect(&clip);
+                if !visible.is_empty() {
+                    let point = Point::new(visible.x + visible.w * 0.5, visible.y + visible.h * 0.5);
+                    assert_eq!(
+                        incremental_flat.hit(tree, &self.layout, &self.text, point),
+                        cold_flat.hit(tree, cold, cold_text, point),
+                        "flat hit for {node:?} at {point:?}"
+                    );
+                }
+            }
         }
     }
 
@@ -225,6 +253,10 @@ impl NativeEngine {
 
     pub fn layout_work(&self) -> LayoutWork {
         self.layout.work()
+    }
+
+    pub fn flat_tree_metrics(&self) -> FlatTreeMetrics {
+        self.flat.metrics()
     }
 
     pub fn text_work(&self) -> TextWork {
@@ -307,10 +339,20 @@ impl HostEngine for NativeEngine {
             return Err(viewport_error());
         }
         self.text.begin_stage();
+        self.text.retire(delta);
         self.layout.set_animated_scrolls(self.scrolling.active_nodes(tree));
         let layout_viewport = WindowViewport { size: viewport.unobscured_size(), keyboard_inset: 0.0, ..viewport };
+        let oracle = self.config.check_layout_cache.then(|| {
+            let mut cold = LayoutKernel::default();
+            self.layout.copy_measure_inputs_to(tree, &mut cold);
+            (cold, self.text.fork_for_layout_check())
+        });
         let mut updates = self.layout.project(tree, delta, layout_viewport, &mut self.text);
         self.flat.project(tree, delta, &self.layout);
+        if let Some((mut cold, mut text)) = oracle {
+            cold.project(tree, delta, layout_viewport, &mut text);
+            self.check_layout(tree, &cold, &text);
+        }
         let scroll_deadline = self.scrolling.step(tree, &self.layout, &mut updates, now, self.config.reduced_motion);
         self.accessibility.project(tree, delta, &self.layout, &self.text, viewport.scale, self.config.check_a11y_cache);
         let airspace = self.publication.airspace.borrow().project(tree, &self.layout);
@@ -510,7 +552,7 @@ struct NativeViews {
 }
 
 impl NativeViews {
-    fn project(&mut self, tree: &Tree, layout: &LayoutEngine, draw: &DisplayList, viewport: WindowViewport) {
+    fn project(&mut self, tree: &Tree, layout: &LayoutKernel, draw: &DisplayList, viewport: WindowViewport) {
         if self.viewport != Some(viewport) {
             if self.viewport.is_some() {
                 self.viewport_rev.0 = self.viewport_rev.0.checked_add(1).expect("native viewport identity exhausted");

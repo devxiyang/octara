@@ -1,15 +1,15 @@
 //! Native font selection, paragraph shaping, and text projection.
 
-mod cache;
 #[cfg(any(unix, windows))]
 mod font;
 pub(crate) mod geometry;
 mod inline;
 mod presentation;
 
-use self::cache::Cache;
-use crate::layout::LayoutEngine;
+use self::presentation::MeasureCache;
+use crate::layout::LayoutKernel;
 use crate::paint::paint_icon;
+use crate::projected::DenseProjected;
 use octara_model::CacheLine;
 use octara_model::geometry::{Align, Point, Rect, Size};
 use octara_model::paint::{CanvasText, FontData, FontFace, FontId, Glyph, GlyphRun, Item, Quad};
@@ -46,16 +46,18 @@ struct Shape {
     layout: Layout<u16>,
     inline: Vec<inline::Box>,
     broken: Option<(Option<f32>, bool)>,
+    measures: MeasureCache,
 }
 
 type SharedShape = Rc<RefCell<Shape>>;
 
 impl Shape {
-    fn at(&mut self, width: Option<f32>, justify: bool) -> &Self {
+    fn at(&mut self, width: Option<f32>, justify: bool, work: &mut TextWork) -> &Self {
         if self.broken != Some((width, justify)) {
             let alignment = if justify { Alignment::Justify } else { Alignment::Left };
             self.layout.set_alignment(alignment, AlignmentOptions::default());
             self.layout.break_all_lines(width);
+            work.line_breaks += 1;
             self.broken = Some((width, justify));
         }
         self
@@ -128,9 +130,14 @@ struct Document {
     style: TextStyle,
     offsets: Vec<(usize, usize)>,
     placeholder: bool,
+    measures: RefCell<Option<Box<MeasureCache>>>,
 }
 
 impl Document {
+    fn new(paragraphs: Vec<Paragraph>, style: TextStyle, offsets: Vec<(usize, usize)>, placeholder: bool) -> Self {
+        Self { paragraphs, style, offsets, placeholder, measures: RefCell::default() }
+    }
+
     fn byte(&self, display: usize) -> usize {
         if self.placeholder {
             return 0;
@@ -245,6 +252,7 @@ impl Run {
     }
 }
 
+#[derive(Clone)]
 struct Projected {
     paint: PaintKey,
 }
@@ -274,6 +282,12 @@ pub struct TextWork {
     pub shape_cache_hits: u64,
     pub documents_built: u64,
     pub presentations_built: u64,
+    /// Measurement results reused from a shape or document probe.
+    pub measure_probe_hits: u64,
+    /// Parley line-breaking passes, including those used for presentation.
+    pub line_breaks: u64,
+    /// Text and editor nodes considered by local projection.
+    pub nodes_projected: u64,
 }
 
 pub(crate) struct TextEngine {
@@ -284,10 +298,10 @@ pub(crate) struct TextEngine {
     shapes: FxHashMap<u64, Vec<CachedShape>>,
     shape_bytes: usize,
     tick: u64,
-    measures: Cache<TextCache>,
-    documents: Cache<TextCache>,
-    projected: Cache<Projected>,
-    links: Cache<Vec<Rect>>,
+    measures: DenseProjected<TextCache>,
+    documents: DenseProjected<TextCache>,
+    projected: DenseProjected<Projected>,
+    links: DenseProjected<Vec<Rect>>,
     changed: DirtyBitmap,
     changed_links: DirtyBitmap,
     candidates: DirtyBitmap,
@@ -319,18 +333,26 @@ impl TextEngine {
             collection.set_generic_families(GenericFamily::SansSerif, sans.into_iter());
             collection.set_generic_families(GenericFamily::Monospace, mono.into_iter());
         }
+        Self::with_collection(collection, 0)
+    }
+
+    pub(crate) fn fork_for_layout_check(&self) -> Self {
+        Self::with_collection(self.fonts.collection.clone(), self.font_generation())
+    }
+
+    fn with_collection(collection: Collection, font_generation: u64) -> Self {
         Self {
             fonts: FontContext { collection, source_cache: SourceCache::default() },
             layouts: LayoutContext::new(),
-            work: TextWork::default(),
+            work: TextWork { font_generation, ..TextWork::default() },
             faces: FxHashMap::default(),
             shapes: FxHashMap::default(),
             shape_bytes: 0,
             tick: 0,
-            measures: Cache::default(),
-            documents: Cache::default(),
-            projected: Cache::default(),
-            links: Cache::default(),
+            measures: DenseProjected::default(),
+            documents: DenseProjected::default(),
+            projected: DenseProjected::default(),
+            links: DenseProjected::default(),
             changed: DirtyBitmap::default(),
             changed_links: DirtyBitmap::default(),
             candidates: DirtyBitmap::default(),
@@ -369,6 +391,16 @@ impl TextEngine {
 
     pub(crate) fn work(&self) -> TextWork {
         self.work
+    }
+
+    /// Clear retired measurement and document slots before layout can reuse their indices.
+    pub(crate) fn retire(&mut self, delta: &TreeDelta) {
+        for &retired in &delta.retired {
+            if let RetiredNode::Destroyed(node) = retired {
+                self.documents.remove(node);
+                self.measures.remove(node);
+            }
+        }
     }
 
     pub(crate) fn register_font(&mut self, data: FontData, scripts: &[[u8; 4]]) -> bool {
@@ -508,8 +540,8 @@ impl TextEngine {
         }
         inline::Box::push(&inline, text, &mut builder);
         let mut layout = builder.build(&shaped_text);
-        inline::Box::align(&inline, &mut layout, style.font_size);
-        let shape = Rc::new(RefCell::new(Shape { layout, inline, broken: None }));
+        inline::Box::align(&inline, &mut layout, style.font_size, &mut self.work);
+        let shape = Rc::new(RefCell::new(Shape { layout, inline, broken: None, measures: MeasureCache::default() }));
         if cache {
             self.shape_bytes += shape_bytes(text);
             self.shapes.entry(key).or_default().push(CachedShape {
@@ -578,7 +610,7 @@ impl TextEngine {
         };
         let key = Key { source, style, mono, font_generation: self.work.font_generation };
         let cache = if committed { &self.measures } else { &self.documents };
-        if let Some(entry) = cache.get(&node).filter(|entry| entry.key == key) {
+        if let Some(entry) = cache.get(node).filter(|entry| entry.key == key) {
             return Some(entry.document.clone());
         }
         let mut safe_value = String::new();
@@ -641,7 +673,7 @@ impl TextEngine {
             .collect();
         let paragraphs = self.paragraphs(value, style, &spans, attachments, shared);
         self.work.documents_built += 1;
-        let document = Rc::new(Document { paragraphs, style, offsets, placeholder });
+        let document = Rc::new(Document::new(paragraphs, style, offsets, placeholder));
         let cache = if committed { &mut self.measures } else { &mut self.documents };
         cache.insert(node, TextCache { key, document: document.clone(), presentation: None });
         self.trim();
@@ -707,7 +739,7 @@ impl TextEngine {
                     (INPUT_WIDTH, 1, 1)
                 };
                 let document = self.document(tree, node, true)?;
-                let (measured, lines) = presentation::measure_up_to(&document, Some(width), max);
+                let (measured, lines) = document.measure(Some(width), max, &mut self.work);
                 let height = (measured.height + min.saturating_sub(lines) as f32 * line_height).max(min as f32 * line_height);
                 return Some(Size::new(width, height.ceil()));
             }
@@ -721,7 +753,7 @@ impl TextEngine {
                 return Some(Size::new(width, (min as f32 * line_height).ceil()));
             }
             let document = self.document(tree, node, true)?;
-            let (_, lines) = presentation::measure(&document, Some(width));
+            let (_, lines) = document.measure(Some(width), max, &mut self.work);
             return Some(Size::new(width, (lines.clamp(min, max) as f32 * line_height).ceil()));
         }
         let static_text = tree.text(node)?;
@@ -729,19 +761,19 @@ impl TextEngine {
             return Some(Size::default());
         }
         let document = self.document(tree, node, false)?;
-        let (size, _) = presentation::measure(&document, width);
+        let (size, _) = document.measure(width, usize::MAX, &mut self.work);
         Some(Size::new(size.width.ceil(), size.height.ceil()))
     }
 
     fn node_presentation(&mut self, tree: &Tree, node: NodeId, width: f32) -> Option<Rc<Presentation>> {
         let document = self.document(tree, node, false)?;
-        let cache = self.documents.get(&node).expect("document cache");
+        let cache = self.documents.get(node).expect("document cache");
         if let Some((_, result)) = cache.presentation.as_ref().filter(|(at, _)| *at == width) {
             return Some(result.clone());
         }
         let result = Rc::new(self.present(&document, Some(width)));
         self.work.presentations_built += 1;
-        self.documents.get_mut(&node).expect("document cache").presentation = Some((width, result.clone()));
+        self.documents.get_mut(node).expect("document cache").presentation = Some((width, result.clone()));
         Some(result)
     }
 
@@ -765,7 +797,7 @@ impl TextEngine {
     fn editor_origin(
         &self,
         tree: &Tree,
-        layout: &LayoutEngine,
+        layout: &LayoutKernel,
         node: NodeId,
         content: Rect,
         presentation: &Presentation,
@@ -774,11 +806,8 @@ impl TextEngine {
         let mut origin = Point::new(content.x, content.y - layout.scroll_offset(node).y);
         if tree.editor(node).is_some_and(|editor| !editor.multiline) {
             origin.y += ((content.h - presentation.size.height) * 0.5).max(0.0);
-            let current = self
-                .projected
-                .get(&node)
-                .and_then(|previous| Some(previous.paint.clip?.0.x - previous.paint.local_origin.x))
-                .unwrap_or(0.0);
+            let current =
+                self.projected.get(node).and_then(|previous| Some(previous.paint.clip?.0.x - previous.paint.local_origin.x)).unwrap_or(0.0);
             let max = (presentation.size.width + 1.0 - content.w).max(0.0);
             let (low, high) = caret.map_or((0.0, max), |caret| {
                 let low = (caret.right() - content.w).clamp(0.0, max);
@@ -789,7 +818,7 @@ impl TextEngine {
         origin
     }
 
-    pub(crate) fn caret_in(&mut self, tree: &Tree, layout: &LayoutEngine, node: NodeId) -> Option<Rect> {
+    pub(crate) fn caret_in(&mut self, tree: &Tree, layout: &LayoutKernel, node: NodeId) -> Option<Rect> {
         if tree.focus() != Some(node) {
             return None;
         }
@@ -802,7 +831,7 @@ impl TextEngine {
         (!rect.is_empty()).then_some(rect)
     }
 
-    pub(crate) fn selection_rect_in(&mut self, tree: &Tree, layout: &LayoutEngine, node: NodeId) -> Option<Rect> {
+    pub(crate) fn selection_rect_in(&mut self, tree: &Tree, layout: &LayoutKernel, node: NodeId) -> Option<Rect> {
         if let Some(editor) = tree.editor(node) {
             if tree.focus() != Some(node) {
                 return None;
@@ -836,9 +865,9 @@ impl TextEngine {
         }))
     }
 
-    pub(crate) fn selection_rect(&self, tree: &Tree, layout: &LayoutEngine, node: NodeId) -> Option<Rect> {
+    pub(crate) fn selection_rect(&self, tree: &Tree, layout: &LayoutKernel, node: NodeId) -> Option<Rect> {
         let selection = |node, range: Range<usize>| {
-            let projected = self.projected.get(&node)?;
+            let projected = self.projected.get(node)?;
             let paint = &projected.paint;
             let bounds = layout.bounds(node)?;
             let position = Point::new(bounds.x, bounds.y);
@@ -875,31 +904,30 @@ impl TextEngine {
         selection(node, doc_selection(tree, node)?)
     }
 
-    pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, layout: &LayoutEngine) {
+    pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, layout: &LayoutKernel) {
         self.changed.clear();
         self.changed_links.clear();
         for &retired in &delta.retired {
             if let RetiredNode::Destroyed(node) = retired {
-                self.documents.remove(&node);
-                self.measures.remove(&node);
-                self.projected.remove(&node);
+                self.projected.remove(node);
                 self.remove_link(node);
             }
         }
         let mut changed = std::mem::take(&mut self.candidates);
-        changed.union_with(layout.changed());
+        changed.union_with(layout.local_changed());
         changed.extend(layout.scroll_changed().iter().filter(|&node| tree.editor(node).is_some()));
         changed.union_with(&delta.layout_dirty);
         changed.union_with(&delta.editor_dirty);
         if std::mem::take(&mut self.needs_projection) {
-            changed.extend(self.projected.keys().copied());
+            changed.extend(self.projected.keys());
         }
         for node in changed.iter() {
             if tree.text(node).is_none() && tree.editor(node).is_none() {
                 continue;
             }
+            self.work.nodes_projected += 1;
             let Some(content) = layout.local_content(node) else {
-                if self.projected.remove(&node) {
+                if self.projected.remove(node) {
                     self.changed.insert(node);
                 }
                 if let Some(text) = tree.text(node) {
@@ -908,13 +936,13 @@ impl TextEngine {
                     }
                 }
                 if tree.editor(node).is_some_and(|editor| editor.is_secure()) {
-                    self.documents.remove(&node);
+                    self.documents.remove(node);
                 }
                 continue;
             };
             let presentation = self.node_presentation(tree, node, content.w).expect("shown text has a document");
             let caret = if tree.focus() == Some(node) { self.editor_caret_in_content(tree, node, content.w) } else { None };
-            let previous = self.projected.get(&node);
+            let previous = self.projected.get(node);
             let (local_origin, clip) = if tree.editor(node).is_some() {
                 let origin = self.editor_origin(tree, layout, node, content, &presentation, caret);
                 (origin, Some((content, [true, true])))
@@ -936,7 +964,7 @@ impl TextEngine {
                         .collect();
                     if rects.is_empty() {
                         self.remove_link(link);
-                    } else if self.links.get(&link) != Some(&rects) {
+                    } else if self.links.get(link) != Some(&rects) {
                         self.links.insert(link, rects);
                         self.changed_links.insert(link);
                     }
@@ -951,7 +979,7 @@ impl TextEngine {
         self.candidates = changed;
     }
 
-    pub(crate) fn geometry(&self, node: NodeId, layout: &LayoutEngine) -> Option<TextGeometry> {
+    pub(crate) fn geometry(&self, node: NodeId, layout: &LayoutKernel) -> Option<TextGeometry> {
         let mut geometry = self.local_geometry(node)?;
         let bounds = layout.bounds(node)?;
         geometry.origin.x += bounds.x;
@@ -960,13 +988,13 @@ impl TextEngine {
     }
 
     pub(crate) fn local_geometry(&self, node: NodeId) -> Option<TextGeometry> {
-        let projected = self.projected.get(&node)?;
+        let projected = self.projected.get(node)?;
         Some(TextGeometry { origin: projected.paint.local_origin, lines: projected.paint.presentation.lines.clone() })
     }
 
     pub(crate) fn clipped(&self) -> Vec<(NodeId, TextClip)> {
         let mut clipped: Vec<_> =
-            self.projected.iter().filter_map(|(&node, projected)| Some((node, projected.paint.presentation.clip?))).collect();
+            self.projected.iter().filter_map(|(node, projected)| Some((node, projected.paint.presentation.clip?))).collect();
         clipped.sort_unstable_by_key(|&(node, _)| node);
         clipped
     }
@@ -976,23 +1004,23 @@ impl TextEngine {
     }
 
     pub(crate) fn paint_key(&self, node: NodeId) -> Option<PaintKey> {
-        Some(self.projected.get(&node)?.paint.clone())
+        Some(self.projected.get(node)?.paint.clone())
     }
 
-    pub(crate) fn link_contains(&self, node: NodeId, layout: &LayoutEngine, pos: Point) -> bool {
+    pub(crate) fn link_contains(&self, node: NodeId, layout: &LayoutKernel, pos: Point) -> bool {
         self.link_window_rects(node, layout).any(|rect| rect.contains(pos))
     }
 
-    fn link_window_rects(&self, node: NodeId, layout: &LayoutEngine) -> impl Iterator<Item = Rect> + '_ {
+    fn link_window_rects(&self, node: NodeId, layout: &LayoutKernel) -> impl Iterator<Item = Rect> + '_ {
         let origin = layout
             .bounds(node)
             .zip(layout.geometry(node))
             .map_or(Point::default(), |(bounds, layout)| Point::new(bounds.x - layout.rect.x, bounds.y - layout.rect.y));
-        self.links.get(&node).into_iter().flatten().map(move |rect| geometry::translate(*rect, origin))
+        self.links.get(node).into_iter().flatten().map(move |rect| geometry::translate(*rect, origin))
     }
 
     fn remove_link(&mut self, node: NodeId) {
-        if self.links.remove(&node) {
+        if self.links.remove(node) {
             self.changed_links.insert(node);
         }
     }
@@ -1002,23 +1030,23 @@ impl TextEngine {
     }
 
     pub(crate) fn link_local_bounds(&self, node: NodeId) -> Option<Rect> {
-        geometry::union(self.links.get(&node)?.iter().copied())
+        geometry::union(self.links.get(node)?.iter().copied())
     }
 
     pub(crate) fn local_caret(&self, node: NodeId) -> Option<Rect> {
-        let paint = &self.projected.get(&node)?.paint;
+        let paint = &self.projected.get(node)?.paint;
         let caret = geometry::translate(paint.caret?, paint.local_origin);
         let caret = paint.clip.map_or(caret, |(clip, _)| caret.intersect(&clip));
         (!caret.is_empty()).then_some(caret)
     }
 
-    pub(crate) fn caret(&self, node: NodeId, layout: &LayoutEngine) -> Option<Rect> {
+    pub(crate) fn caret(&self, node: NodeId, layout: &LayoutKernel) -> Option<Rect> {
         let bounds = layout.bounds(node)?;
         Some(geometry::translate(self.local_caret(node)?, Point::new(bounds.x, bounds.y)))
     }
 
     pub(crate) fn items(&self, tree: &Tree, node: NodeId, window_active: bool) -> Vec<Item> {
-        let Some(text) = self.projected.get(&node).map(|projected| &projected.paint) else { return Vec::new() };
+        let Some(text) = self.projected.get(node).map(|projected| &projected.paint) else { return Vec::new() };
         let mut items = Vec::new();
         let theme = tree.theme_at(node);
         let text_color = tree.visual(node).text;
@@ -1127,14 +1155,14 @@ impl TextEngine {
     }
 
     pub(crate) fn attachments(&self, node: NodeId) -> (Option<Item>, Vec<(usize, Rect)>) {
-        let Some(text) = self.projected.get(&node).map(|projected| &projected.paint) else { return (None, Vec::new()) };
+        let Some(text) = self.projected.get(node).map(|projected| &projected.paint) else { return (None, Vec::new()) };
         let positions =
             text.presentation.attachments.iter().map(|&(index, rect)| (index, geometry::translate(rect, text.local_origin))).collect();
         (text.clip.and_then(|(rect, axes)| Item::clip(node, rect, axes, [0.0; 4])), positions)
     }
 
-    pub(crate) fn attachment_bounds(&self, node: NodeId, index: usize, layout: &LayoutEngine) -> Option<Rect> {
-        let text = self.projected.get(&node)?;
+    pub(crate) fn attachment_bounds(&self, node: NodeId, index: usize, layout: &LayoutKernel) -> Option<Rect> {
+        let text = self.projected.get(node)?;
         let presentation = &text.paint.presentation;
         let rect = presentation
             .attachments
@@ -1154,8 +1182,7 @@ impl TextEngine {
         style.wrap = if text.max_width.is_some() { Wrap::Words } else { Wrap::None };
         style.align = TextAlign::Start;
         style.max_lines = None;
-        let document =
-            Document { paragraphs: self.paragraphs(&text.text, style, &[], &[], true), style, offsets: Vec::new(), placeholder: false };
+        let document = Document::new(self.paragraphs(&text.text, style, &[], &[], true), style, Vec::new(), false);
         let presentation = self.present(&document, text.max_width);
         let shift = |align, extent| match align {
             Align::Start => 0.0,
@@ -1188,7 +1215,7 @@ impl TextEngine {
 }
 
 fn shape_bytes(text: &str) -> usize {
-    2048 + text.len().saturating_mul(64)
+    2048 + size_of::<MeasureCache>() + text.len().saturating_mul(64)
 }
 
 fn leaf_origin(tree: &Tree, node: NodeId, content: Rect, text_height: f32) -> Point {
@@ -1239,8 +1266,7 @@ mod tests {
         let address = inter.fonts()[0].load(None).unwrap().data().as_ptr();
         drop(inter);
         let style = TextStyle { family: "Inter", ..TextStyle::default() };
-        let document =
-            Document { paragraphs: engine.text.paragraphs("Hi", style, &[], &[], true), style, offsets: Vec::new(), placeholder: false };
+        let document = Document::new(engine.text.paragraphs("Hi", style, &[], &[], true), style, Vec::new(), false);
         let mut presentation = engine.text.present(&document, None);
         assert_eq!(presentation.glyphs.len(), 1);
         let run = presentation.glyphs.remove(0);
@@ -1258,7 +1284,7 @@ mod tests {
             let style = TextStyle { direction, ..TextStyle::default() };
             let paragraphs = engine.paragraphs("ABC אבג", style, &[], &[], true);
             assert_eq!(paragraphs[0].shape.borrow().layout.is_rtl(), direction == Direction::Rtl);
-            let document = Document { paragraphs, style, offsets: Vec::new(), placeholder: false };
+            let document = Document::new(paragraphs, style, Vec::new(), false);
             engine.present(&document, Some(240.0))
         };
         let ltr = layout(&mut engine, Direction::Ltr);
@@ -1273,6 +1299,181 @@ mod tests {
     }
 
     #[test]
+    fn measurement_probes_survive_node_recycling_and_keep_final_lines_warm() {
+        use octara_model::style::StyleProp;
+        use octara_tree::tables::AuthoredStyle;
+        use octara_tree::{NodeChange, Retirement};
+
+        let mut tree = Tree::new(TreeId::new([3, 5], 6), Default::default());
+        let label = |tx: &mut TxBuilder| {
+            let label = tx.create(NodeSpec::new(NodeContent::Text("Words that wrap across several lines".into())));
+            tx.change(
+                label,
+                NodeChange::Style(Box::new(AuthoredStyle {
+                    base: [StyleProp::TextAlign(TextAlign::Justify)].into_iter().collect(),
+                    ..Default::default()
+                })),
+            );
+            label
+        };
+        let mut tx = tree.transaction();
+        let (first, second) = (label(&mut tx), label(&mut tx));
+        tx.place(tree.node_ref(tree.root()), 0, first);
+        tx.place(tree.node_ref(tree.root()), 1, second);
+        let (receipt, _) = tree.apply(tx.finish()).unwrap();
+        let (first, second) = (receipt.node(first).unwrap(), receipt.node(second).unwrap());
+        let mut text = TextEngine::new(false);
+        let widths = [None, Some(0.0), Some(48.0), Some(92.0), Some(128.0)];
+        let measured = widths.map(|width| text.measure(&tree, first, None, width).unwrap());
+        let cold = text.work();
+        assert_eq!(cold.line_breaks, 5);
+        assert!(measured[0].width > measured[4].width);
+        assert!(measured[0].height < measured[4].height);
+
+        let warm = widths.map(|width| text.measure(&tree, second, None, width).unwrap());
+        assert_eq!(warm, measured);
+        assert_eq!(text.work().measure_probe_hits - cold.measure_probe_hits, 5);
+        assert_eq!(text.work().line_breaks, cold.line_breaks);
+        let final_lines = text.node_presentation(&tree, second, 128.0).unwrap();
+        assert_eq!(final_lines.size.height.ceil(), measured[4].height);
+        assert_eq!(text.work().line_breaks, cold.line_breaks);
+
+        let mut tx = tree.transaction();
+        tx.retire(tree.node_ref(first), Retirement::Destroy);
+        tx.retire(tree.node_ref(second), Retirement::Destroy);
+        let (_, retired) = tree.apply(tx.finish()).unwrap();
+        text.retire(&retired);
+        assert!(text.documents.is_empty());
+        let mut tx = tree.transaction();
+        let replacement = label(&mut tx);
+        tx.place(tree.node_ref(tree.root()), 0, replacement);
+        let (receipt, _) = tree.apply(tx.finish()).unwrap();
+        let replacement = receipt.node(replacement).unwrap();
+        assert_ne!(replacement, second);
+
+        let recreated = widths.map(|width| text.measure(&tree, replacement, None, width).unwrap());
+        assert_eq!(recreated, measured);
+        assert_eq!(text.work().shapes_built, cold.shapes_built);
+        assert_eq!(text.work().measure_probe_hits - cold.measure_probe_hits, 10);
+        assert_eq!(text.work().line_breaks, cold.line_breaks);
+
+        let warm = text.work();
+        let mut oracle = text.fork_for_layout_check();
+        assert_eq!(oracle.measure(&tree, replacement, None, widths[4]), Some(measured[4]));
+        assert_eq!(oracle.work().shapes_built, 1);
+        assert_eq!(oracle.work().measure_probe_hits, 0);
+        assert_eq!(oracle.work().line_breaks, 1);
+        assert_eq!(text.work(), warm);
+    }
+
+    #[test]
+    fn measurement_matches_mixed_direction_rich_inline_lines() {
+        use octara_model::text::InlineAlign;
+
+        let value = "Latin אבג tail item after\nSecond paragraph with several words";
+        let span = Span {
+            range: 6..12,
+            brush: 1,
+            family: None,
+            size: Some(22.3),
+            weight: Some(600),
+            italic: true,
+            underline: false,
+            strike: false,
+            inset: 6.0,
+        };
+        let item = value.find("item").unwrap();
+        let attachments = [InlineAttachment {
+            range: item..item + "item".len(),
+            size: Size::default(),
+            align: InlineAlign::Baseline,
+            baseline: None,
+            content: InlineContent::Spacer { width: 32.0 },
+        }];
+        let mut text = TextEngine::new(false);
+        let style = TextStyle { direction: Direction::Rtl, line_height: 24.1, ..TextStyle::default() };
+        let paragraphs = text.paragraphs(value, style, &[span], &attachments, true);
+        let mut document = Document::new(paragraphs, style, Vec::new(), false);
+        for width in [None, Some(0.0), Some(80.0), Some(115.0)] {
+            let shown = text.present(&document, width);
+            assert!(shown.lines.iter().flat_map(|line| line.fragments.iter()).any(|fragment| fragment.rtl));
+            assert_eq!(shown.attachments[0].1.w, 32.0);
+            assert_eq!(document.measure(width, usize::MAX, &mut text.work), (shown.size, shown.lines.len()));
+            let first = shown.lines[0].rect;
+            assert_eq!(document.measure(width, 1, &mut text.work), (Size::new(first.w, first.h), 1));
+        }
+
+        document.style.wrap = Wrap::None;
+        // Width-independent probes leave the shapes at the last definite width.
+        let unwrapped = document.measure(None, usize::MAX, &mut text.work);
+        assert_eq!(unwrapped.1, 2);
+        let breaks = text.work().line_breaks;
+        assert_eq!(document.measure(Some(64.0), usize::MAX, &mut text.work), unwrapped);
+        document.style.wrap = Wrap::Truncate;
+        let (first, count) = document.measure(None, usize::MAX, &mut text.work);
+        assert_eq!(count, 1);
+        assert_eq!(document.measure(Some(12.0), usize::MAX, &mut text.work), (Size::new(12.0, first.height), 1));
+        assert_eq!(text.work().line_breaks, breaks);
+    }
+
+    #[test]
+    fn ancestor_translation_keeps_local_text_and_links_warm() {
+        use octara_model::style::StyleProp;
+        use octara_tree::NodeChange;
+        use octara_tree::tables::{AuthoredStyle, LinkSlot};
+        use octara_tree::transaction::RichText;
+
+        let mut tree = Tree::new(TreeId::new([3, 5], 7), Default::default());
+        let mut delta = tree.initial_delta();
+        let mut tx = tree.transaction();
+        let root = tree.node_ref(tree.root());
+        let spacer = tx.create(NodeSpec::new(NodeContent::Box));
+        let row = tx.create(NodeSpec::new(NodeContent::Box));
+        let label = tx.create(NodeSpec::new(NodeContent::Text("".into())));
+        let height = |value: f32| {
+            NodeChange::Style(Box::new(AuthoredStyle {
+                base: [StyleProp::Height(value.into()), StyleProp::Shrink(0.0)].into_iter().collect(),
+                ..Default::default()
+            }))
+        };
+        tx.change(spacer, height(20.0));
+        tx.change(row, height(32.0));
+        tx.change(
+            label,
+            NodeChange::RichText(Box::new(RichText {
+                text: "link".into(),
+                links: vec![LinkSlot { range: 0..4, href: "#link".into() }],
+                ..Default::default()
+            })),
+        );
+        tx.place(root, 0, spacer);
+        tx.place(root, 1, row);
+        tx.place(row, 0, label);
+        let (receipt, created) = tree.apply(tx.finish()).unwrap();
+        delta.merge(created);
+        let (spacer, label) = (receipt.node(spacer).unwrap(), receipt.node(label).unwrap());
+        let link = tree.children(label)[0];
+        let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
+        let mut layout = LayoutKernel::default();
+        let mut text = TextEngine::new(false);
+        layout.project(&tree, &delta, viewport, &mut text);
+        let before = text.geometry(label, &layout).unwrap();
+        let link_before = text.link_window_rects(link, &layout).next().unwrap();
+        let work = text.work();
+
+        let mut tx = tree.transaction();
+        tx.change(tree.node_ref(spacer), height(36.0));
+        let (_, delta) = tree.apply(tx.finish()).unwrap();
+        layout.project(&tree, &delta, viewport, &mut text);
+        let after = text.geometry(label, &layout).unwrap();
+        let link_after = text.link_window_rects(link, &layout).next().unwrap();
+        assert_eq!(after.origin.y - before.origin.y, 16.0);
+        assert!(Arc::ptr_eq(&after.lines, &before.lines));
+        assert_eq!(link_after, Rect { y: link_before.y + 16.0, ..link_before });
+        assert_eq!(text.work().nodes_projected, work.nodes_projected);
+    }
+
+    #[test]
     fn retains_shaping_and_projects_utf8_to_visual_lines() {
         let mut tree = Tree::new(TreeId::new([3, 5], 2), Default::default());
         let mut delta = tree.initial_delta();
@@ -1284,7 +1485,7 @@ mod tests {
         delta.merge(created);
         let label = receipt.node(label).unwrap();
         let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-        let mut layout = LayoutEngine::default();
+        let mut layout = LayoutKernel::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);
         let geometry = text.geometry(label, &layout).unwrap();
@@ -1325,12 +1526,7 @@ mod tests {
         ];
         let style = TextStyle::default();
         let mut engine = TextEngine::new(false);
-        let document = Document {
-            paragraphs: engine.paragraphs(value, style, &[], &attachments, true),
-            style,
-            offsets: Vec::new(),
-            placeholder: false,
-        };
+        let document = Document::new(engine.paragraphs(value, style, &[], &attachments, true), style, Vec::new(), false);
         let presentation = engine.present(&document, None);
         assert_eq!(presentation.lines.len(), 1);
         assert_eq!(presentation.lines[0].range, 0..value.len());
@@ -1384,12 +1580,7 @@ mod tests {
             let expected_height = 2.0 * pill_style.padding_y + pill_style.size.max(reference.height());
 
             let attachments = [pill.attachment(source.clone())];
-            let document = Document {
-                paragraphs: engine.paragraphs(value, style, &spans, &attachments, true),
-                style,
-                offsets: Vec::new(),
-                placeholder: false,
-            };
+            let document = Document::new(engine.paragraphs(value, style, &spans, &attachments, true), style, Vec::new(), false);
             let drawing = engine.present(&document, None);
             assert_eq!(drawing.lines.len(), 1);
             assert_eq!(drawing.pills.len(), 1);
@@ -1488,20 +1679,17 @@ mod tests {
             strike: false,
             inset,
         };
-        let document = |engine: &mut TextEngine, text, span, style| Document {
-            paragraphs: engine.paragraphs(text, style, &[span], &[], true),
-            style,
-            offsets: Vec::new(),
-            placeholder: false,
+        let document = |engine: &mut TextEngine, text, span, style| {
+            Document::new(engine.paragraphs(text, style, &[span], &[], true), style, Vec::new(), false)
         };
         let plain = document(&mut engine, "go café", span(3..8, 0.0), style);
         let padded = document(&mut engine, "go café", span(3..8, 8.0), style);
-        let (plain_size, _) = presentation::measure(&plain, None);
-        let (padded_size, _) = presentation::measure(&padded, None);
+        let (plain_size, _) = plain.measure(None, usize::MAX, &mut engine.work);
+        let (padded_size, _) = padded.measure(None, usize::MAX, &mut engine.work);
         assert!((padded_size.width - plain_size.width - 16.0).abs() < 0.01);
         assert_eq!(plain_size.height, padded_size.height);
         let width = plain_size.width + 1.0;
-        let (_, line_count) = presentation::measure(&padded, Some(width));
+        let (_, line_count) = padded.measure(Some(width), usize::MAX, &mut engine.work);
         assert_eq!(line_count, 2);
         let shown = engine.present(&padded, Some(width));
         assert_eq!(shown.lines[1].range, 3..8);
@@ -1576,7 +1764,7 @@ mod tests {
         let (receipt, created) = tree.apply(tx.finish()).unwrap();
         delta.merge(created);
         let viewport = WindowViewport { size: Size::new(600.0, 160.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-        let mut layout = LayoutEngine::default();
+        let mut layout = LayoutKernel::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);
         for (label, fraction) in labels {
@@ -1628,7 +1816,7 @@ mod tests {
         let (receipt, created) = tree.apply(tx.finish()).unwrap();
         delta.merge(created);
         let viewport = WindowViewport { size: Size::new(350.0, 400.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-        let mut layout = LayoutEngine::default();
+        let mut layout = LayoutKernel::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);
         for (label, padding) in labels {
@@ -1657,7 +1845,7 @@ mod tests {
         let mut engine = TextEngine::new(false);
         let mut present = |value, style| {
             let paragraphs = engine.paragraphs(value, style, &[], &[], true);
-            engine.present(&Document { paragraphs, style, offsets: Vec::new(), placeholder: false }, None)
+            engine.present(&Document::new(paragraphs, style, Vec::new(), false), None)
         };
         let base = TextStyle::default();
         let normal = present("WWWW", base);
@@ -1714,7 +1902,7 @@ mod tests {
         let editor = receipt.node(editor).unwrap();
         let link = tree.children(label)[0];
         let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-        let mut layout = LayoutEngine::default();
+        let mut layout = LayoutKernel::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);
         assert_eq!(text.clipped(), vec![(label, TextClip::Ellipsis)]);

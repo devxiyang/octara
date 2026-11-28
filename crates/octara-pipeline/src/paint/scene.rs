@@ -9,6 +9,7 @@ use octara_model::style::Visual;
 use octara_model::theme::Color;
 use octara_tree::{ExitTicket, NodeId};
 use rustc_hash::{FxHashMap, FxHashSet};
+use smallvec::SmallVec;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -18,9 +19,29 @@ pub struct PaintScene {
     pub(super) root: Option<Arc<PaintNode>>,
     pub(super) scrolls: ScrollPlacements,
     pub(super) translations: Arc<[Translation]>,
+    resting: Arc<[Part]>,
 }
 
 impl PaintScene {
+    pub(super) fn new(
+        size: Size,
+        background: Color,
+        root: Option<Arc<PaintNode>>,
+        scrolls: ScrollPlacements,
+        translations: Arc<[Translation]>,
+        previous: Option<&Self>,
+    ) -> Self {
+        let resting = root.as_ref().map_or_else(
+            || Arc::from([]),
+            |root| {
+                previous
+                    .filter(|previous| previous.root.as_ref().is_some_and(|old| Arc::ptr_eq(old, root)))
+                    .map_or_else(|| root.resting_parts(), |previous| previous.resting.clone())
+            },
+        );
+        Self { size, background, root, scrolls, translations, resting }
+    }
+
     pub(super) fn matches(&self, size: Size, background: Color, root: Option<&Arc<PaintNode>>, scrolls: &ScrollPlacements) -> bool {
         self.size == size
             && self.background == background
@@ -59,16 +80,14 @@ impl PaintScene {
 
     pub(super) fn sample_counted(&self, time: f64) -> (Arc<DisplayList>, SampleWork) {
         let scrolls = self.sample_placements(time);
-        if let Some(root) = &self.root
-            && !root.timing.timed_at(time)
-        {
-            let parts = vec![Part::ScrollFrame { scrolls, parts: root.resting.clone() }];
+        if self.root.as_ref().is_some_and(|root| !root.timing.timed_at(time)) {
+            let parts = vec![Part::ScrollFrame { scrolls, parts: self.resting.clone() }];
             return (Arc::new(DisplayList { size: self.size, background: self.background, parts }), SampleWork::default());
         }
         let mut sample = Sample { time, work: SampleWork::default() };
         let mut parts = Vec::new();
         if let Some(root) = &self.root {
-            root.emit(&mut sample, &mut parts);
+            root.emit_scene(&mut sample, &mut parts);
         }
         let parts = if parts.is_empty() { parts } else { vec![Part::ScrollFrame { scrolls, parts: parts.into() }] };
         (Arc::new(DisplayList { size: self.size, background: self.background, parts }), sample.work)
@@ -90,6 +109,8 @@ pub(super) struct Element {
     pub bounds: Rect,
     pub child_clip: Option<(Rect, [bool; 2])>,
     pub scroll: bool,
+    pub scope: Scope,
+    pub overlay_root: bool,
     pub decoration: Arc<Decoration>,
     pub own: Arc<[Item]>,
     pub content_start: usize,
@@ -100,11 +121,45 @@ pub(super) struct Element {
     pub caret: Option<(Item, f64)>,
 }
 
+/// The incoming spatial scopes of a box, independent of its physical paint parent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Scope {
+    pub clip: Option<NodeId>,
+    pub scroll: Option<NodeId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpanScope {
+    Empty,
+    Shared(Scope),
+    Mixed,
+}
+
+impl SpanScope {
+    fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Empty, scope) | (scope, Self::Empty) => scope,
+            (left, right) if left == right => left,
+            _ => Self::Mixed,
+        }
+    }
+
+    fn fits(self, scope: Scope) -> bool {
+        self == Self::Empty || self == Self::Shared(scope)
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ExitGhost {
     pub ticket: ExitTicket,
+    pub scope: Scope,
     frozen: Arc<[Part]>,
     pub opacity: Track,
+}
+
+pub(super) struct ExitScope<'a> {
+    pub live: Scope,
+    pub retiring: &'a [(NodeId, Option<Item>, Vec2)],
 }
 
 impl ExitGhost {
@@ -114,7 +169,7 @@ impl ExitGhost {
         now: f64,
         opacity: Track,
         independent: &FxHashSet<NodeId>,
-        ancestors: &[(NodeId, Option<Item>, Vec2)],
+        scope: ExitScope<'_>,
         scrolls: &ScrollPlacements,
     ) -> Option<Self> {
         let element = snapshot.element.as_ref()?;
@@ -123,22 +178,17 @@ impl ExitGhost {
             return None;
         }
         let mut parts = Vec::new();
-        element.emit(
-            now,
-            |output| {
-                if let Some(children) = &snapshot.children.root {
-                    children.emit_for_exit(now, independent, output);
-                }
-            },
-            &mut parts,
-        );
+        let mut paint =
+            ScopedPaint { ancestors: SmallVec::new(), last_spatial_id: snapshot.max_spatial_id, independent: Some(independent) };
+        let mut sample = Sample { time: now, work: SampleWork::default() };
+        paint.node(snapshot, &mut sample, &mut parts);
         for part in &mut parts {
             mark_exiting(part);
         }
         if parts.is_empty() {
             return None;
         }
-        for (source, clip, offset) in ancestors {
+        for (source, clip, offset) in scope.retiring {
             if *offset != Vec2::default() {
                 parts =
                     vec![Part::TranslatedGroup { spatial_id: ScrollPlacements::spatial_id(*source), offset: *offset, parts: parts.into() }];
@@ -149,7 +199,7 @@ impl ExitGhost {
             }
         }
         let frozen = Arc::from([Part::ScrollFrame { scrolls: scrolls.clone(), parts: parts.into() }]);
-        Some(Self { ticket, frozen, opacity })
+        Some(Self { ticket, scope: scope.live, frozen, opacity })
     }
 
     pub(super) fn emit(&self, time: f64, output: &mut Vec<Part>) {
@@ -196,6 +246,8 @@ struct ChildSpan {
     resting: Arc<[Part]>,
     coverage: Option<Rect>,
     timing: Timing,
+    scope: SpanScope,
+    max_spatial_id: u32,
 }
 
 #[derive(Debug)]
@@ -249,7 +301,11 @@ impl ChildSpan {
             || (Timing::default(), Arc::from([]), Some(Rect::default())),
             |node| (node.timing, node.resting.clone(), node.coverage),
         );
-        Arc::new(Self { len: 1, content: SpanContent::Leaf(node), resting, coverage, timing })
+        let scope = node
+            .as_ref()
+            .map_or(SpanScope::Empty, |node| if node.resolves_scopes { SpanScope::Mixed } else { SpanScope::Shared(node.scope) });
+        let max_spatial_id = node.as_ref().map_or(0, |node| node.max_spatial_id);
+        Arc::new(Self { len: 1, content: SpanContent::Leaf(node), resting, coverage, timing, scope, max_spatial_id })
     }
 
     fn branch(left: Arc<Self>, right: Arc<Self>, rebuilt: &mut u64) -> Arc<Self> {
@@ -263,6 +319,8 @@ impl ChildSpan {
             len: left.len + right.len,
             timing: left.timing.combine(right.timing),
             coverage: left.coverage.zip(right.coverage).map(|(left, right)| union(left, right)),
+            scope: left.scope.combine(right.scope),
+            max_spatial_id: left.max_spatial_id.max(right.max_spatial_id),
             content: SpanContent::Branch(left, right),
             resting,
         })
@@ -307,16 +365,8 @@ impl ChildSpan {
     fn emit_for_exit(&self, time: f64, independent: &FxHashSet<NodeId>, output: &mut Vec<Part>) {
         match &self.content {
             SpanContent::Leaf(Some(node)) => {
-                if let Some(element) = node.element.as_ref().filter(|element| !independent.contains(&element.source)) {
-                    element.emit(
-                        time,
-                        |output| {
-                            if let Some(children) = &node.children.root {
-                                children.emit_for_exit(time, independent, output);
-                            }
-                        },
-                        output,
-                    );
+                if node.element.as_ref().is_some_and(|element| !independent.contains(&element.source)) {
+                    node.emit_for_exit(time, independent, output);
                 }
             }
             SpanContent::Leaf(None) => {}
@@ -333,10 +383,13 @@ pub(super) struct PaintNode {
     pub element: Option<Arc<Element>>,
     pub translates: bool,
     pub children: ChildList,
+    pub scope: Scope,
     ghost: Option<Arc<ExitGhost>>,
     resting: Arc<[Part]>,
     coverage: Option<Rect>,
     timing: Timing,
+    resolves_scopes: bool,
+    max_spatial_id: u32,
 }
 
 #[derive(Default)]
@@ -352,6 +405,13 @@ struct Sample {
 
 impl PaintNode {
     pub(super) fn element(element: Arc<Element>, children: ChildList, translates: bool) -> Self {
+        let scope = element.scope;
+        let resolves_scopes = children.root.as_ref().is_some_and(|children| !children.scope.fits(element.child_scope()));
+        let max_spatial_id = children
+            .root
+            .as_ref()
+            .map_or(0, |children| children.max_spatial_id)
+            .max(ScrollPlacements::scrollbar_spatial_id(element.source, 1));
         let mut timing = Timing {
             motion_until: element
                 .motion
@@ -364,15 +424,17 @@ impl PaintNode {
             blinks: element.caret.is_some(),
         };
         let mut resting = Vec::new();
-        element.emit(
-            f64::INFINITY,
-            |output| {
-                if let Some(children) = &children.root {
-                    append_covered(&children.resting, children.coverage, output);
-                }
-            },
-            &mut resting,
-        );
+        if !resolves_scopes {
+            element.emit(
+                f64::INFINITY,
+                |output| {
+                    if let Some(children) = &children.root {
+                        append_covered(&children.resting, children.coverage, output);
+                    }
+                },
+                &mut resting,
+            );
+        }
         // A transparent target can still have visible children while its opacity animates.
         if let Some(children) = &children.root {
             timing = timing.combine(children.timing);
@@ -388,10 +450,21 @@ impl PaintNode {
         } else {
             element.coverage(child_coverage)
         };
-        Self { element: Some(element), translates, ghost: None, children, resting: resting.into(), coverage, timing }
+        Self {
+            element: Some(element),
+            translates,
+            ghost: None,
+            children,
+            scope,
+            resting: resting.into(),
+            coverage,
+            timing,
+            resolves_scopes,
+            max_spatial_id,
+        }
     }
 
-    pub(super) fn ghost(ghost: Option<Arc<ExitGhost>>, children: ChildList) -> Self {
+    pub(super) fn ghost(ghost: Option<Arc<ExitGhost>>, children: ChildList, scope: Scope) -> Self {
         let mut timing = Timing { motion_until: ghost.as_ref().and_then(|ghost| ghost.opacity.rest_at(0.0)), blinks: false };
         let mut resting = Vec::new();
         if let Some(children) = &children.root {
@@ -399,7 +472,39 @@ impl PaintNode {
             append_covered(&children.resting, children.coverage, &mut resting);
         }
         let coverage = children.root.as_ref().map_or(Some(Rect::default()), |children| children.coverage);
-        Self { element: None, translates: false, ghost, children, resting: resting.into(), coverage, timing }
+        let resolves_scopes = children.root.as_ref().is_some_and(|children| !children.scope.fits(scope));
+        let max_spatial_id = children.root.as_ref().map_or(0, |children| children.max_spatial_id);
+        Self {
+            element: None,
+            translates: false,
+            ghost,
+            children,
+            scope,
+            resting: resting.into(),
+            coverage,
+            timing,
+            resolves_scopes,
+            max_spatial_id,
+        }
+    }
+
+    fn resting_parts(&self) -> Arc<[Part]> {
+        if !self.resolves_scopes {
+            return self.resting.clone();
+        }
+        let mut sample = Sample { time: f64::INFINITY, work: SampleWork::default() };
+        let mut output = Vec::new();
+        self.emit_scene(&mut sample, &mut output);
+        output.into()
+    }
+
+    fn emit_scene(&self, sample: &mut Sample, output: &mut Vec<Part>) {
+        if self.resolves_scopes {
+            let mut scopes = ScopedPaint { ancestors: SmallVec::new(), last_spatial_id: self.max_spatial_id, independent: None };
+            scopes.node(self, sample, output);
+        } else {
+            self.emit(sample, output);
+        }
     }
 
     fn motion_at(&self, time: f64) -> bool {
@@ -429,10 +534,196 @@ impl PaintNode {
             children.emit(sample, output);
         }
     }
+
+    fn emit_for_exit(&self, time: f64, independent: &FxHashSet<NodeId>, output: &mut Vec<Part>) {
+        if let Some(element) = &self.element {
+            element.emit(
+                time,
+                |output| {
+                    if let Some(children) = &self.children.root {
+                        children.emit_for_exit(time, independent, output);
+                    }
+                },
+                output,
+            );
+        }
+    }
+}
+
+struct ScopeEntry<'a> {
+    element: &'a Element,
+    clip: Option<Item>,
+}
+
+struct ScopedPaint<'a> {
+    ancestors: SmallVec<[ScopeEntry<'a>; 8]>,
+    last_spatial_id: u32,
+    independent: Option<&'a FxHashSet<NodeId>>,
+}
+
+impl<'a> ScopedPaint<'a> {
+    fn node(&mut self, node: &'a PaintNode, sample: &mut Sample, output: &mut Vec<Part>) {
+        if !node.resolves_scopes {
+            let independent = self.independent;
+            self.place(
+                node.scope,
+                |parts| {
+                    if let Some(independent) = independent {
+                        node.emit_for_exit(sample.time, independent, parts);
+                    } else {
+                        node.emit(sample, parts);
+                    }
+                },
+                output,
+            );
+            return;
+        }
+        sample.work.nodes += 1;
+        if let Some(element) = &node.element {
+            element.emit_layer(
+                sample.time,
+                |bounds, visual, output| {
+                    self.place(element.scope, |parts| element.emit_own(sample.time, bounds, visual, parts), output);
+                    let clip = element.sampled_clip(bounds, visual);
+                    self.ancestors.push(ScopeEntry { element, clip: clip.clone() });
+                    if let Some(children) = &node.children.root {
+                        self.children(children, sample, output);
+                    }
+                    self.ancestors.pop();
+                    if element.scroll {
+                        self.place(
+                            element.scope,
+                            |output| {
+                                let clipped = push_clip(clip, output);
+                                output.push(element.scroll_content(bounds, Arc::from([])));
+                                pop_clip(clipped, output);
+                            },
+                            output,
+                        );
+                    }
+                },
+                output,
+            );
+        } else {
+            if let Some(ghost) = node.ghost.as_ref().filter(|_| self.independent.is_none()) {
+                self.place(node.scope, |parts| ghost.emit(sample.time, parts), output);
+            }
+            if let Some(children) = &node.children.root {
+                self.children(children, sample, output);
+            }
+        }
+    }
+
+    fn children(&mut self, span: &'a ChildSpan, sample: &mut Sample, output: &mut Vec<Part>) {
+        let independent = self.independent;
+        match span.scope {
+            SpanScope::Empty => {}
+            SpanScope::Shared(scope) => self.place(
+                scope,
+                |parts| {
+                    if let Some(independent) = independent {
+                        span.emit_for_exit(sample.time, independent, parts);
+                    } else {
+                        span.emit(sample, parts);
+                    }
+                },
+                output,
+            ),
+            SpanScope::Mixed => {
+                sample.work.spans += 1;
+                match &span.content {
+                    SpanContent::Leaf(node) => {
+                        let node = node.as_deref().expect("mixed branch has a child");
+                        if independent
+                            .is_none_or(|independent| node.element.as_ref().is_some_and(|element| !independent.contains(&element.source)))
+                        {
+                            self.node(node, sample, output);
+                        }
+                    }
+                    SpanContent::Branch(left, right) => {
+                        self.children(left, sample, output);
+                        self.children(right, sample, output);
+                    }
+                }
+            }
+        }
+    }
+
+    fn place(&mut self, mut scope: Scope, emit: impl FnOnce(&mut Vec<Part>), output: &mut Vec<Part>) {
+        let mut parts = Vec::new();
+        emit(&mut parts);
+        if parts.is_empty() {
+            return;
+        }
+        for (index, entry) in self.ancestors.iter().enumerate().rev() {
+            let source = entry.element.source;
+            let (clips, scrolls) = entry.element.take_scope(&mut scope);
+            if scrolls {
+                // A scrollport may occur in several paint runs around an escaping child.
+                // Only the original scrollport emits bars. Each run needs its own spatial slot.
+                self.last_spatial_id = self.last_spatial_id.checked_add(1).expect("spatial slot capacity");
+                parts = vec![Part::MotionContent { source, spatial_id: self.last_spatial_id, parts: parts.into() }];
+            }
+            if (clips || self.independent.is_none() && (index == 0 || entry.element.overlay_root))
+                && let Some(clip) = &entry.clip
+            {
+                parts.insert(0, Part::Item(clip.clone()));
+                parts.push(Part::Item(Item::PopClip));
+            }
+        }
+        output.extend(parts);
+    }
 }
 
 impl Element {
-    pub(super) fn emit(&self, time: f64, children: impl FnOnce(&mut Vec<Part>), output: &mut Vec<Part>) {
+    pub(super) fn take_scope(&self, scope: &mut Scope) -> (bool, bool) {
+        let clips = scope.clip == Some(self.source);
+        let scrolls = scope.scroll == Some(self.source);
+        if clips {
+            scope.clip = self.scope.clip;
+        }
+        if scrolls {
+            scope.scroll = self.scope.scroll;
+        }
+        (clips, scrolls)
+    }
+
+    fn child_scope(&self) -> Scope {
+        Scope {
+            clip: if self.overlay_root { None } else { self.child_clip.is_some().then_some(self.source).or(self.scope.clip) },
+            scroll: self.scroll.then_some(self.source).or(self.scope.scroll),
+        }
+    }
+
+    fn emit(&self, time: f64, children: impl FnOnce(&mut Vec<Part>), output: &mut Vec<Part>) {
+        self.emit_layer(
+            time,
+            |bounds, visual, output| {
+                self.emit_own(time, bounds, visual, output);
+                let clipped = push_clip(self.sampled_clip(bounds, visual), output);
+                if self.scroll {
+                    let mut content = Vec::new();
+                    children(&mut content);
+                    output.push(self.scroll_content(bounds, content.into()));
+                } else {
+                    children(output);
+                }
+                pop_clip(clipped, output);
+            },
+            output,
+        );
+    }
+
+    fn scroll_content(&self, bounds: Rect, parts: Arc<[Part]>) -> Part {
+        Part::ScrollContent {
+            source: self.source,
+            spatial_id: ScrollPlacements::spatial_id(self.source),
+            scrollbar_offset: Vec2::new(bounds.x - self.bounds.x, bounds.y - self.bounds.y),
+            parts,
+        }
+    }
+
+    fn emit_layer(&self, time: f64, emit: impl FnOnce(Rect, Visual, &mut Vec<Part>), output: &mut Vec<Part>) {
         let (visual, bounds) = self.motion.as_ref().map_or((self.visual, self.bounds), |track| (track.visual(time), track.bounds(time)));
         let alpha = visual.opacity.clamp(0.0, 1.0);
         if alpha == 0.0 {
@@ -450,7 +741,13 @@ impl Element {
         } else if blend {
             output.push(Part::Item(Item::PushLayer { source: self.source, opacity: alpha }));
         }
+        emit(bounds, visual, output);
+        if blend {
+            output.push(Part::Item(Item::PopLayer));
+        }
+    }
 
+    fn emit_own(&self, time: f64, bounds: Rect, visual: Visual, output: &mut Vec<Part>) {
         let offset = Vec2::new(bounds.x, bounds.y);
         if !self.own.is_empty() || self.caret.is_some() || visual.ring.is_some() || visual.background.is_some() {
             let mut own = Vec::new();
@@ -499,28 +796,6 @@ impl Element {
                 output.push(Part::CulledGroup { bounds: self.own_coverage(bounds, visual), parts: own.into() });
             }
         }
-
-        if let Some(clip) = self.sampled_clip(bounds, visual) {
-            output.push(Part::Item(clip));
-        }
-        if self.scroll {
-            let mut content = Vec::new();
-            children(&mut content);
-            output.push(Part::ScrollContent {
-                source: self.source,
-                spatial_id: ScrollPlacements::spatial_id(self.source),
-                scrollbar_offset: Vec2::new(bounds.x - self.bounds.x, bounds.y - self.bounds.y),
-                parts: content.into(),
-            });
-        } else {
-            children(output);
-        }
-        if self.child_clip.is_some() {
-            output.push(Part::Item(Item::PopClip));
-        }
-        if blend {
-            output.push(Part::Item(Item::PopLayer));
-        }
     }
     fn own_coverage(&self, bounds: Rect, visual: Visual) -> Rect {
         let coverage = visual.ring.and_then(|ring| ring_rect(bounds, ring)).map_or(bounds, |ring| union(bounds, ring));
@@ -564,6 +839,21 @@ impl Element {
         clip.x += bounds.x - self.bounds.x;
         clip.y += bounds.y - self.bounds.y;
         Item::clip(self.source, clip, axes, radius(visual, clip))
+    }
+}
+
+fn push_clip(clip: Option<Item>, output: &mut Vec<Part>) -> bool {
+    if let Some(clip) = clip {
+        output.push(Part::Item(clip));
+        true
+    } else {
+        false
+    }
+}
+
+fn pop_clip(clipped: bool, output: &mut Vec<Part>) {
+    if clipped {
+        output.push(Part::Item(Item::PopClip));
     }
 }
 

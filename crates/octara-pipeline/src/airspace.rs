@@ -1,6 +1,6 @@
 //! The snapshot requested for each continuous period of overlay occlusion.
 
-use crate::{layout::LayoutEngine, paint_order};
+use crate::{layout::LayoutKernel, paint_order};
 use octara_model::geometry::Rect;
 use octara_model::identity::{NativeId, NodeId, TreeId};
 use octara_model::image::{Image, Sample};
@@ -41,7 +41,7 @@ pub(crate) struct AirspaceFrame {
 }
 
 impl Airspace {
-    pub fn project(&self, tree: &Tree, layout: &LayoutEngine) -> AirspaceFrame {
+    pub fn project(&self, tree: &Tree, layout: &LayoutKernel) -> AirspaceFrame {
         let mut frame = AirspaceFrame { tree: tree.id(), candidates: Vec::new(), images: FxHashMap::default() };
         let root = tree.overlay_root();
         if tree.children(root).is_empty() || !tree.native_nodes().any(|node| snapshot_props(tree, node).is_some()) {
@@ -143,7 +143,7 @@ fn snapshot_props(tree: &Tree, node: NodeId) -> Option<u64> {
     (native.slot == NativeSlot::Overlay && native.typed_props.is_some()).then_some(native.props_rev)
 }
 
-fn shown_bounds(tree: &Tree, layout: &LayoutEngine, node: NodeId) -> Option<Rect> {
+fn shown_bounds(tree: &Tree, layout: &LayoutKernel, node: NodeId) -> Option<Rect> {
     if !tree.is_shown(node) || tree.visual(node).opacity <= 0.0 {
         return None;
     }

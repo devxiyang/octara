@@ -6,12 +6,13 @@
 <output>Running Octara DOM transaction regression…</output>
 <script type="module">
     import init, { run_dom_exits, run_dom_inline_editor, run_dom_inline_pills, run_dom_layers, run_dom_links, run_dom_local_stacking, run_dom_measurements, run_dom_pointer_styles, run_dom_rich_pills, run_dom_scrolling, run_dom_semantics, run_dom_text_anchors, run_dom_text_reveal, run_dom_text_selection, run_dom_transactions, run_dom_transitions } from "./dom_transactions.js";
-    import { mount_dom_modal, run_dom_direction, run_dom_text_scale } from "./dom_transactions.js";
+    import { mount_dom_modal, run_dom_containment, run_dom_direction, run_dom_text_scale } from "./dom_transactions.js";
 
     const output = document.querySelector("output");
     async function runTransactions() {
         run_dom_transactions(false);
         run_dom_transactions(true);
+        run_dom_containment();
         run_dom_direction();
         await run_dom_text_scale();
         run_dom_layers();

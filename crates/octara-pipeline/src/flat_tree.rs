@@ -1,16 +1,29 @@
 //! Flat, paint-ordered geometry for viewport culling and native hit tests.
 
-use crate::{LayoutEngine, TextEngine, paint_order};
+use crate::{LayoutKernel, TextEngine, paint_order};
 use octara_model::geometry::{Point, Rect};
 use octara_tree::{DirtyBitmap, NodeFlags, NodeId, NodeKind, Tree, TreeDelta};
 use rustc_hash::FxHashMap;
 use slotmap::SecondaryMap;
+use std::cell::RefCell;
 use std::sync::Arc;
 
 const LINK: u16 = 1;
 const OVERLAY_ROOT: u16 = 2;
 const CELL_SIZE: f32 = 128.0;
 const MAX_CELLS: i64 = 16;
+const SMALL_GRID_THRESHOLD: usize = 24;
+
+/// Cumulative work performed by the spatial index.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FlatTreeMetrics {
+    /// Full spatial index materializations.
+    pub grid_rebuilds: u64,
+    /// Flat indices refreshed by incremental patches.
+    pub nodes_patched: u64,
+    /// Committed frames that left spatial work deferred.
+    pub lazy_skips: u64,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -101,6 +114,10 @@ impl Topology {
             || !delta.topology_dirty.is_empty()
             || self.reordered_parents(tree, delta).next().is_some()
     }
+
+    fn is_within(&self, node: u32, ancestor: u32) -> bool {
+        ancestor <= node && node < self.nodes[ancestor as usize].subtree_end
+    }
 }
 
 #[inline]
@@ -116,38 +133,32 @@ fn index_exhausted() -> ! {
 
 type Cell = (i32, i32);
 
-#[derive(Default)]
-struct Grid {
-    cells: FxHashMap<Cell, Vec<u32>>,
-    large: Vec<u32>,
-    scrollports: Vec<u32>,
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Cells {
+    #[default]
+    Empty,
+    Span {
+        min: Cell,
+        max: Cell,
+    },
+    Large,
 }
 
-impl Grid {
-    fn insert(&mut self, index: u32, rect: Rect) {
+impl Cells {
+    fn for_bounds(rect: Rect) -> Self {
         if rect.is_empty() {
-            return;
+            return Self::Empty;
         }
-        let (x, y) = cell(Point::new(rect.x, rect.y));
-        let (right, bottom) = cell(Point::new(rect.right(), rect.bottom()));
+        let min @ (x, y) = cell(Point::new(rect.x, rect.y));
+        let max @ (right, bottom) = cell(Point::new(rect.right(), rect.bottom()));
         let columns = i64::from(right) - i64::from(x) + 1;
         let rows = i64::from(bottom) - i64::from(y) + 1;
-        if columns.saturating_mul(rows) > MAX_CELLS {
-            self.large.push(index);
+        if columns <= 0 || rows <= 0 {
+            Self::Empty
+        } else if columns.saturating_mul(rows) > MAX_CELLS {
+            Self::Large
         } else {
-            for row in y..=bottom {
-                for column in x..=right {
-                    self.cells.entry((column, row)).or_default().push(index);
-                }
-            }
-        }
-    }
-
-    fn clear(&mut self) {
-        self.large.clear();
-        self.scrollports.clear();
-        for candidates in self.cells.values_mut() {
-            candidates.clear();
+            Self::Span { min, max }
         }
     }
 }
@@ -156,61 +167,263 @@ fn cell(point: Point) -> Cell {
     ((point.x / CELL_SIZE).floor() as i32, (point.y / CELL_SIZE).floor() as i32)
 }
 
-#[derive(Default)]
-struct FlatFrame {
-    topology: Arc<Topology>,
-    bounds: Vec<Rect>,
-    grid: Grid,
-    scrolled: FxHashMap<NodeId, Grid>,
+fn span_cells((x, y): Cell, (right, bottom): Cell) -> impl Iterator<Item = Cell> {
+    (y..=bottom).flat_map(move |row| (x..=right).map(move |column| (column, row)))
 }
 
-impl FlatFrame {
-    fn rebuild_bounds(&mut self, layout: &LayoutEngine) {
-        self.bounds.clear();
-        self.grid.clear();
-        self.scrolled.retain(|&node, grid| {
-            grid.clear();
-            self.topology.indices.contains_key(node) && layout.scroll_range(node).is_some()
-        });
-        for (index, entry) in self.topology.nodes.iter().enumerate() {
-            let bounds = layout.paint_bounds(entry.node).unwrap_or_default();
-            self.bounds.push(bounds);
-            if entry.flags & OVERLAY_ROOT != 0 {
-                continue;
+fn remove_index(indices: &mut Vec<u32>, index: u32) {
+    let slot = indices.iter().position(|&entry| entry == index).expect("indexed spatial entry");
+    indices.swap_remove(slot);
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct CellFootprint {
+    parent: Option<NodeId>,
+    cells: Cells,
+    scrollport: bool,
+}
+
+#[derive(Clone, Default)]
+struct HashGrid {
+    cells: FxHashMap<Cell, Vec<u32>>,
+    large: Vec<u32>,
+    len: usize,
+}
+
+impl HashGrid {
+    fn insert(&mut self, index: u32, footprint: Cells) {
+        match footprint {
+            Cells::Empty => return,
+            Cells::Span { min, max } => {
+                for cell in span_cells(min, max) {
+                    self.cells.entry(cell).or_default().push(index);
+                }
             }
-            let grid = if let Some(ancestor) = layout.scroll_ancestor(entry.node) {
-                self.scrolled.entry(ancestor).or_default()
-            } else {
-                &mut self.grid
-            };
-            let index = flat_index(index);
-            grid.insert(index, bounds);
-            if layout.scroll_range(entry.node).is_some() {
-                // The child clip can extend beyond the box on its non-clipping axis.
-                grid.scrollports.push(index);
-            }
+            Cells::Large => self.large.push(index),
         }
-        for grid in std::iter::once(&mut self.grid).chain(self.scrolled.values_mut()) {
-            grid.cells.retain(|_, entries| !entries.is_empty());
+        self.len += 1;
+    }
+
+    fn remove(&mut self, index: u32, footprint: Cells) {
+        match footprint {
+            Cells::Empty => return,
+            Cells::Span { min, max } => {
+                for cell in span_cells(min, max) {
+                    let entries = self.cells.get_mut(&cell).expect("indexed spatial cell");
+                    remove_index(entries, index);
+                    if entries.is_empty() {
+                        self.cells.remove(&cell);
+                    }
+                }
+            }
+            Cells::Large => remove_index(&mut self.large, index),
+        }
+        self.len -= 1;
+    }
+
+    fn take_indices(&mut self, footprints: &[CellFootprint]) -> Vec<u32> {
+        let mut indices = std::mem::take(&mut self.large);
+        for (&cell, entries) in &self.cells {
+            // A span contributes one entry, at the first cell in its footprint.
+            indices.extend(
+                entries.iter().copied().filter(|&index| matches!(footprints[index as usize].cells, Cells::Span { min, .. } if min == cell)),
+            );
+        }
+        indices
+    }
+}
+
+#[derive(Clone)]
+enum Bucket {
+    Linear(Vec<u32>),
+    Hashed(HashGrid),
+}
+
+impl Default for Bucket {
+    fn default() -> Self {
+        Self::Linear(Vec::new())
+    }
+}
+
+#[derive(Clone, Default)]
+struct Grid {
+    candidates: Bucket,
+    scrollports: Vec<u32>,
+}
+
+impl Grid {
+    fn patch(&mut self, index: u32, before: CellFootprint, after: CellFootprint, footprints: &[CellFootprint]) {
+        // The child clip can extend beyond the box on its non-clipping axis.
+        match (before.scrollport, after.scrollport) {
+            (false, true) => self.scrollports.push(index),
+            (true, false) => remove_index(&mut self.scrollports, index),
+            _ => {}
+        }
+        if before.cells == after.cells {
+            return;
+        }
+        match &mut self.candidates {
+            Bucket::Linear(entries) => {
+                match (before.cells, after.cells) {
+                    (Cells::Empty, _) => entries.push(index),
+                    (_, Cells::Empty) => remove_index(entries, index),
+                    _ => {}
+                }
+                if entries.len() > SMALL_GRID_THRESHOLD {
+                    let mut grid = HashGrid::default();
+                    for &entry in entries.iter() {
+                        grid.insert(entry, footprints[entry as usize].cells);
+                    }
+                    self.candidates = Bucket::Hashed(grid);
+                }
+            }
+            Bucket::Hashed(grid) => {
+                grid.remove(index, before.cells);
+                grid.insert(index, after.cells);
+                if grid.len <= SMALL_GRID_THRESHOLD {
+                    self.candidates = Bucket::Linear(grid.take_indices(footprints));
+                }
+            }
         }
     }
 
-    fn hit(&self, tree: &Tree, layout: &LayoutEngine, text: &TextEngine, pos: Point) -> Option<NodeId> {
+    fn is_empty(&self) -> bool {
+        self.scrollports.is_empty() && matches!(&self.candidates, Bucket::Linear(entries) if entries.is_empty())
+    }
+
+    fn at(&self, pos: Point) -> impl Iterator<Item = &u32> {
+        let (nearby, large) = match &self.candidates {
+            Bucket::Linear(entries) => (entries.as_slice(), &[][..]),
+            Bucket::Hashed(grid) => (grid.cells.get(&cell(pos)).map_or(&[][..], Vec::as_slice), grid.large.as_slice()),
+        };
+        nearby.iter().rev().chain(large.iter().rev())
+    }
+}
+
+#[derive(Clone, Default)]
+struct SpatialIndex {
+    // A cached index can lag the committed topology or reflect a staged hit.
+    indexed_topology: Option<Arc<Topology>>,
+    // Committed geometry changes that the cached index has yet to read.
+    pending_patch: DirtyBitmap,
+    staged_patch: DirtyBitmap,
+    // Changes materialized against staged layout need to be read again after rollback.
+    staged_materialized: DirtyBitmap,
+    bounds: Vec<Rect>,
+    footprints: Vec<CellFootprint>,
+    root: Grid,
+    scrolled: FxHashMap<NodeId, Grid>,
+    metrics: FlatTreeMetrics,
+}
+
+impl SpatialIndex {
+    fn matches(&self, topology: &Arc<Topology>) -> bool {
+        self.indexed_topology.as_ref().is_some_and(|indexed| Arc::ptr_eq(indexed, topology))
+    }
+
+    fn materialize(&mut self, topology: &Arc<Topology>, layout: &LayoutKernel, topology_is_staged: bool) {
+        let matches = self.matches(topology);
+        if matches && self.pending_patch.is_empty() && self.staged_patch.is_empty() {
+            return;
+        }
+        if !topology_is_staged {
+            self.staged_materialized.union_with(&self.staged_patch);
+        }
+        self.pending_patch.union_with(&self.staged_patch);
+        self.staged_patch.clear();
+
+        let mut pending = std::mem::take(&mut self.pending_patch);
+        {
+            let changes = pending.iter().filter_map(|node| topology.indices.get(node).copied());
+            let patch_limit = topology.nodes.len().div_ceil(4);
+            if matches && changes.clone().take(patch_limit).count() < patch_limit {
+                for index in changes {
+                    self.update(topology, layout, index);
+                    self.metrics.nodes_patched += 1;
+                }
+            } else {
+                self.rebuild(topology, layout);
+            }
+        }
+        pending.clear();
+        self.pending_patch = pending;
+    }
+
+    fn rebuild(&mut self, topology: &Arc<Topology>, layout: &LayoutKernel) {
+        self.indexed_topology = Some(Arc::clone(topology));
+        self.root = Grid::default();
+        self.scrolled.clear();
+        self.bounds.resize(topology.nodes.len(), Rect::default());
+        self.footprints.clear();
+        self.footprints.resize(topology.nodes.len(), CellFootprint::default());
+        for index in 0..topology.nodes.len() {
+            self.update(topology, layout, flat_index(index));
+        }
+        self.metrics.grid_rebuilds += 1;
+    }
+
+    fn update(&mut self, topology: &Topology, layout: &LayoutKernel, index: u32) {
+        let slot = index as usize;
+        let entry = topology.nodes[slot];
+        let bounds = layout.paint_bounds(entry.node).unwrap_or_default();
+        self.bounds[slot] = bounds;
+        let empty = CellFootprint::default();
+        let mut after = empty;
+        if entry.flags & OVERLAY_ROOT == 0 {
+            after.cells = Cells::for_bounds(bounds);
+            after.scrollport = layout.scroll_range(entry.node).is_some();
+            if after.cells != Cells::Empty || after.scrollport {
+                after.parent = layout.scroll_ancestor(entry.node);
+            }
+        }
+        let before = std::mem::replace(&mut self.footprints[slot], after);
+        if before.parent == after.parent {
+            self.patch_grid(index, before.parent, before, after);
+        } else {
+            self.patch_grid(index, before.parent, before, empty);
+            self.patch_grid(index, after.parent, empty, after);
+        }
+    }
+
+    fn patch_grid(&mut self, index: u32, parent: Option<NodeId>, before: CellFootprint, after: CellFootprint) {
+        if before.cells == after.cells && before.scrollport == after.scrollport {
+            return;
+        }
+        if let Some(parent) = parent {
+            let grid = self.scrolled.entry(parent).or_default();
+            grid.patch(index, before, after, &self.footprints);
+            if grid.is_empty() {
+                self.scrolled.remove(&parent);
+            }
+        } else {
+            self.root.patch(index, before, after, &self.footprints);
+        }
+    }
+
+    fn hit(&self, topology: &Topology, tree: &Tree, layout: &LayoutKernel, text: &TextEngine, pos: Point) -> Option<NodeId> {
         let mut pending = smallvec::SmallVec::<[(&Grid, Point); 4]>::new();
-        pending.push((&self.grid, pos));
+        pending.push((&self.root, pos));
+        let overlay = topology.indices.get(tree.overlay_root()).copied();
         let mut top = None;
         while let Some((grid, local)) = pending.pop() {
-            let candidates = grid.cells.get(&cell(local)).map_or(&[][..], Vec::as_slice);
-            for &index in candidates.iter().rev().chain(grid.large.iter().rev()) {
+            for &index in grid.at(local) {
                 if top.is_none_or(|top| top < index)
                     && self.bounds[index as usize].contains(local)
-                    && exact_hit(tree, layout, text, self.topology.nodes[index as usize], pos)
+                    && exact_hit(
+                        tree,
+                        layout,
+                        text,
+                        topology.nodes[index as usize],
+                        pos,
+                        overlay.is_some_and(|root| topology.is_within(index, root)),
+                    )
                 {
                     top = Some(index);
                 }
             }
             for &index in &grid.scrollports {
-                let entry = self.topology.nodes[index as usize];
+                let entry = topology.nodes[index as usize];
+                // The Euler interval covers every descendant in this scroll bucket.
                 if top.is_some_and(|top| top >= entry.subtree_end)
                     || !layout.child_clip(entry.node).or_else(|| layout.clip(entry.node)).is_some_and(|clip| clip.contains(pos))
                 {
@@ -223,11 +436,11 @@ impl FlatFrame {
                 }
             }
         }
-        top.map(|index| self.topology.nodes[index as usize].node)
+        top.map(|index| topology.nodes[index as usize].node)
     }
 }
 
-fn exact_hit(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, entry: FlatNode, pos: Point) -> bool {
+fn exact_hit(tree: &Tree, layout: &LayoutKernel, text: &TextEngine, entry: FlatNode, pos: Point, overlay: bool) -> bool {
     let node = entry.node;
     let Some(core) = tree.node(node) else { return false };
     if core.flags.contains(NodeFlags::POINTER_EVENTS_NONE)
@@ -243,47 +456,322 @@ fn exact_hit(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, entry: FlatN
     } else {
         layout.bounds(node).is_some_and(|rect| rect.contains_rounded(pos, radii(node)))
     };
-    hit && std::iter::successors(tree.physical_parent(node), |&node| tree.physical_parent(node)).all(|node| {
-        layout.clip(node).is_none_or(|clip| clip.contains(pos))
-            && layout.child_clip(node).is_none_or(|clip| clip.contains(pos))
-            && layout.rounded_child_clip(node).is_none_or(|clip| clip.contains_rounded(pos, radii(node)))
-    })
+    let rounded_clip = |node| layout.rounded_child_clip(node).is_none_or(|clip| clip.contains_rounded(pos, radii(node)));
+    hit
+        && std::iter::successors(layout.nearest_rounded_clip(node), |&node| layout.nearest_rounded_clip(node)).all(rounded_clip)
+        // Overlay layout starts a new clip chain. Hit testing also respects the two physical roots.
+        && (!overlay
+            || [tree.overlay_root(), tree.root()]
+                .into_iter()
+                .all(|node| layout.child_clip(node).is_none_or(|clip| clip.contains(pos)) && rounded_clip(node)))
+}
+
+#[derive(Clone, Default)]
+struct FlatFrame {
+    topology: Arc<Topology>,
+    spatial: RefCell<SpatialIndex>,
 }
 
 #[derive(Default)]
 pub(crate) struct FlatTree {
     current: FlatFrame,
-    staging: FlatFrame,
-    ready: bool,
+    staged_topology: Option<Arc<Topology>>,
 }
 
 impl FlatTree {
-    pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, layout: &LayoutEngine) {
-        let previous = if self.ready { &self.staging } else { &self.current };
-        let topology = if previous.topology.changed(tree, delta) {
-            Arc::new(previous.topology.rebuild(tree, delta))
-        } else if !layout.changed().is_empty() {
-            previous.topology.clone()
+    pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, layout: &LayoutKernel) {
+        let previous = self.staged_topology.as_ref().unwrap_or(&self.current.topology);
+        let spatial = self.current.spatial.get_mut();
+        if previous.changed(tree, delta) {
+            self.staged_topology = Some(Arc::new(previous.rebuild(tree, delta)));
+            spatial.staged_patch.clear();
         } else {
-            return;
-        };
-        self.staging.topology = topology;
-        self.staging.rebuild_bounds(layout);
-        self.ready = true;
+            spatial.staged_patch.union_with(layout.changed());
+        }
     }
 
     pub(crate) fn commit(&mut self) {
-        if std::mem::take(&mut self.ready) {
-            std::mem::swap(&mut self.current, &mut self.staging);
+        if let Some(topology) = self.staged_topology.take() {
+            self.current.topology = topology;
+        }
+        let spatial = self.current.spatial.get_mut();
+        let matches = spatial.matches(&self.current.topology);
+        if matches {
+            spatial.pending_patch.union_with(&spatial.staged_patch);
+        } else {
+            spatial.pending_patch.clear();
+        }
+        spatial.staged_patch.clear();
+        spatial.staged_materialized.clear();
+        if !matches || !spatial.pending_patch.is_empty() {
+            spatial.metrics.lazy_skips += 1;
         }
     }
 
     pub(crate) fn rollback(&mut self) {
-        self.ready = false;
+        self.staged_topology = None;
+        let spatial = self.current.spatial.get_mut();
+        if spatial.matches(&self.current.topology) {
+            spatial.pending_patch.union_with(&spatial.staged_materialized);
+        }
+        spatial.staged_patch.clear();
+        spatial.staged_materialized.clear();
     }
 
-    pub(crate) fn hit(&self, tree: &Tree, layout: &LayoutEngine, text: &TextEngine, pos: Point) -> Option<NodeId> {
-        let frame = if self.ready { &self.staging } else { &self.current };
-        frame.hit(tree, layout, text, pos)
+    pub(crate) fn metrics(&self) -> FlatTreeMetrics {
+        self.current.spatial.borrow().metrics
+    }
+
+    /// Snapshot the index so oracle hits can materialize it independently.
+    pub(crate) fn fork_for_layout_check(&self) -> Self {
+        Self { current: self.current.clone(), staged_topology: self.staged_topology.clone() }
+    }
+
+    pub(crate) fn hit(&self, tree: &Tree, layout: &LayoutKernel, text: &TextEngine, pos: Point) -> Option<NodeId> {
+        let topology = self.staged_topology.as_ref().unwrap_or(&self.current.topology);
+        if topology.nodes.is_empty() {
+            return None;
+        }
+        let mut spatial = self.current.spatial.borrow_mut();
+        spatial.materialize(topology, layout, self.staged_topology.is_some());
+        spatial.hit(topology, tree, layout, text, pos)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use octara_model::geometry::{Size, Vec2, WindowViewport};
+    use octara_model::style::{Overflow, Position, Radius, StyleProp};
+    use octara_tree::tables::AuthoredStyle;
+    use octara_tree::{NodeChange, NodeContent, NodeSpec, RuntimeOp, TreeId};
+
+    struct Projection {
+        flat: FlatTree,
+        layout: LayoutKernel,
+        text: TextEngine,
+    }
+
+    impl Projection {
+        fn new() -> Self {
+            Self { flat: FlatTree::default(), layout: LayoutKernel::default(), text: TextEngine::new(false) }
+        }
+
+        fn project(&mut self, tree: &Tree, delta: &TreeDelta) {
+            let viewport = WindowViewport { size: Size::new(1024.0, 256.0), ..Default::default() };
+            self.text.begin_stage();
+            self.layout.project(tree, delta, viewport, &mut self.text);
+            self.flat.project(tree, delta, &self.layout);
+        }
+
+        fn commit(&mut self) {
+            self.layout.commit_stage();
+            self.text.commit_stage();
+            self.flat.commit();
+        }
+
+        fn rollback(&mut self) {
+            self.layout.rollback_stage();
+            self.text.rollback_stage();
+            self.flat.rollback();
+        }
+
+        fn hit(&self, tree: &Tree, x: f32, y: f32) -> Option<NodeId> {
+            self.flat.hit(tree, &self.layout, &self.text, Point::new(x, y))
+        }
+    }
+
+    fn style(props: impl IntoIterator<Item = StyleProp>) -> NodeChange {
+        NodeChange::Style(Box::new(AuthoredStyle { base: props.into_iter().collect(), ..Default::default() }))
+    }
+
+    fn bounds(x: i32, y: i32, size: i32) -> [StyleProp; 5] {
+        [
+            StyleProp::Position(Position::Absolute),
+            StyleProp::Left(x.into()),
+            StyleProp::Top(y.into()),
+            StyleProp::Width(size.into()),
+            StyleProp::Height(size.into()),
+        ]
+    }
+
+    fn siblings() -> (Tree, TreeDelta, Vec<NodeId>) {
+        let mut tree = Tree::new(TreeId::new([31, 71], 1), Default::default());
+        let mut tx = tree.transaction();
+        let nodes: Vec<_> = (0..30)
+            .map(|index| {
+                let node = tx.create(NodeSpec::new(NodeContent::Box));
+                tx.change(node, style(bounds(index * 16, 0, 12)));
+                tx.place(tree.node_ref(tree.root()), index as usize, node);
+                node
+            })
+            .collect();
+        let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+        let nodes = nodes.into_iter().map(|node| receipt.node(node).unwrap()).collect();
+        let mut initial = tree.initial_delta();
+        initial.merge(mounted);
+        (tree, initial, nodes)
+    }
+
+    fn move_nodes(tree: &mut Tree, nodes: &[NodeId], start: i32) -> TreeDelta {
+        let mut tx = tree.transaction();
+        for (index, &node) in nodes.iter().enumerate() {
+            tx.change(tree.node_ref(node), style(bounds(start + index as i32 * 16, 0, 12)));
+        }
+        tree.apply(tx.finish()).unwrap().1
+    }
+
+    #[test]
+    fn rollback_after_a_staged_hit_restores_committed_geometry_with_a_patch() {
+        let (mut tree, initial, nodes) = siblings();
+        let mut projection = Projection::new();
+        projection.project(&tree, &initial);
+        assert_eq!(projection.flat.metrics(), FlatTreeMetrics::default());
+        projection.commit();
+        assert_eq!(projection.flat.metrics(), FlatTreeMetrics { lazy_skips: 1, ..Default::default() });
+        assert_eq!(projection.hit(&tree, 2.0, 2.0), Some(nodes[0]));
+
+        let delta = move_nodes(&mut tree, &nodes[..1], 640);
+        projection.project(&tree, &delta);
+        projection.commit();
+        assert_eq!(projection.flat.metrics(), FlatTreeMetrics { grid_rebuilds: 1, nodes_patched: 0, lazy_skips: 2 });
+
+        let delta = move_nodes(&mut tree, &nodes[1..2], 680);
+        projection.project(&tree, &delta);
+        let oracle = projection.flat.fork_for_layout_check();
+        assert_eq!(oracle.hit(&tree, &projection.layout, &projection.text, Point::new(682.0, 2.0)), Some(nodes[1]));
+        assert_eq!(oracle.metrics().nodes_patched, 2);
+        assert_eq!(projection.flat.metrics().nodes_patched, 0);
+        assert_eq!(projection.hit(&tree, 642.0, 2.0), Some(nodes[0]));
+        assert_eq!(projection.hit(&tree, 682.0, 2.0), Some(nodes[1]));
+        assert_eq!(projection.flat.metrics().nodes_patched, 2);
+
+        let delta = move_nodes(&mut tree, &nodes[2..3], 720);
+        projection.project(&tree, &delta);
+        projection.rollback();
+        assert_eq!(projection.hit(&tree, 642.0, 2.0), Some(nodes[0]));
+        assert_eq!(projection.hit(&tree, 18.0, 2.0), Some(nodes[1]));
+        assert_eq!(projection.hit(&tree, 34.0, 2.0), Some(nodes[2]));
+        assert_eq!(projection.hit(&tree, 682.0, 2.0), Some(tree.root()));
+        assert_eq!(projection.flat.metrics(), FlatTreeMetrics { grid_rebuilds: 1, nodes_patched: 3, lazy_skips: 2 });
+    }
+
+    #[test]
+    fn rollback_of_an_indexed_topology_keeps_the_committed_pending_geometry() {
+        let (mut tree, initial, nodes) = siblings();
+        let mut projection = Projection::new();
+        projection.project(&tree, &initial);
+        projection.commit();
+        assert_eq!(projection.hit(&tree, 2.0, 2.0), Some(nodes[0]));
+
+        let delta = move_nodes(&mut tree, &nodes[..1], 640);
+        projection.project(&tree, &delta);
+        projection.commit();
+
+        let mut tx = tree.transaction();
+        let overlay = tx.create(NodeSpec::new(NodeContent::Box));
+        tx.change(overlay, style(bounds(640, 0, 12)));
+        tx.place(tree.node_ref(tree.overlay_root()), 0, overlay);
+        let (receipt, delta) = tree.apply(tx.finish()).unwrap();
+        projection.project(&tree, &delta);
+        assert_eq!(projection.hit(&tree, 642.0, 2.0), receipt.node(overlay));
+
+        projection.rollback();
+        assert_eq!(projection.hit(&tree, 642.0, 2.0), Some(nodes[0]));
+        assert_eq!(projection.hit(&tree, 2.0, 2.0), Some(tree.root()));
+        assert_eq!(projection.flat.metrics(), FlatTreeMetrics { grid_rebuilds: 3, nodes_patched: 0, lazy_skips: 2 });
+    }
+
+    #[test]
+    fn a_quarter_of_the_topology_requires_a_lazy_rebuild() {
+        let (mut tree, initial, nodes) = siblings();
+        let mut projection = Projection::new();
+        projection.project(&tree, &initial);
+        projection.commit();
+        projection.hit(&tree, 2.0, 2.0);
+        let delta = move_nodes(&mut tree, &nodes[..8], 640);
+        projection.project(&tree, &delta);
+        projection.commit();
+        assert_eq!(projection.flat.metrics(), FlatTreeMetrics { grid_rebuilds: 1, nodes_patched: 0, lazy_skips: 2 });
+        assert_eq!(projection.hit(&tree, 642.0, 2.0), Some(nodes[0]));
+        assert_eq!(projection.flat.metrics(), FlatTreeMetrics { grid_rebuilds: 2, nodes_patched: 0, lazy_skips: 2 });
+    }
+
+    #[test]
+    fn bucket_switches_at_twenty_four_candidates_without_duplicates() {
+        let span = CellFootprint { cells: Cells::Span { min: (0, 0), max: (1, 1) }, ..Default::default() };
+        let large = CellFootprint { cells: Cells::Large, ..Default::default() };
+        let empty = CellFootprint::default();
+        let mut grid = Grid::default();
+        let mut footprints = vec![span; SMALL_GRID_THRESHOLD + 1];
+        for index in 0..SMALL_GRID_THRESHOLD {
+            grid.patch(flat_index(index), empty, span, &footprints);
+        }
+        assert!(matches!(&grid.candidates, Bucket::Linear(entries) if entries.len() == SMALL_GRID_THRESHOLD));
+
+        let last = flat_index(SMALL_GRID_THRESHOLD);
+        footprints[last as usize] = large;
+        grid.patch(last, empty, large, &footprints);
+        assert!(matches!(&grid.candidates, Bucket::Hashed(grid) if grid.large == [last] && grid.cells.len() == 4));
+        footprints[1] = empty;
+        grid.patch(1, span, empty, &footprints);
+        assert!(matches!(&grid.candidates, Bucket::Linear(entries) if entries.len() == SMALL_GRID_THRESHOLD));
+        let mut actual: Vec<_> = grid.at(Point::new(12.0, 12.0)).copied().collect();
+        actual.sort_unstable();
+        assert!(actual.into_iter().eq((0..=last).filter(|&index| index != 1)));
+    }
+
+    #[test]
+    fn a_scroll_bucket_can_hit_outside_the_scrollport_on_the_visible_axis() {
+        let mut tree = Tree::new(TreeId::new([31, 71], 2), Default::default());
+        let mut tx = tree.transaction();
+        let port = tx.create(NodeSpec::new(NodeContent::Box));
+        let child = tx.create(NodeSpec::new(NodeContent::Box));
+        tx.change(port, style(bounds(0, 0, 40).into_iter().chain([StyleProp::OverflowY(Overflow::Scroll)])));
+        tx.change(child, style(bounds(130, 60, 20)));
+        tx.place(tree.node_ref(tree.root()), 0, port);
+        tx.place(port, 0, child);
+        let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+        let port = receipt.node(port).unwrap();
+        let child = receipt.node(child).unwrap();
+        let mut initial = tree.initial_delta();
+        initial.merge(mounted);
+        let mut projection = Projection::new();
+        projection.project(&tree, &initial);
+        projection.commit();
+        assert_eq!(projection.hit(&tree, 135.0, 35.0), Some(tree.root()));
+
+        let delta = tree.apply_runtime(RuntimeOp::RequestScroll { node: port, target: Vec2::new(0.0, 40.0) });
+        projection.project(&tree, &delta);
+        projection.commit();
+        assert_eq!(projection.hit(&tree, 135.0, 35.0), Some(child));
+        assert_eq!(projection.hit(&tree, 135.0, 45.0), Some(tree.root()));
+        assert_eq!(projection.flat.metrics(), FlatTreeMetrics { grid_rebuilds: 1, nodes_patched: 0, lazy_skips: 1 });
+    }
+
+    #[test]
+    fn overlay_hits_respect_the_root_rounded_clip() {
+        let mut tree = Tree::new(TreeId::new([31, 71], 3), Default::default());
+        let mut tx = tree.transaction();
+        let child = tx.create(NodeSpec::new(NodeContent::Box));
+        tx.change(
+            tree.node_ref(tree.root()),
+            style([
+                StyleProp::OverflowX(Overflow::Hidden),
+                StyleProp::OverflowY(Overflow::Hidden),
+                StyleProp::RadiusTopLeft(Radius::Px(50.0)),
+            ]),
+        );
+        tx.change(child, style(bounds(0, 0, 80)));
+        tx.place(tree.node_ref(tree.overlay_root()), 0, child);
+        let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+        let mut initial = tree.initial_delta();
+        initial.merge(mounted);
+        let mut projection = Projection::new();
+        projection.project(&tree, &initial);
+        projection.commit();
+
+        assert_eq!(projection.hit(&tree, 2.0, 2.0), None);
+        assert_eq!(projection.hit(&tree, 35.0, 35.0), receipt.node(child));
     }
 }

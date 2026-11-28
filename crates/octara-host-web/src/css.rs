@@ -157,6 +157,7 @@ pub(crate) fn style(tree: &Tree, node: NodeId, v: Visual, viewport: WindowViewpo
         };
         let _ = write!(css, "justify-content:{word};");
     }
+    containment(&mut css, l.contain);
     for (name, value) in [("overflow-x", l.overflow_x), ("overflow-y", l.overflow_y)] {
         let word = match value {
             Overflow::Visible => "visible",
@@ -527,4 +528,21 @@ pub(crate) fn object_fit(fit: ObjectFit) -> &'static str {
         ObjectFit::ScaleDown => "scale-down",
         ObjectFit::None => "none",
     }
+}
+
+fn containment(css: &mut String, contain: octara_model::style::Contain) {
+    use octara_model::style::Contain;
+    let value = match contain {
+        Contain::STRICT => "strict",
+        Contain::CONTENT => "content",
+        Contain::LAYOUT => "layout",
+        Contain::SIZE => "size",
+        Contain::PAINT => "paint",
+        value if value == Contain::LAYOUT | Contain::SIZE => "layout size",
+        value if value == Contain::SIZE | Contain::PAINT => "size paint",
+        _ => return,
+    };
+    css.push_str("contain:");
+    css.push_str(value);
+    css.push(';');
 }

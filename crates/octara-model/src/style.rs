@@ -142,11 +142,24 @@ pub struct GridRange {
     pub end: GridPos,
 }
 
+bitflags::bitflags! {
+    /// CSS containment applied to a box and its descendants.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+    pub struct Contain: u8 {
+        const LAYOUT = 1 << 0;
+        const SIZE = 1 << 1;
+        const PAINT = 1 << 2;
+        const CONTENT = Self::LAYOUT.bits() | Self::PAINT.bits();
+        const STRICT = Self::LAYOUT.bits() | Self::SIZE.bits() | Self::PAINT.bits();
+    }
+}
+
 /// The resolved layout declaration of a retained node. Optional lengths use `None` for `auto`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutStyle {
     pub display: Display,
     pub position: Position,
+    pub contain: Contain,
     pub size: Size<Option<LayoutLength>>,
     pub min_size: Size<Option<LayoutLength>>,
     pub max_size: Size<Option<LayoutLength>>,
@@ -179,6 +192,7 @@ impl Default for LayoutStyle {
         Self {
             display: Display::default(),
             position: Position::default(),
+            contain: Contain::empty(),
             size: Size::default(),
             min_size: Size::default(),
             max_size: Size::default(),
@@ -515,6 +529,7 @@ pub enum StyleProp {
     Basis(Length),
     AspectRatio(Option<f32>),
     Position(Position),
+    Contain(Contain),
     /// `n` equal columns (`grid_cols`).
     GridCols(u16),
     /// `n` equal rows (`grid_rows`).

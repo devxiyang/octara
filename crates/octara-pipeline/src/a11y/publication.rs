@@ -9,6 +9,7 @@ use octara_runtime::engine::AccessibilityConsumer;
 use octara_tree::semantics::SemanticScope;
 use octara_tree::{NodeId, Tree};
 use rustc_hash::{FxHashMap, FxHashSet};
+use slotmap::SecondaryMap;
 use std::cell::RefCell;
 use std::hash::Hash;
 use std::rc::Rc;
@@ -81,7 +82,7 @@ impl AccessPublication {
         let published = self.0.borrow();
         let node = *published.targets.get(&native)?;
         let tree = published.tree_id?;
-        published.entries.get(&node)?.exposed.then(|| TargetGuard::for_node(tree, node))
+        published.entries.get(node)?.exposed.then(|| TargetGuard::for_node(tree, node))
     }
 
     pub(crate) fn supports_action(&self, target: TargetGuard, action: ak::Action) -> bool {
@@ -89,7 +90,7 @@ impl AccessPublication {
         published.tree_id == Some(target.tree)
             && target
                 .node()
-                .and_then(|node| published.entries.get(&node))
+                .and_then(|node| published.entries.get(node))
                 .is_some_and(|entry| entry.exposed && !entry.node.is_disabled() && entry.node.supports_action(action))
     }
 
@@ -97,7 +98,7 @@ impl AccessPublication {
         let published = self.0.borrow();
         let root = node_identity(published.root?);
         let mut nodes = Vec::new();
-        for (&id, entry) in &published.entries {
+        for (id, entry) in &published.entries {
             nodes.push((node_identity(id), entry.node.clone()));
             nodes.extend(entry.runs.iter().map(|run| (run.id, run.node.clone())));
         }
@@ -157,9 +158,9 @@ pub(super) struct Published {
     pub focus: Option<NodeId>,
     pub scale: f32,
     pub modal: Option<Arc<SemanticScope>>,
-    pub entries: FxHashMap<NodeId, Entry>,
-    pub scopes: FxHashMap<NodeId, ScopeInput>,
-    pub names: FxHashMap<NodeId, [Option<Arc<str>>; 2]>,
+    pub entries: SecondaryMap<NodeId, Entry>,
+    pub scopes: SecondaryMap<NodeId, ScopeInput>,
+    pub names: SecondaryMap<NodeId, [Option<Arc<str>>; 2]>,
     pub related: FxHashMap<Arc<str>, FxHashSet<NodeId>>,
     pub selecting: FxHashMap<NodeId, FxHashSet<NodeId>>,
     targets: FxHashMap<ak::NodeId, NodeId>,
@@ -171,7 +172,7 @@ pub(super) struct Published {
 }
 
 impl Published {
-    fn active(&self) -> bool {
+    pub(super) fn active(&self) -> bool {
         self.platform_active || self.inspector_active
     }
 
@@ -212,7 +213,7 @@ impl Published {
         Some(TextPosition { node: *node, offset: *bytes.get(position.character_index)? })
     }
 
-    pub(super) fn commit(&mut self, staged: Staging, emit: bool) -> Option<ak::TreeUpdate> {
+    pub(super) fn commit(&mut self, staged: &mut Staging, emit: bool) -> Option<ak::TreeUpdate> {
         let root = staged.root.expect("project before publish");
         let focus = staged.focus.expect("project focus before publish");
         let focus_changed = self.focus != Some(focus);
@@ -226,50 +227,51 @@ impl Published {
         self.tree_id = staged.tree_id;
         self.focus = Some(focus);
         self.scale = staged.scale;
-        self.modal = staged.modal;
+        self.modal = staged.modal.take();
 
-        for (id, input) in staged.scopes {
-            set(&mut self.scopes, id, input);
+        for id in staged.scopes.undo_keys() {
+            set(&mut self.scopes, id, staged.scopes.get(id).copied().flatten());
         }
-        for (id, names) in staged.names {
-            let retained = names.iter().any(Option::is_some);
-            set(&mut self.names, id, retained.then_some(names));
+        for id in staged.names.undo_keys() {
+            let retained = staged.names.get(id).filter(|names| names.iter().any(Option::is_some));
+            set(&mut self.names, id, retained.cloned());
         }
 
         #[cfg(test)]
         {
-            self.committed = staged.entries.len() + staged.geometry.len();
+            self.committed = staged.geometry.len()
+                + staged.entry_dirty.iter().filter(|&id| staged.entries.get(id).and_then(Option::as_ref) != self.entries.get(id)).count();
         }
         let mut nodes = Vec::new();
-        for (id, entry) in staged.entries {
-            let old = self.entries.remove(&id);
-            let key = node_identity(id);
-            if let Some(old) = old.as_ref() {
-                self.index(id, old, false);
-                self.targets.remove(&key);
-                for run in &old.runs {
-                    self.runs.remove(&run.id);
-                }
-            }
-            if let Some(entry) = entry {
-                if emit && old.as_ref().is_none_or(|old| entry.node != old.node) {
-                    nodes.push((key, entry.node.clone()));
-                }
-                self.targets.insert(key, id);
-                for (index, run) in entry.runs.iter().enumerate() {
-                    if emit
-                        && old.as_ref().and_then(|entry| entry.runs.get(index)).is_none_or(|old| old.id != run.id || old.node != run.node)
-                    {
-                        nodes.push((run.id, run.node.clone()));
-                    }
-                    self.runs.insert(run.id, (id, run.bytes.clone()));
-                }
-                self.index(id, &entry, true);
-                self.entries.insert(id, entry);
+        // A slot reused in this cycle may still have an older identity in the published indexes.
+        for id in staged.entry_dirty.iter() {
+            if staged.entries.get(id).is_none_or(Option::is_none) {
+                self.remove_entry(id);
             }
         }
-        for (id, geometry) in staged.geometry {
-            let entry = self.entries.get_mut(&id).expect("geometry patch has a published node");
+        for id in staged.entry_dirty.iter() {
+            let Some(entry) = staged.entries.get_mut(id).and_then(Option::take) else { continue };
+            if self.entries.get(id) == Some(&entry) {
+                continue;
+            }
+            let old = self.remove_entry(id);
+            let key = node_identity(id);
+            if emit && old.as_ref().is_none_or(|old| entry.node != old.node) {
+                nodes.push((key, entry.node.clone()));
+            }
+            self.targets.insert(key, id);
+            for (index, run) in entry.runs.iter().enumerate() {
+                if emit && old.as_ref().and_then(|entry| entry.runs.get(index)).is_none_or(|old| old.id != run.id || old.node != run.node) {
+                    nodes.push((run.id, run.node.clone()));
+                }
+                self.runs.insert(run.id, (id, run.bytes.clone()));
+            }
+            self.index(id, &entry, true);
+            self.entries.insert(id, entry);
+        }
+        for id in staged.geometry.undo_keys() {
+            let Some(&geometry) = staged.geometry.get(id) else { continue };
+            let entry = self.entries.get_mut(id).expect("geometry patch has a published node");
             geometry.apply(&mut entry.node);
             entry.geometry = geometry;
             if emit {
@@ -285,6 +287,16 @@ impl Published {
         })
     }
 
+    fn remove_entry(&mut self, id: NodeId) -> Option<Entry> {
+        let old = self.entries.remove(id)?;
+        self.index(id, &old, false);
+        self.targets.remove(&node_identity(id));
+        for run in &old.runs {
+            self.runs.remove(&run.id);
+        }
+        Some(old)
+    }
+
     fn index(&mut self, id: NodeId, entry: &Entry, insert: bool) {
         let relations = &entry.relations;
         for name in
@@ -298,11 +310,11 @@ impl Published {
     }
 }
 
-fn set<T>(entries: &mut FxHashMap<NodeId, T>, id: NodeId, value: Option<T>) {
+fn set<T>(entries: &mut SecondaryMap<NodeId, T>, id: NodeId, value: Option<T>) {
     if let Some(value) = value {
         entries.insert(id, value);
     } else {
-        entries.remove(&id);
+        entries.remove(id);
     }
 }
 

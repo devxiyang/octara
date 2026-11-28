@@ -2649,6 +2649,7 @@ name = "octara-pipeline"
 version = "0.0.9"
 dependencies = [
  "accesskit",
+ "bitflags",
  "color",
  "linebender_resource_handle",
  "memmap2",

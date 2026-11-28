@@ -2,7 +2,9 @@
 
 use crate::TextOverflow;
 use octara_model::motion::Curve;
-use octara_model::style::{AlignItems, Direction, Display, FlexDirection, FlexWrap, JustifyContent, Overflow, Position, StyleProp};
+use octara_model::style::{
+    AlignItems, Contain, Direction, Display, FlexDirection, FlexWrap, JustifyContent, Overflow, Position, StyleProp,
+};
 pub use octara_model::style::{FontSize, Length, LineHeight, Radius, Ring, Shadows, State, When};
 use octara_model::text::{FontWeight, TextAlign, Wrap};
 use octara_model::theme::{ColorValue, Family, Fill};
@@ -81,6 +83,7 @@ pub trait Styled: Sized {
         align(AlignItems) => AlignItems,
         justify(JustifyContent) => Justify,
         position(Position) => Position,
+        contain(Contain) => Contain,
         overflow_x(Overflow) => OverflowX,
         overflow_y(Overflow) => OverflowY,
         grid_cols(u16) => GridCols,
@@ -307,6 +310,16 @@ pub trait Styled: Sized {
 
     fn h_full(self) -> Self {
         self.h(rel(1.0))
+    }
+
+    /// Isolate layout and clip painted descendants to this box.
+    fn contain_content(self) -> Self {
+        self.contain(Contain::CONTENT)
+    }
+
+    /// Isolate layout, intrinsic size, and paint.
+    fn contain_strict(self) -> Self {
+        self.contain(Contain::STRICT)
     }
 
     fn scroll_y(self) -> Self {

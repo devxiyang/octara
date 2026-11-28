@@ -72,6 +72,129 @@ mod browser {
     }
 
     #[wasm_bindgen]
+    pub fn run_dom_containment() -> Result<(), JsValue> {
+        use octara::prelude::*;
+        use octara_host_web::WebApp;
+        use std::{cell::Cell, rc::Rc};
+
+        let browser = web_sys::window().unwrap();
+        let document = browser.document().unwrap();
+        let surface = document.create_element("div")?.dyn_into::<HtmlElement>()?;
+        surface.set_attribute("style", "position:fixed;left:24px;top:32px;width:400px;height:300px;")?;
+        document.body().unwrap().append_child(&surface)?;
+
+        let signals = Rc::new(Cell::new(None));
+        let app = WebApp::mount(surface.clone(), {
+            let signals = signals.clone();
+            move |build| {
+                let containment = build.signal(Some(Contain::CONTENT));
+                let height = build.signal(88);
+                signals.set(Some((containment, height)));
+                let growing_child = || el().w(140).shrink(0.0).style_with(move |read, patch| patch.h(read.get(height)));
+                let sizing = row().align(AlignItems::Start).child((
+                    col().test_id("contain-strict").contain_strict().w(80).h(42).child(growing_child().test_id("contain-growing")),
+                    col().test_id("contain-size").contain(Contain::SIZE).w(80).child(growing_child()),
+                    col().test_id("contain-control").w(80).child(growing_child()),
+                ));
+                let content = col()
+                    .test_id("contain-content")
+                    .w(100)
+                    .h(50)
+                    .ml(40)
+                    .mt(12)
+                    .style_with(move |read, patch| match read.get(containment) {
+                        Some(Contain::CONTENT) => patch.contain_content(),
+                        Some(contain) => patch.contain(contain),
+                        None => patch,
+                    })
+                    .child((
+                        el().test_id("contain-overflow").w(140).h(16).bg(rgb(0x397bd6)),
+                        el().test_id("contain-absolute").position(Position::Absolute).left(12).top(22).size(8).overlay_part(
+                            Placement::BELOW,
+                            |_| true,
+                            |_| el().test_id("contain-overlay").size(8),
+                        ),
+                        el().test_id("contain-fixed").position(Position::Fixed).left(24).top(28).size(8),
+                    ));
+                col().test_id("contain-stage").position(Position::Relative).w_full().child((
+                    content,
+                    sizing,
+                    el().test_id("contain-layout").contain(Contain::LAYOUT),
+                    el().test_id("contain-paint").contain(Contain::PAINT),
+                    el().test_id("contain-layout-size").contain(Contain::LAYOUT | Contain::SIZE),
+                    el().test_id("contain-size-paint").contain(Contain::SIZE | Contain::PAINT),
+                ))
+            }
+        })?;
+        let (containment, height) = signals.get().unwrap();
+        let computed = |element: &HtmlElement, property| browser.get_computed_style(element)?.unwrap().get_property_value(property);
+        for (name, expected) in [
+            ("contain-content", "content"),
+            ("contain-strict", "strict"),
+            ("contain-layout", "layout"),
+            ("contain-size", "size"),
+            ("contain-paint", "paint"),
+            ("contain-layout-size", "size layout"),
+            ("contain-size-paint", "size paint"),
+        ] {
+            let node = element(&surface, name);
+            assert_eq!(node.style().get_property_value("contain")?, expected, "{name} inline style");
+            assert_eq!(computed(&node, "contain")?, expected, "{name} computed style");
+        }
+
+        let content = element(&surface, "contain-content");
+        let overflow = element(&surface, "contain-overflow");
+        let position = |name| {
+            let rect = element(&surface, name).get_bounding_client_rect();
+            (rect.left(), rect.top())
+        };
+        let (x, y) = position("contain-content");
+        let check_positioned = |absolute: (f64, f64), fixed| {
+            assert_eq!(position("contain-absolute"), absolute);
+            assert_eq!(position("contain-fixed"), fixed);
+            assert_eq!(position("contain-overlay"), (absolute.0, absolute.1 + 8.0 + f64::from(Placement::BELOW.gap)));
+        };
+        assert_eq!(computed(&content, "position")?, "static");
+        check_positioned((x + 12.0, y + 22.0), (x + 24.0, y + 28.0));
+        let hits_overflow =
+            |offset| document.element_from_point(x as f32 + offset, y as f32 + 8.0).is_some_and(|node| node.is_same_node(Some(&overflow)));
+        assert_eq!(overflow.get_bounding_client_rect().width(), 140.0);
+        assert!(hits_overflow(96.0));
+        assert!(!hits_overflow(120.0));
+
+        let dimensions = |name| {
+            let rect = element(&surface, name).get_bounding_client_rect();
+            (rect.width(), rect.height())
+        };
+        let check_size = |expected| {
+            assert_eq!(dimensions("contain-growing"), (140.0, f64::from(expected)));
+            assert_eq!(dimensions("contain-strict"), (80.0, 42.0));
+            assert_eq!(dimensions("contain-size"), (80.0, 0.0));
+            assert_eq!(dimensions("contain-control"), (80.0, f64::from(expected)));
+        };
+        check_size(88);
+        app.update(|write| write.set(height, 124)).unwrap();
+        check_size(124);
+
+        app.update(|write| write.set(containment, Some(Contain::LAYOUT))).unwrap();
+        assert_eq!(computed(&content, "contain")?, "layout");
+        check_positioned((x + 12.0, y + 22.0), (x + 24.0, y + 28.0));
+        assert!(hits_overflow(120.0));
+
+        app.update(|write| write.set(containment, None)).unwrap();
+        assert!(content.is_same_node(Some(&element(&surface, "contain-content"))));
+        assert_eq!(content.style().get_property_value("contain")?, "");
+        assert_eq!(computed(&content, "contain")?, "none");
+        assert_eq!(position("contain-content"), (x, y));
+        let (stage_x, stage_y) = position("contain-stage");
+        check_positioned((stage_x + 12.0, stage_y + 22.0), (24.0, 28.0));
+
+        drop(app);
+        surface.remove();
+        Ok(())
+    }
+
+    #[wasm_bindgen]
     pub fn run_dom_direction() -> Result<(), JsValue> {
         use octara_model::window::SystemPreferences;
 

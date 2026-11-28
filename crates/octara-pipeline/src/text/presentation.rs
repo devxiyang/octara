@@ -1,11 +1,12 @@
 //! Line breaking and positioned glyph extraction from shaped paragraphs.
 
-use super::{Decoration, Document, PillPaint, Presentation, Run, SpanEdge, TextEngine, inline};
+use super::{Decoration, Document, PillPaint, Presentation, Run, Shape, SpanEdge, TextEngine, TextWork, inline};
 use octara_model::geometry::{Point, Rect, Size};
 use octara_model::paint::Glyph;
 use octara_model::semantics::TextClip;
 use octara_model::text::{TextAlign, TextFragment, TextLine, TextStyle, Wrap};
 use parley::PositionedLayoutItem;
+use smallvec::SmallVec;
 use std::ops::Range;
 
 fn line_width(metrics: &parley::LineMetrics) -> f32 {
@@ -21,34 +22,114 @@ fn wrap_width(style: TextStyle, width: Option<f32>) -> Option<f32> {
     if style.wrap == Wrap::Words { width } else { None }
 }
 
-pub(super) fn measure(document: &Document, width: Option<f32>) -> (Size, usize) {
-    measure_up_to(document, width, usize::MAX)
+#[derive(Clone, Copy)]
+struct MeasureProbe {
+    width_bits: Option<u32>,
+    max_lines: usize,
+    size: Size,
+    lines: usize,
 }
 
-pub(super) fn measure_up_to(document: &Document, width: Option<f32>, max_lines: usize) -> (Size, usize) {
-    let breaks = wrap_width(document.style, width);
-    let limit = line_limit(document.style).min(max_lines);
-    let mut size = Size::<f32>::default();
-    let mut lines = 0;
-    for paragraph in &document.paragraphs {
-        let mut shaped = paragraph.shape.borrow_mut();
-        let shaped = shaped.at(breaks, false);
-        for line in shaped.layout.lines().take(limit.saturating_sub(lines)) {
+#[derive(Default)]
+pub(super) struct MeasureCache {
+    probes: SmallVec<[MeasureProbe; 4]>,
+    unwrapped: Option<(Size, usize)>,
+}
+
+impl MeasureCache {
+    fn get(&mut self, width_bits: Option<u32>, max_lines: usize, work: &mut TextWork) -> Option<(Size, usize)> {
+        let measured = if width_bits.is_none()
+            && let Some((size, lines)) = self.unwrapped
+            && lines <= max_lines
+        {
+            (size, lines)
+        } else {
+            let index = self.probes.iter().position(|probe| probe.width_bits == width_bits && probe.max_lines == max_lines)?;
+            let probe = self.probes[index];
+            self.probes[index..].rotate_left(1);
+            (probe.size, probe.lines)
+        };
+        work.measure_probe_hits += 1;
+        Some(measured)
+    }
+
+    fn store(&mut self, width_bits: Option<u32>, max_lines: usize, (size, lines): (Size, usize), complete: bool) {
+        if width_bits.is_none() && complete {
+            self.unwrapped = Some((size, lines));
+        } else {
+            if self.probes.len() == self.probes.inline_size() {
+                self.probes.remove(0);
+            }
+            self.probes.push(MeasureProbe { width_bits, max_lines, size, lines });
+        }
+    }
+}
+
+impl Shape {
+    fn measure(&mut self, width: Option<f32>, max_lines: usize, justify: bool, work: &mut TextWork) -> (Size, usize) {
+        let width_bits = width.map(f32::to_bits);
+        if let Some(measured) = self.measures.get(width_bits, max_lines, work) {
+            return measured;
+        }
+        // Alignment changes positioned glyphs but leaves the measured line metrics intact.
+        if self.broken.is_none_or(|(current, _)| current != width) {
+            self.at(width, justify, work);
+        }
+        let mut size = Size::<f32>::default();
+        for line in self.layout.lines().take(max_lines) {
             let metrics = line.metrics();
             size.width = size.width.max(line_width(metrics));
             size.height += metrics.line_height;
-            lines += 1;
         }
-        if lines == limit {
-            break;
+        let lines = self.layout.len().min(max_lines);
+        self.measures.store(width_bits, max_lines, (size, lines), lines == self.layout.len());
+        (size, lines)
+    }
+}
+
+impl Document {
+    pub(super) fn measure(&self, width: Option<f32>, max_lines: usize, work: &mut TextWork) -> (Size, usize) {
+        let breaks = wrap_width(self.style, width);
+        let justify = self.style.align == TextAlign::Justify && breaks.is_some();
+        let limit = line_limit(self.style).min(max_lines);
+        if limit == 0 {
+            return (Size::default(), 0);
         }
+        let (mut size, lines) = if let [paragraph] = self.paragraphs.as_slice() {
+            paragraph.shape.borrow_mut().measure(breaks, limit, justify, work)
+        } else {
+            self.measure_paragraphs(breaks, limit, justify, work)
+        };
+        if self.style.wrap == Wrap::Truncate
+            && let Some(width) = width
+        {
+            size.width = size.width.min(width);
+        }
+        (size, lines)
     }
-    if document.style.wrap == Wrap::Truncate
-        && let Some(width) = width
-    {
-        size.width = size.width.min(width);
+
+    fn measure_paragraphs(&self, width: Option<f32>, limit: usize, justify: bool, work: &mut TextWork) -> (Size, usize) {
+        let mut measures = self.measures.borrow_mut();
+        let cache = measures.get_or_insert_with(Box::default);
+        let width_bits = width.map(f32::to_bits);
+        if let Some(measured) = cache.get(width_bits, limit, work) {
+            return measured;
+        }
+
+        let mut size = Size::<f32>::default();
+        let mut lines = 0;
+        for paragraph in &self.paragraphs {
+            let (paragraph_size, count) = paragraph.shape.borrow_mut().measure(width, limit - lines, justify, work);
+            size.width = size.width.max(paragraph_size.width);
+            size.height += paragraph_size.height;
+            lines += count;
+            if lines == limit {
+                break;
+            }
+        }
+        cache.store(width_bits, limit, (size, lines), lines < limit);
+        (size, lines)
     }
-    (size, lines)
 }
 
 struct ClusterBox<'a> {
@@ -68,14 +149,15 @@ impl TextEngine {
         let limit = line_limit(document.style);
         let mut lines = Vec::new();
         let mut out = Presentation::default();
-        'paragraphs: for (index, paragraph) in document.paragraphs.iter().enumerate() {
+        for (index, paragraph) in document.paragraphs.iter().enumerate() {
+            if lines.len() == limit {
+                break;
+            }
             let mut shape = paragraph.shape.borrow_mut();
-            let shape = shape.at(breaks, justify);
+            let shape = shape.at(breaks, justify, &mut self.work);
             let byte = |index| (paragraph.start + inline::Box::decoded(&shape.inline, index)).min(paragraph.end);
-            for (line_index, line) in shape.layout.lines().enumerate() {
-                if lines.len() == limit {
-                    break 'paragraphs;
-                }
+            let mut paragraph_height = 0.0;
+            for (line_index, line) in shape.layout.lines().take(limit - lines.len()).enumerate() {
                 let metrics = line.metrics();
                 let remaining = line_index + 1 < shape.layout.len() || index + 1 < document.paragraphs.len();
                 let hidden = lines.len() + 1 == limit && remaining;
@@ -87,7 +169,7 @@ impl TextEngine {
                         document.style.max_lines.map(|limit| TextClip::LineClamp(u32::from(limit)))
                     };
                 }
-                let y = out.size.height;
+                let y = out.size.height + paragraph_height;
                 let mut x = metrics.offset + metrics.inline_min_coord;
                 let mut clusters = Vec::<ClusterBox>::new();
                 let mut positioned = line.items().filter_map(|item| match item {
@@ -135,7 +217,7 @@ impl TextEngine {
                 let cut = hidden || width_overflow;
                 let ellipsis = cut.then(|| self.shape("…", document.style.into(), &[], true));
                 let mut ellipsis_shape = ellipsis.as_ref().map(|shape| shape.borrow_mut());
-                let ellipsis_layout = ellipsis_shape.as_mut().map(|shape| &shape.at(None, false).layout);
+                let ellipsis_layout = ellipsis_shape.as_mut().map(|shape| &shape.at(None, false, &mut self.work).layout);
                 let mut dots_width = ellipsis_layout.map_or(0.0, |layout| layout.width());
                 if width.is_some_and(|width| dots_width > width) {
                     dots_width = 0.0;
@@ -245,8 +327,9 @@ impl TextEngine {
                     self.extract_runs(ellipsis, 0..usize::MAX, Point::new(dots_x, dots_y), &mut ends, &mut out);
                 }
                 out.size.width = out.size.width.max(used_width);
-                out.size.height += metrics.line_height;
+                paragraph_height += metrics.line_height;
             }
+            out.size.height += paragraph_height;
         }
         if limit == 0
             && document.paragraphs.iter().any(|paragraph| paragraph.start != paragraph.end || !paragraph.shape.borrow().inline.is_empty())

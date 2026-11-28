@@ -85,7 +85,7 @@ flowchart TB
     end
 
     subgraph L3N["Layer 3a: Native Pipeline, Rendering & Host"]
-        Pipeline["octara-pipeline<br/>NativeEngine (HostEngine): Taffy · Parley Text Geometry<br/>MotionEngine · PaintCompiler · AccessKitProjector"]
+        Pipeline["octara-pipeline<br/>NativeEngine (HostEngine): LayoutKernel · Parley Text Geometry<br/>MotionEngine · PaintCompiler · AccessKitProjector"]
         Render["octara-render (Thread-Agnostic: Native + WebGPU)<br/>RenderGraph(plan) · Batch · Atlas · wgpu Encode<br/>Custom Shaders · CPU Reference Oracle"]
         Gpu["octara-gpu (Native Only)<br/>Event-Driven DeviceExecutor · Surface/Readback Leases<br/>Async Background PNG Writer"]
         HostNative["octara-host-native<br/>Platform-neutral shell + OsHost/OsWindow SPI<br/>os/{macos, ios, linux, windows}"]
@@ -364,7 +364,9 @@ pub trait HostEngine {
 
 ### 7.1 Native Stack (`octara-pipeline` + `octara-render` + `octara-gpu` + `octara-host-native`)
 - **`octara-pipeline::NativeEngine`**:
-  - `layout/`: Incremental Taffy sync driven by `delta.topology_dirty` & `delta.layout_dirty`.
+  - `layout/`: `LayoutKernel` runs Taffy's flex and grid algorithms on ECS nodes and uses relayout boundaries to isolate subtrees.
+  - `flat_tree.rs`: Lazy spatial indexing and exact hit testing in scroll space.
+  - `projected.rs`: Shared dense transaction journals for layout, text, paint, and accessibility.
   - `text/`: Parley shaping, font registry, incremental paragraph cache keyed by `Arc<str>`, caret/selection/soft-wrap geometry, AccessKit text runs.
   - `motion/`: `MotionEngine` (analytic spring/fade tracks, exit ghosts, scroll glides, caret blink, password reveal).
   - `paint/`: Incremental `PaintCompiler` → frozen `PaintScene` (pure paint animations sampled at display timestamp; debug uncached self-check controlled by explicit `check_paint_cache: bool`).

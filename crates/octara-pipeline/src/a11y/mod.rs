@@ -1,6 +1,7 @@
 //! Project retained semantics and physical text into AccessKit's incremental protocol.
 
-use crate::layout::LayoutEngine;
+use crate::layout::LayoutKernel;
+use crate::projected::DenseProjected;
 use crate::text::TextEngine;
 use accesskit as ak;
 use octara_model::geometry::{Rect, Vec2};
@@ -12,7 +13,7 @@ use octara_runtime::engine::ScrollRange;
 use octara_tree::selection::DocSelection;
 use octara_tree::semantics::SemanticScope;
 use octara_tree::tables::HandlerKind;
-use octara_tree::{NodeFlags, NodeId, NodeKind, Tree, TreeDelta};
+use octara_tree::{DirtyBitmap, NodeFlags, NodeId, NodeKind, Tree, TreeDelta};
 use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::Key;
 use std::sync::Arc;
@@ -67,7 +68,7 @@ struct Geometry {
 }
 
 impl Geometry {
-    fn read(layout: &LayoutEngine, node: NodeId, scale: f32) -> Self {
+    fn read(layout: &LayoutKernel, node: NodeId, scale: f32) -> Self {
         Self {
             rect: layout.geometry(node).map_or_else(Rect::default, |geometry| geometry.rect),
             offset: layout.scroll_offset(node),
@@ -154,21 +155,37 @@ impl Scope<'_> {
 struct Staging {
     // A cycle can project several feedback rounds. Revisit their dirty inputs against the
     // committed baseline so changes that are superseded before commit never escape.
-    dirty: FxHashSet<NodeId>,
-    geometry_dirty: FxHashSet<NodeId>,
-    scope_dirty: FxHashSet<NodeId>,
+    dirty: DirtyBitmap,
+    geometry_dirty: DirtyBitmap,
+    scope_dirty: DirtyBitmap,
+    entry_dirty: DirtyBitmap,
     modal_order_dirty: bool,
+    baseline: Option<TreeId>,
     tree_id: Option<TreeId>,
     root: Option<NodeId>,
     focus: Option<NodeId>,
     scale: f32,
     modal: Option<Arc<SemanticScope>>,
-    scopes: FxHashMap<NodeId, Option<ScopeInput>>,
-    names: FxHashMap<NodeId, [Option<Arc<str>>; 2]>,
-    entries: FxHashMap<NodeId, Option<Entry>>,
-    geometry: FxHashMap<NodeId, Geometry>,
+    scopes: DenseProjected<Option<ScopeInput>>,
+    names: DenseProjected<[Option<Arc<str>>; 2]>,
+    entries: DenseProjected<Option<Entry>>,
+    geometry: DenseProjected<Geometry>,
     built: usize,
     candidates: usize,
+}
+
+impl Staging {
+    fn discard_patches(&mut self) {
+        self.scopes.rollback();
+        self.names.rollback();
+        self.entries.rollback();
+        self.geometry.rollback();
+        self.entry_dirty.clear();
+    }
+
+    fn entry<'a>(&'a self, committed: &'a Published, node: NodeId) -> Option<&'a Entry> {
+        if self.entry_dirty.contains(&node) { self.entries.get(node).and_then(Option::as_ref) } else { committed.entries.get(node) }
+    }
 }
 
 pub(crate) struct AccessKitProjector {
@@ -181,20 +198,31 @@ impl AccessKitProjector {
         Self { publication, staging: Staging::default() }
     }
 
-    pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, layout: &LayoutEngine, text: &TextEngine, scale: f32, verify: bool) {
+    pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, layout: &LayoutKernel, text: &TextEngine, scale: f32, verify: bool) {
         if !self.publication.active() {
+            if self.staging.root.is_some() {
+                self.reset_staging();
+            }
             return;
         }
         let committed = self.publication.0.borrow();
         let staging = &mut self.staging;
+        if staging.root.is_some() {
+            staging.discard_patches();
+        }
+        staging.scopes.begin();
+        staging.names.begin();
+        staging.entries.begin();
+        staging.geometry.begin();
+        staging.baseline = committed.tree_id;
         staging.tree_id = Some(tree.id());
         staging.root = Some(tree.root());
         staging.scale = scale;
         let reset = committed.tree_id != staging.tree_id;
 
         staging.scope_dirty.extend(delta.created.iter().copied());
-        staging.scope_dirty.extend(delta.semantics_dirty.iter());
-        staging.scope_dirty.extend(delta.topology_dirty.iter());
+        staging.scope_dirty.union_with(&delta.semantics_dirty);
+        staging.scope_dirty.union_with(&delta.topology_dirty);
         staging.scope_dirty.extend(delta.retired.iter().map(|retired| retired.node()));
         if !delta.semantics_dirty.is_disjoint(&delta.layout_dirty)
             || !delta.semantics_dirty.is_disjoint(&delta.overlay_dirty)
@@ -210,15 +238,13 @@ impl AccessKitProjector {
         if reset {
             staging.scope_dirty.extend(tree.nodes().map(|(node, _)| node));
         }
-        staging.scopes.clear();
-        staging.names.clear();
-        for &node in &staging.scope_dirty {
+        for node in staging.scope_dirty.iter() {
             let input = ScopeInput::read(tree, node);
-            if reset || input.as_ref() != committed.scopes.get(&node) {
+            if reset || input.as_ref() != committed.scopes.get(node) {
                 staging.scopes.insert(node, input);
             }
             let names = indexed_names(tree, node);
-            let previous = committed.names.get(&node).map(|names| names.each_ref().map(Option::as_ref)).unwrap_or_default();
+            let previous = committed.names.get(node).map(|names| names.each_ref().map(Option::as_ref)).unwrap_or_default();
             if reset || names != previous {
                 staging.names.insert(node, names.map(|name| name.cloned()));
             }
@@ -227,43 +253,45 @@ impl AccessKitProjector {
         let scope = Scope { tree, modal: staging.modal.as_deref() };
         staging.focus = Some(scope.focus());
 
-        staging.dirty.extend(delta.semantics_dirty.iter());
-        staging.dirty.extend(delta.topology_dirty.iter());
+        staging.dirty.union_with(&delta.semantics_dirty);
+        staging.dirty.union_with(&delta.topology_dirty);
         staging.dirty.extend(delta.created.iter().copied());
-        staging.dirty.extend(delta.layout_dirty.iter());
-        staging.dirty.extend(delta.editor_dirty.iter());
+        staging.dirty.union_with(&delta.layout_dirty);
+        staging.dirty.union_with(&delta.editor_dirty);
         if !reset {
-            staging.dirty.extend(text.changed().iter());
-            staging.geometry_dirty.extend(layout.changed().iter());
-            staging.geometry_dirty.extend(layout.scroll_changed().iter());
+            staging.dirty.union_with(text.changed());
+            staging.geometry_dirty.union_with(layout.local_changed());
+            staging.geometry_dirty.union_with(layout.scroll_changed());
         }
-        let mut dirty = staging.dirty.clone();
+        let mut dirty = std::mem::take(&mut staging.entry_dirty);
+        dirty.union_with(&staging.dirty);
         if committed.scale != scale {
             staging.geometry_dirty.insert(tree.root());
         }
 
         let exposure = exposure_changes(tree, scope, reset, &committed, staging);
         let mut relation_names = FxHashSet::default();
-        for (&node, next) in &staging.names {
-            relation_names.extend(committed.names.get(&node).into_iter().flatten().flatten());
-            relation_names.extend(next.iter().flatten());
+        for node in staging.names.undo_keys() {
+            relation_names.extend(committed.names.get(node).into_iter().flatten().flatten());
+            relation_names.extend(staging.names.get(node).into_iter().flatten().flatten());
         }
-        for node in exposure {
+        for node in exposure.iter() {
             dirty.insert(node);
             dirty.extend(tree.physical_parent(node));
-            dirty.extend(committed.entries.get(&node).and_then(|entry| entry.parent));
+            dirty.extend(committed.entries.get(node).and_then(|entry| entry.parent));
             relation_names.extend(indexed_names(tree, node).into_iter().flatten());
         }
         for name in relation_names {
             dirty.extend(committed.related.get(name).into_iter().flatten().copied());
         }
-        let regions = dirty.iter().filter_map(|node| committed.selecting.get(node)).flatten().copied().collect::<Vec<_>>();
+        let regions = dirty.iter().filter_map(|node| committed.selecting.get(&node)).flatten().copied().collect::<Vec<_>>();
         dirty.extend(regions);
 
-        staging.geometry.clear();
-        for &node in &staging.geometry_dirty {
+        staging.candidates = staging.scope_dirty.iter().count();
+        for node in staging.geometry_dirty.iter() {
+            staging.candidates += 1;
             if !dirty.contains(&node)
-                && let Some(entry) = committed.entries.get(&node)
+                && let Some(entry) = committed.entries.get(node)
             {
                 let geometry = Geometry::read(layout, node, if node == tree.root() { scale } else { 1.0 });
                 if entry.geometry != geometry {
@@ -271,35 +299,33 @@ impl AccessKitProjector {
                 }
             }
         }
-        staging.entries.clear();
-        staging.candidates = dirty.len() + staging.geometry_dirty.len() + staging.scope_dirty.len();
         staging.built = 0;
-        for node in dirty {
+        for node in dirty.iter() {
+            staging.candidates += 1;
             let entry = scope.includes(node).then(|| build_entry(tree, scope, node, layout, text, scale));
             staging.built += usize::from(entry.is_some());
-            if entry.is_some() || committed.entries.contains_key(&node) {
+            if entry.is_some() || committed.entries.contains_key(node) {
                 staging.entries.insert(node, entry);
             }
         }
+        staging.entry_dirty = dirty;
 
         // Document selection positions refer to text runs, potentially in different leaves.
-        let selections = staging.entries.iter().filter_map(|(&node, entry)| Some((node, entry.as_ref()?.selection?)));
+        let selections = staging.entries.undo_keys().filter_map(|node| Some((node, staging.entries.get(node)?.as_ref()?.selection?)));
         let selections = selections
             .map(|(node, selection)| {
-                let resolve = |id| staging.entries.get(&id).map_or_else(|| committed.entries.get(&id), Option::as_ref);
+                let resolve = |id| staging.entry(&committed, id);
                 (node, text_selection(selection, resolve))
             })
             .collect::<Vec<_>>();
         for (node, selection) in selections {
-            if let Some(entry) = staging.entries.get_mut(&node).and_then(Option::as_mut) {
+            if let Some(entry) = staging.entries.get_mut(node).and_then(Option::as_mut) {
                 entry.node.clear_text_selection();
                 if let Some(selection) = selection {
                     entry.node.set_text_selection(selection);
                 }
             }
         }
-        staging.entries.retain(|node, entry| reset || entry.as_ref() != committed.entries.get(node));
-
         if verify {
             verify_projection(tree, layout, text, scale, &committed, staging);
         }
@@ -314,19 +340,36 @@ impl AccessKitProjector {
     pub(crate) fn commit(&mut self, version: u64) -> Option<Arc<ak::TreeUpdate>> {
         self.staging.root?;
         let mut published = self.publication.0.borrow_mut();
-        let update = Arc::new(published.commit(std::mem::take(&mut self.staging), true)?);
-        published.record_platform_update(version, &update);
-        Some(update)
+        let update = if published.active() && self.staging.baseline == published.tree_id {
+            published.commit(&mut self.staging, true).map(Arc::new)
+        } else {
+            None
+        };
+        if let Some(update) = &update {
+            published.record_platform_update(version, update);
+        }
+        drop(published);
+        self.reset_staging();
+        update
     }
 
-    pub(crate) fn activate(&self, tree: &Tree, layout: &LayoutEngine, text: &TextEngine, scale: f32, verify: bool) {
+    pub(crate) fn activate(&self, tree: &Tree, layout: &LayoutKernel, text: &TextEngine, scale: f32, verify: bool) {
         let mut initial = Self::new(self.publication.clone());
         initial.project(tree, &TreeDelta::default(), layout, text, scale, verify);
-        self.publication.0.borrow_mut().commit(initial.staging, false);
+        if initial.staging.root.is_some() {
+            self.publication.0.borrow_mut().commit(&mut initial.staging, false);
+        }
     }
 
     pub(crate) fn reset_staging(&mut self) {
-        self.staging = Staging::default();
+        let staging = &mut self.staging;
+        staging.discard_patches();
+        staging.dirty.clear();
+        staging.geometry_dirty.clear();
+        staging.scope_dirty.clear();
+        staging.modal_order_dirty = false;
+        staging.root = None;
+        staging.modal = None;
     }
 }
 
@@ -347,12 +390,13 @@ fn modal_scope(tree: &Tree, committed: &Published, staging: &Staging, reset: boo
     }
     if !reset && let Some(previous) = committed.modal.as_ref().filter(|scope| scope.modal == Some(modal)) {
         let exposes = |node| tree.is_accessible_without_modal(node) && tree.is_in_modal_scope(node, modal);
-        let changed_physical_tree = staging.scopes.iter().any(|(&node, next)| {
+        let changed_physical_tree = staging.scopes.undo_keys().any(|node| {
             if previous.exposes(node) != exposes(node) {
                 return true;
             }
             let path = |input: &ScopeInput| (input.parent, input.visible);
-            previous.includes(node) && next.as_ref().map(path) != committed.scopes.get(&node).map(path)
+            let next = staging.scopes.get(node).and_then(Option::as_ref);
+            previous.includes(node) && next.map(path) != committed.scopes.get(node).map(path)
         });
         // A portal may gain or lose an accessible physical path through a branch
         // outside the modal, or change its logical membership through its owner.
@@ -364,25 +408,21 @@ fn modal_scope(tree: &Tree, committed: &Published, staging: &Staging, reset: boo
     Some(Arc::new(tree.semantic_scope_with_modal(Some(modal))))
 }
 
-fn exposure_changes(tree: &Tree, scope: Scope<'_>, reset: bool, committed: &Published, staging: &Staging) -> FxHashSet<NodeId> {
+fn exposure_changes(tree: &Tree, scope: Scope<'_>, reset: bool, committed: &Published, staging: &Staging) -> DirtyBitmap {
     let changed = |node| {
-        let entry = committed.entries.get(&node);
+        let entry = committed.entries.get(node);
         entry.is_some() != scope.includes(node) || entry.is_some_and(|entry| entry.exposed != scope.exposes(node))
     };
     match (staging.modal.as_ref(), committed.modal.as_ref()) {
-        (Some(next), Some(previous)) if Arc::ptr_eq(next, previous) => FxHashSet::default(),
-        (Some(next), _) => committed.entries.keys().copied().chain(next.included()).filter(|&node| reset || changed(node)).collect(),
-        (None, Some(_)) => committed
-            .entries
-            .keys()
-            .copied()
-            .chain(tree.semantic_scope_with_modal(None).included())
-            .filter(|&node| reset || changed(node))
-            .collect(),
-        (None, None) if reset => committed.entries.keys().copied().chain(tree.semantic_scope_with_modal(None).included()).collect(),
+        (Some(next), Some(previous)) if Arc::ptr_eq(next, previous) => DirtyBitmap::default(),
+        (Some(next), _) => committed.entries.keys().chain(next.included()).filter(|&node| reset || changed(node)).collect(),
+        (None, Some(_)) => {
+            committed.entries.keys().chain(tree.semantic_scope_with_modal(None).included()).filter(|&node| reset || changed(node)).collect()
+        }
+        (None, None) if reset => committed.entries.keys().chain(tree.semantic_scope_with_modal(None).included()).collect(),
         (None, None) => {
-            let mut affected = FxHashSet::default();
-            for &node in staging.scopes.keys() {
+            let mut affected = DirtyBitmap::default();
+            for node in staging.scopes.undo_keys() {
                 if affected.contains(&node) || !changed(node) {
                     continue;
                 }
@@ -404,7 +444,7 @@ fn text_selection<'a>([anchor, focus]: DocSelection, entry: impl Fn(NodeId) -> O
 
 #[cold]
 #[inline(never)]
-fn verify_projection(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, scale: f32, committed: &Published, staged: &Staging) {
+fn verify_projection(tree: &Tree, layout: &LayoutKernel, text: &TextEngine, scale: f32, committed: &Published, staged: &Staging) {
     let full = tree.semantic_scope();
     let scope = Scope { tree, modal: Some(&full) };
     let mut reference: FxHashMap<_, _> = full.included().map(|id| (id, build_entry(tree, scope, id, layout, text, scale))).collect();
@@ -419,9 +459,9 @@ fn verify_projection(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, scal
             entry.node.set_text_selection(selection);
         }
     }
-    for &node in reference.keys().chain(committed.entries.keys()).chain(staged.entries.keys()) {
-        let current = staged.entries.get(&node).map_or_else(|| committed.entries.get(&node), Option::as_ref);
-        let patched = staged.geometry.get(&node).map(|geometry| {
+    for node in reference.keys().copied().chain(committed.entries.keys()).chain(staged.entries.undo_keys()) {
+        let current = staged.entry(committed, node);
+        let patched = staged.geometry.get(node).map(|geometry| {
             let mut entry = current.expect("geometry patch has a committed entry").clone();
             geometry.apply(&mut entry.node);
             entry.geometry = *geometry;
@@ -433,7 +473,7 @@ fn verify_projection(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, scal
     assert_eq!(staged.focus, Some(scope.focus()), "incremental AccessKit focus diverged");
 }
 
-fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutEngine, text: &TextEngine, scale: f32) -> Entry {
+fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutKernel, text: &TextEngine, scale: f32) -> Entry {
     let core = tree.node(id).expect("scope contains allocated node");
     let semantics = tree.semantics(id);
     let exposed = scope.exposes(id);

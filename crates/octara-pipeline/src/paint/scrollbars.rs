@@ -1,5 +1,6 @@
 use super::{CompileOptions, next_frame};
-use crate::layout::LayoutEngine;
+use crate::layout::LayoutKernel;
+use crate::projected::DenseProjected;
 use octara_model::{
     geometry::{Point, Rect, Vec2},
     paint::{Item, Part, Quad, ScrollPlacement, ScrollbarPlacement},
@@ -7,10 +8,10 @@ use octara_model::{
     theme::{Color, ColorToken},
 };
 use octara_tree::{
-    DirtyBitmap, NodeFlags, NodeId, Tree,
+    DirtyBitmap, NodeFlags, NodeId, RetiredNode, Tree, TreeDelta,
     arbiter::{ScrollbarAxis, ScrollbarHit, ScrollbarKey, ScrollbarPart},
 };
-use rustc_hash::FxHashMap;
+use rustc_hash::FxHashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,18 +26,19 @@ const ENGAGED_OPACITY: f32 = 0.8;
 
 type Interaction = (Option<ScrollbarKey>, Option<ScrollbarKey>);
 
-#[derive(Clone, Default)]
-struct State {
-    interaction: Interaction,
-    last_activity: FxHashMap<NodeId, f64>,
-    opacity: FxHashMap<NodeId, f32>,
+#[derive(Clone, Copy, PartialEq)]
+struct Activity {
+    time: f64,
+    opacity: f32,
 }
 
 #[derive(Default)]
 pub(super) struct Scrollbars {
     interaction: Interaction,
-    state: State,
-    previous: Option<State>,
+    projected: Interaction,
+    previous: Option<Interaction>,
+    activity: DenseProjected<Activity>,
+    active: FxHashSet<NodeId>,
 }
 
 impl Scrollbars {
@@ -48,28 +50,38 @@ impl Scrollbars {
     pub(super) fn step(
         &mut self,
         tree: &Tree,
-        layout: &LayoutEngine,
+        delta: &TreeDelta,
+        layout: &LayoutKernel,
         options: &CompileOptions<'_>,
         local: &mut DirtyBitmap,
     ) -> Option<Duration> {
-        self.previous.get_or_insert_with(|| self.state.clone());
-        let State { interaction, last_activity, opacity } = &mut self.state;
-        let highlighted = |(hovered, dragged): Interaction| hovered.into_iter().chain(dragged);
-        if *interaction != self.interaction {
-            for key in highlighted(*interaction).chain(highlighted(self.interaction)) {
-                local.insert(key.node);
-                last_activity.insert(key.node, options.now);
+        self.previous.get_or_insert(self.projected);
+        self.activity.begin();
+        for &retired in &delta.retired {
+            if let RetiredNode::Destroyed(node) = retired {
+                self.activity.remove(node);
+                self.active.remove(&node);
             }
-            *interaction = self.interaction;
+        }
+        let highlighted = |(hovered, dragged): Interaction| hovered.into_iter().chain(dragged);
+        if self.projected != self.interaction {
+            for key in highlighted(self.projected).chain(highlighted(self.interaction)) {
+                local.insert(key.node);
+                if tree.node(key.node).is_some() {
+                    self.mark_activity(key.node, options.now);
+                }
+            }
+            self.projected = self.interaction;
         }
         for node in layout.scroll_changed().iter() {
-            if tree.visual(node).scrollbar == ScrollbarVisibility::Auto {
-                last_activity.insert(node, options.now);
+            if tree.node(node).is_some() && tree.visual(node).scrollbar == ScrollbarVisibility::Auto {
+                self.mark_activity(node, options.now);
             }
         }
         let mut next_deadline = None;
-        last_activity.retain(|&node, activity| {
-            let engaged = highlighted(*interaction).any(|key| key.node == node);
+        self.active.retain(|&node| {
+            let Some(activity) = self.activity.get(node).copied() else { return false };
+            let engaged = highlighted(self.projected).any(|key| key.node == node);
             let visible = tree.is_shown(node)
                 && tree.visual(node).scrollbar == ScrollbarVisibility::Auto
                 && layout.scroll_range(node).is_some_and(|range| range.max.x > 0.0 || range.max.y > 0.0);
@@ -78,7 +90,7 @@ impl Scrollbars {
             } else if engaged {
                 OPACITY
             } else {
-                let start = *activity + IDLE;
+                let start = activity.time + IDLE;
                 let end = start + if options.reduced_motion { 0.0 } else { FADE };
                 let deadline = if options.now < start {
                     Some(Duration::from_secs_f64(start))
@@ -96,30 +108,37 @@ impl Scrollbars {
                     0.0
                 }
             };
-            let previous = if alpha > 0.0 { opacity.insert(node, alpha) } else { opacity.remove(&node) };
-            if previous.unwrap_or_default() != alpha {
+            if activity.opacity != alpha {
                 local.insert(node);
             }
-            visible && alpha > 0.0
+            let active = visible && alpha > 0.0;
+            self.activity.set(node, active.then_some(Activity { opacity: alpha, ..activity }));
+            active
         });
         next_deadline
+    }
+
+    fn mark_activity(&mut self, node: NodeId, time: f64) {
+        let opacity = self.activity.get(node).map_or(0.0, |activity| activity.opacity);
+        self.activity.set(node, Some(Activity { time, opacity }));
+        self.active.insert(node);
     }
 
     pub(super) fn placements(
         &self,
         tree: &Tree,
-        layout: &LayoutEngine,
+        layout: &LayoutKernel,
         node: NodeId,
         previous: Option<&ScrollPlacement>,
     ) -> [Option<ScrollbarPlacement>; 2] {
         let opacity = match tree.visual(node).scrollbar {
-            ScrollbarVisibility::Auto => self.state.opacity.get(&node).copied().unwrap_or_default(),
+            ScrollbarVisibility::Auto => self.activity.get(node).map_or(0.0, |activity| activity.opacity),
             ScrollbarVisibility::Always => OPACITY,
             ScrollbarVisibility::Hidden => 0.0,
         };
         let Some(bounds) = layout.paint_bounds(node).filter(|_| opacity > 0.0) else { return [None, None] };
         let Some(client) = layout.local_client(node) else { return [None, None] };
-        let (hovered, dragged) = self.state.interaction;
+        let (hovered, dragged) = self.projected;
         let mut placements = [None, None];
         let client = Rect::new(bounds.x + client.x, bounds.y + client.y, client.w, client.h);
         for bar in bars(layout, node, Some(client)) {
@@ -146,11 +165,21 @@ impl Scrollbars {
 
     pub(super) fn commit(&mut self) {
         self.previous = None;
+        self.activity.commit();
     }
 
     pub(super) fn rollback(&mut self) {
         if let Some(previous) = self.previous.take() {
-            self.state = previous;
+            self.projected = previous;
+            let changed: Vec<_> = self.activity.undo_keys().collect();
+            self.activity.rollback();
+            for node in changed {
+                if self.activity.contains_key(node) {
+                    self.active.insert(node);
+                } else {
+                    self.active.remove(&node);
+                }
+            }
         }
     }
 }
@@ -164,7 +193,7 @@ struct Bar {
     scale: f32,
 }
 
-pub(super) fn hit(tree: &Tree, layout: &LayoutEngine, node: NodeId, pos: Point) -> Option<ScrollbarHit> {
+pub(super) fn hit(tree: &Tree, layout: &LayoutKernel, node: NodeId, pos: Point) -> Option<ScrollbarHit> {
     if tree.visual(node).scrollbar == ScrollbarVisibility::Hidden
         || tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::POINTER_EVENTS_NONE))
         || !tree.is_interactive(node)
@@ -189,7 +218,7 @@ pub(super) fn hit(tree: &Tree, layout: &LayoutEngine, node: NodeId, pos: Point) 
     })
 }
 
-fn bars(layout: &LayoutEngine, node: NodeId, client: Option<Rect>) -> impl Iterator<Item = Bar> {
+fn bars(layout: &LayoutKernel, node: NodeId, client: Option<Rect>) -> impl Iterator<Item = Bar> {
     let port = client.zip(layout.scroll_range(node));
     [ScrollbarAxis::Vertical, ScrollbarAxis::Horizontal].into_iter().filter_map(move |axis| {
         let (client, range) = port?;

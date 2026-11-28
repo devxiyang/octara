@@ -2,11 +2,14 @@
 
 mod scene;
 mod scrollbars;
+#[cfg(test)]
+mod tests;
 pub use scene::PaintScene;
 
 use crate::frame_arena::FrameArena;
-use crate::layout::LayoutEngine;
+use crate::layout::LayoutKernel;
 use crate::motion::{MotionOptions, NodeMotion, TargetMotion, next_frame};
+use crate::projected::DenseProjected;
 use crate::text::{PaintKey, TextEngine};
 use octara_model::geometry::{LayoutBox, Point, Rect, Size, Vec2, WindowViewport};
 use octara_model::image::MediaAsset;
@@ -22,8 +25,9 @@ use octara_model::text::{InlineAttachment, InlineContent};
 use octara_model::theme::{BoxShadow, Color, ColorToken, Fill, Gradient};
 use octara_tree::{DirtyBitmap, ExitTicket, NodeFlags, NodeId, RetiredNode, Tree, TreeDelta};
 use rustc_hash::{FxHashMap, FxHashSet};
-use scene::{ChildList, Element, ExitGhost, PaintNode, Translation};
+use scene::{ChildList, Element, ExitGhost, ExitScope, PaintNode, Scope, Translation};
 use scrollbars::Scrollbars;
+use slotmap::SecondaryMap;
 use smallvec::SmallVec;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -175,27 +179,23 @@ struct RetainedNode {
     images: ImageVersions,
 }
 
-#[derive(Default)]
 struct Stage {
-    nodes: FxHashMap<NodeId, Option<RetainedNode>>,
     scrolls: ScrollPlacements,
-    ghosts: FxHashMap<NodeId, Option<Arc<ExitGhost>>>,
-    drawings: FxHashMap<NodeId, Rc<Drawing>>,
-    destroyed: FxHashSet<NodeId>,
     blink: Option<Blink>,
     window_active: bool,
     image_generation: u64,
     reduced_motion: bool,
-    native_snapshots: FxHashMap<NodeId, Sample>,
+    native_snapshots: Rc<FxHashMap<NodeId, Sample>>,
 }
 
 #[derive(Default)]
 pub(crate) struct PaintCompiler {
     scrollbars: Scrollbars,
     scrolls: ScrollPlacements,
-    cache: FxHashMap<NodeId, DrawingCache>,
-    nodes: FxHashMap<NodeId, RetainedNode>,
-    ghosts: FxHashMap<NodeId, Arc<ExitGhost>>,
+    cache: SecondaryMap<NodeId, DrawingCache>,
+    drawings: DenseProjected<Option<Rc<Drawing>>>,
+    nodes: DenseProjected<RetainedNode>,
+    ghosts: DenseProjected<Arc<ExitGhost>>,
     image_nodes: FxHashSet<NodeId>,
     translation_nodes: FxHashSet<NodeId>,
     stage: Option<Stage>,
@@ -207,10 +207,11 @@ pub(crate) struct PaintCompiler {
     local_dirty: DirtyBitmap,
     branch_dirty: DirtyBitmap,
     scroll_dirty: DirtyBitmap,
+    changed_children: SecondaryMap<NodeId, SmallVec<[NodeId; 4]>>,
     finished_exits: FrameArena<ExitTicket>,
     last_scene: Option<Arc<PaintScene>>,
     resting_draw: Option<Arc<DisplayList>>,
-    native_snapshots: FxHashMap<NodeId, Sample>,
+    native_snapshots: Rc<FxHashMap<NodeId, Sample>>,
 }
 
 pub(crate) struct PaintFrame {
@@ -235,11 +236,14 @@ impl PaintCompiler {
         &mut self,
         tree: &Tree,
         delta: &TreeDelta,
-        layout: &LayoutEngine,
+        layout: &LayoutKernel,
         text: &mut TextEngine,
         options: CompileOptions<'_>,
     ) -> PaintFrame {
         if self.stage.is_none() {
+            self.nodes.begin();
+            self.ghosts.begin();
+            self.drawings.begin();
             self.stage = Some(Stage {
                 blink: self.blink,
                 scrolls: self.scrolls.clone(),
@@ -247,7 +251,6 @@ impl PaintCompiler {
                 image_generation: self.image_generation,
                 reduced_motion: self.reduced_motion,
                 native_snapshots: self.native_snapshots.clone(),
-                ..Stage::default()
             });
         }
 
@@ -256,18 +259,18 @@ impl PaintCompiler {
         local.union_with(layout.changed());
         local.union_with(text.changed());
         local.extend(delta.created.iter().copied());
-        if self.native_snapshots != *options.native_snapshots {
+        if self.native_snapshots.as_ref() != options.native_snapshots {
             local.extend(
                 self.native_snapshots
                     .keys()
                     .chain(options.native_snapshots.keys())
                     .filter_map(|&node| (self.native_snapshots.get(&node) != options.native_snapshots.get(&node)).then_some(node)),
             );
-            self.native_snapshots.clone_from(options.native_snapshots);
+            self.native_snapshots = Rc::new(options.native_snapshots.clone());
         }
         let mut scroll_updates = std::mem::take(&mut self.scroll_dirty);
         scroll_updates.union_with(layout.scroll_changed());
-        let scrollbar_deadline = self.scrollbars.step(tree, layout, &options, &mut scroll_updates);
+        let scrollbar_deadline = self.scrollbars.step(tree, delta, layout, &options, &mut scroll_updates);
         if self.window_active != options.window_active {
             self.window_active = options.window_active;
             let regions: FxHashSet<_> = tree.selection_endpoints().filter_map(|node| tree.region_of(node)).collect();
@@ -283,23 +286,23 @@ impl PaintCompiler {
             local.extend(tree.text_reveals().map(|(node, _)| node));
         }
         if cancel_active_motion {
-            local.extend(self.nodes.iter().filter_map(|(&node, entry)| {
+            local.extend(self.nodes.iter().filter_map(|(node, entry)| {
                 entry.motion.as_ref().and_then(|motion| motion.rest_at()).is_some_and(|rest| rest > options.now).then_some(node)
             }));
         }
         let mut replies = Vec::new();
-        let mut independent: FxHashSet<_> = self.ghosts.keys().copied().collect();
-        independent.extend(delta.retired.iter().filter_map(|retired| match *retired {
+        let exiting = delta.retired.iter().filter_map(|retired| match *retired {
             RetiredNode::Exiting { ticket, .. } if tree.accepts_exit(ticket) => Some(ticket.node),
             _ => None,
-        }));
+        });
+        let independent = if exiting.clone().next().is_some() { self.ghosts.keys().chain(exiting).collect() } else { FxHashSet::default() };
         for &retired in &delta.retired {
             match retired {
                 RetiredNode::Destroyed(node) => {
                     self.set_node(node, None);
-                    self.set_ghost(node, None);
+                    self.ghosts.remove(node);
                     scroll_updates.insert(node);
-                    self.stage.as_mut().expect("open stage").destroyed.insert(node);
+                    self.drawings.insert(node, None);
                 }
                 RetiredNode::Exiting { ticket, visible } if tree.accepts_exit(ticket) => {
                     let node = ticket.node;
@@ -307,7 +310,7 @@ impl PaintCompiler {
                     if !options.reduced_motion
                         && let Some(ghost) = self.capture_exit(tree, ticket, visible, options.now, &independent)
                     {
-                        self.set_ghost(node, Some(Arc::new(ghost)));
+                        self.ghosts.insert(node, Arc::new(ghost));
                     } else {
                         replies.push(HostReply::ExitFinished(ticket));
                     }
@@ -316,14 +319,16 @@ impl PaintCompiler {
             }
         }
         let mut finished = std::mem::take(&mut self.finished_exits);
-        for ghost in self.ghosts.values() {
-            if options.reduced_motion || !ghost.opacity.moving(options.now) || !tree.accepts_exit(ghost.ticket) {
-                finished.push(ghost.ticket);
+        if !self.ghosts.is_empty() {
+            for (_, ghost) in self.ghosts.iter() {
+                if options.reduced_motion || !ghost.opacity.moving(options.now) || !tree.accepts_exit(ghost.ticket) {
+                    finished.push(ghost.ticket);
+                }
             }
         }
         finished.used().sort_unstable_by_key(|ticket| ticket.node);
         for &ticket in finished.used().iter() {
-            self.set_ghost(ticket.node, None);
+            self.ghosts.remove(ticket.node);
             local.insert(ticket.node);
             if tree.accepts_exit(ticket) {
                 replies.push(HostReply::ExitFinished(ticket));
@@ -346,7 +351,7 @@ impl PaintCompiler {
         if self.image_generation != image_generation {
             self.image_generation = image_generation;
             for &node in &self.image_nodes {
-                if !local.contains(&node) && self.nodes[&node].images != image_versions(tree, node) {
+                if !local.contains(&node) && self.nodes.get(node).is_some_and(|entry| entry.images != image_versions(tree, node)) {
                     local.insert(node);
                 }
             }
@@ -368,20 +373,19 @@ impl PaintCompiler {
         scroll_updates.clear();
         self.scroll_dirty = scroll_updates;
         let mut branches = std::mem::take(&mut self.branch_dirty);
-        let mut changed_children = FxHashMap::<NodeId, SmallVec<[NodeId; 4]>>::default();
         for node in local.iter().chain(delta.topology_dirty.iter()) {
             let mut ancestor = Some(node);
             while let Some(id) = ancestor.filter(|&id| branches.insert(id)) {
                 ancestor = tree.physical_parent(id);
                 if let Some(parent) = ancestor {
-                    changed_children.entry(parent).or_default().push(id);
+                    self.changed_children.entry(parent).expect("physical parent is allocated").or_default().push(id);
                 }
             }
         }
         // A hidden parent can stop descent before the compiler reaches its previous children.
         // Clear their scene slots so a subsequent retirement cannot capture a stale drawing.
         for node in local.iter() {
-            if !self.ghosts.contains_key(&node) && (!tree.is_live(node) || layout.bounds(node).is_none()) {
+            if !self.ghosts.contains_key(node) && (!tree.is_live(node) || layout.bounds(node).is_none()) {
                 self.hide_node(node);
             }
         }
@@ -394,7 +398,6 @@ impl PaintCompiler {
             options: &options,
             local,
             branches,
-            changed_children,
             topology_dirty: &delta.topology_dirty,
             immediate_layout: !delta.scroll_dirty.is_empty() || !layout.scroll_changed().is_empty(),
             cancel_active_motion,
@@ -413,7 +416,14 @@ impl PaintCompiler {
                 .as_ref()
                 .filter(|previous| root.as_ref().zip(previous.root.as_ref()).is_some_and(|(a, b)| Arc::ptr_eq(a, b)))
                 .map_or_else(|| compile.owner.translations(options.now), |previous| previous.translations.clone());
-            let scene = Arc::new(PaintScene { size, background, root, scrolls: compile.owner.scrolls.clone(), translations });
+            let scene = Arc::new(PaintScene::new(
+                size,
+                background,
+                root,
+                compile.owner.scrolls.clone(),
+                translations,
+                compile.owner.last_scene.as_deref(),
+            ));
             compile.owner.last_scene = Some(scene.clone());
             compile.owner.resting_draw = None;
             scene
@@ -434,6 +444,9 @@ impl PaintCompiler {
             Duration::from_secs_f64(next)
         });
         let next_deadline = moves.then(|| next_frame(options.now)).into_iter().chain(blink).chain(scrollbar_deadline).min();
+        for node in compile.branches.iter() {
+            compile.owner.changed_children.remove(node);
+        }
         compile.local.clear();
         compile.branches.clear();
         compile.owner.local_dirty = compile.local;
@@ -442,7 +455,7 @@ impl PaintCompiler {
     }
 
     fn hide_node(&mut self, node: NodeId) {
-        if let Some(current) = self.nodes.get(&node).filter(|current| current.scene.is_some()) {
+        if let Some(current) = self.nodes.get(node).filter(|current| current.scene.is_some()) {
             let retained = current.motion.as_ref().map(|track| RetainedNode { motion: Some(track.clone()), ..RetainedNode::default() });
             self.set_node(node, retained);
         }
@@ -457,21 +470,26 @@ impl PaintCompiler {
         independent: &FxHashSet<NodeId>,
     ) -> Option<ExitGhost> {
         let node = ticket.node;
-        let snapshot = self.nodes.get(&node)?.scene.as_ref()?;
+        let snapshot = self.nodes.get(node)?.scene.as_ref()?;
         let element = snapshot.element.as_ref()?;
         let bounds = element.motion.as_ref().map_or(element.bounds, |track| track.bounds(now));
         let mut retiring = Vec::new();
         let mut ancestors = SmallVec::<[_; 8]>::new();
         let mut inherited_opacity = 1.0_f64;
+        let mut scope = snapshot.scope;
+        let mut live_scope = snapshot.scope;
         for parent in std::iter::successors(tree.physical_parent(node), |&parent| tree.physical_parent(parent)) {
-            let ancestor = self.nodes.get(&parent)?.scene.as_ref()?.element.as_ref()?;
+            let ancestor = self.nodes.get(parent)?.scene.as_ref()?.element.as_ref()?;
             let opacity = ancestor.motion.as_ref().map_or(ancestor.visual, |track| track.visual(now)).opacity;
             if opacity <= 0.0 {
                 return None;
             }
-            let offset = self.scrolls.get(parent).map_or(Vec2::default(), |placement| placement.offset);
-            let clip = ancestor.clip_at(now);
+            let (clips, scrolls) = ancestor.take_scope(&mut scope);
+            let offset =
+                if scrolls { self.scrolls.get(parent).map_or(Vec2::default(), |placement| placement.offset) } else { Vec2::default() };
+            let clip = if clips || parent == tree.root() || parent == tree.overlay_root() { ancestor.clip_at(now) } else { None };
             if !tree.is_live(parent) {
+                ancestor.take_scope(&mut live_scope);
                 inherited_opacity *= f64::from(opacity.min(1.0));
                 retiring.push((parent, clip.clone(), offset));
             }
@@ -504,12 +522,16 @@ impl PaintCompiler {
         if !opacity.moving(now) {
             return None;
         }
-        ExitGhost::capture(ticket, snapshot, now, opacity, independent, &retiring, &self.scrolls)
+        ExitGhost::capture(ticket, snapshot, now, opacity, independent, ExitScope { live: live_scope, retiring: &retiring }, &self.scrolls)
     }
 
     fn set_node(&mut self, node: NodeId, next: Option<RetainedNode>) {
-        let previous = self.replace_node(node, next);
-        self.stage.as_mut().expect("open stage").nodes.entry(node).or_insert(previous);
+        Self::index_node(&mut self.image_nodes, &mut self.translation_nodes, node, next.as_ref());
+        if let Some(next) = next {
+            self.nodes.insert(node, next);
+        } else {
+            self.nodes.remove(node);
+        }
     }
 
     fn translations(&self, now: f64) -> Arc<[Translation]> {
@@ -517,7 +539,7 @@ impl PaintCompiler {
             .translation_nodes
             .iter()
             .filter_map(|&node| {
-                let motion = self.nodes.get(&node)?.motion.as_ref()?;
+                let motion = self.nodes.get(node)?.motion.as_ref()?;
                 let until = motion.rest_at().filter(|&rest| rest > now)?;
                 Some(Translation { node, target: motion.bounds(f64::INFINITY), motion: motion.clone(), until })
             })
@@ -526,55 +548,51 @@ impl PaintCompiler {
         translations.into()
     }
 
-    fn replace_node(&mut self, node: NodeId, next: Option<RetainedNode>) -> Option<RetainedNode> {
-        if next.as_ref().and_then(|node| node.scene.as_ref()).is_some_and(|scene| scene.translates) {
-            self.translation_nodes.insert(node);
+    fn index_node(
+        image_nodes: &mut FxHashSet<NodeId>,
+        translation_nodes: &mut FxHashSet<NodeId>,
+        node: NodeId,
+        entry: Option<&RetainedNode>,
+    ) {
+        if entry.and_then(|entry| entry.scene.as_ref()).is_some_and(|scene| scene.translates) {
+            translation_nodes.insert(node);
         } else {
-            self.translation_nodes.remove(&node);
+            translation_nodes.remove(&node);
         }
-        if let Some(next) = next {
-            if next.images.is_empty() {
-                self.image_nodes.remove(&node);
-            } else {
-                self.image_nodes.insert(node);
-            }
-            self.nodes.insert(node, next)
+        if entry.is_some_and(|entry| !entry.images.is_empty()) {
+            image_nodes.insert(node);
         } else {
-            self.image_nodes.remove(&node);
-            self.nodes.remove(&node)
+            image_nodes.remove(&node);
         }
-    }
-
-    fn set_ghost(&mut self, node: NodeId, ghost: Option<Arc<ExitGhost>>) {
-        let previous = if let Some(ghost) = ghost { self.ghosts.insert(node, ghost) } else { self.ghosts.remove(&node) };
-        self.stage.as_mut().expect("open stage").ghosts.entry(node).or_insert(previous);
     }
 
     pub(crate) fn commit(&mut self) {
         self.scrollbars.commit();
-        if let Some(stage) = self.stage.take() {
-            for (node, drawing) in stage.drawings {
-                self.cache.insert(node, DrawingCache { settled: Some(drawing), completed: None });
+        if self.stage.take().is_some() {
+            for node in self.drawings.undo_keys() {
+                if let Some(drawing) = self.drawings.get(node).and_then(Option::as_ref) {
+                    self.cache.insert(node, DrawingCache { settled: Some(drawing.clone()), completed: None });
+                } else {
+                    self.cache.remove(node);
+                }
             }
-            for node in stage.destroyed {
-                self.cache.remove(&node);
-            }
+            self.drawings.rollback();
+            self.nodes.commit();
+            self.ghosts.commit();
         }
     }
 
     pub(crate) fn rollback(&mut self) {
         self.scrollbars.rollback();
         let Some(stage) = self.stage.take() else { return };
-        for (node, previous) in stage.nodes {
-            self.replace_node(node, previous);
+        self.local_dirty.extend(self.nodes.undo_keys());
+        self.nodes.rollback();
+        for node in self.local_dirty.iter() {
+            Self::index_node(&mut self.image_nodes, &mut self.translation_nodes, node, self.nodes.get(node));
         }
-        for (node, previous) in stage.ghosts {
-            if let Some(previous) = previous {
-                self.ghosts.insert(node, previous);
-            } else {
-                self.ghosts.remove(&node);
-            }
-        }
+        self.local_dirty.clear();
+        self.ghosts.rollback();
+        self.drawings.rollback();
         self.scrolls = stage.scrolls;
         self.blink = stage.blink;
         self.window_active = stage.window_active;
@@ -591,7 +609,7 @@ impl PaintCompiler {
     pub(crate) fn scrollbar_hit(
         &self,
         tree: &Tree,
-        layout: &LayoutEngine,
+        layout: &LayoutKernel,
         node: NodeId,
         position: Point,
     ) -> Option<octara_tree::arbiter::ScrollbarHit> {
@@ -614,12 +632,11 @@ impl PaintCompiler {
 struct Compile<'a> {
     owner: &'a mut PaintCompiler,
     tree: &'a Tree,
-    layout: &'a LayoutEngine,
+    layout: &'a LayoutKernel,
     text: &'a mut TextEngine,
     options: &'a CompileOptions<'a>,
     local: DirtyBitmap,
     branches: DirtyBitmap,
-    changed_children: FxHashMap<NodeId, SmallVec<[NodeId; 4]>>,
     topology_dirty: &'a DirtyBitmap,
     immediate_layout: bool,
     cancel_active_motion: bool,
@@ -627,15 +644,17 @@ struct Compile<'a> {
 
 impl Compile<'_> {
     fn node(&mut self, node: NodeId) -> Option<Arc<PaintNode>> {
-        let previous = self.owner.nodes.get(&node);
+        let previous = self.owner.nodes.get(node);
         if !self.branches.contains(&node) {
             return previous.and_then(|entry| entry.scene.clone());
         }
         let result = if self.tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::EXITING)) {
-            let ghost = self.owner.ghosts.get(&node).cloned();
-            let previous_children = previous.and_then(|entry| entry.scene.as_ref()).map(|scene| scene.children.clone());
+            let ghost = self.owner.ghosts.get(node).cloned();
+            let previous_scene = previous.and_then(|entry| entry.scene.as_ref());
+            let scope = ghost.as_ref().map_or_else(|| previous_scene.map_or_else(Scope::default, |scene| scene.scope), |ghost| ghost.scope);
+            let previous_children = previous_scene.map(|scene| scene.children.clone());
             let children = self.children(node, previous_children);
-            RetainedNode { scene: Some(Arc::new(PaintNode::ghost(ghost, children))), ..RetainedNode::default() }
+            RetainedNode { scene: Some(Arc::new(PaintNode::ghost(ghost, children, scope))), ..RetainedNode::default() }
         } else {
             let previous_scene = previous.and_then(|entry| entry.scene.as_ref());
             let previous_children = previous_scene.map(|scene| scene.children.clone());
@@ -665,10 +684,10 @@ impl Compile<'_> {
                 let key = self.draw_key(node, visual, local, &samples);
                 self.owner.metrics.draw_keys_evaluated = self.owner.metrics.draw_keys_evaluated.saturating_add(1);
                 let images = key.images.clone();
-                let drawing = self.owner.cache.get(&node).and_then(|entry| entry.get(&key)).unwrap_or_else(|| {
+                let drawing = self.owner.cache.get(node).and_then(|entry| entry.get(&key)).unwrap_or_else(|| {
                     let drawing = Rc::new(self.drawing(node, key, samples));
                     self.owner.metrics.drawings_compiled = self.owner.metrics.drawings_compiled.saturating_add(1);
-                    self.owner.cache.entry(node).or_default().completed = Some(drawing.clone());
+                    self.owner.cache.entry(node).expect("shown paint node").or_default().completed = Some(drawing.clone());
                     drawing
                 });
                 let reveal = self
@@ -680,7 +699,7 @@ impl Compile<'_> {
                 let mut element = self.element(node, bounds, visual, &drawing, motion);
                 element.reveal = reveal;
                 element.reveal_tint = reveal.and_then(TextRevealTrack::tint).map(|color| color.resolve(self.tree.theme_at(node)).0);
-                self.owner.stage.as_mut().expect("open stage").drawings.insert(node, drawing);
+                self.owner.drawings.insert(node, Some(drawing));
                 (Arc::new(element), images)
             };
             let motion = element.motion.clone();
@@ -703,7 +722,7 @@ impl Compile<'_> {
 
     fn children(&mut self, node: NodeId, previous: Option<ChildList>) -> ChildList {
         let children = self.tree.children(node);
-        let dirty = self.changed_children.remove(&node).unwrap_or_default();
+        let dirty = self.owner.changed_children.remove(node).unwrap_or_default();
         let height = (usize::BITS - children.len().leading_zeros()) as usize;
         let sparse = dirty.is_empty() || dirty.len().saturating_mul(height) < children.len();
         let mut rebuilt = 0;
@@ -730,35 +749,31 @@ impl Compile<'_> {
     fn verify_draw(&mut self, draw: &DisplayList, size: Size, background: Color, image_generation: u64) {
         let root = self.uncached_node(self.tree.root());
         if image_generation == Image::pixel_generation() {
-            let scene = PaintScene {
-                root,
-                size,
-                background,
-                scrolls: self.owner.scrolls.clone(),
-                translations: self.owner.translations(self.options.now),
-            };
+            let scene =
+                PaintScene::new(size, background, root, self.owner.scrolls.clone(), self.owner.translations(self.options.now), None);
             assert_eq!(draw.items(), scene.sample(self.options.now).items(), "incremental paint projection diverged");
         }
     }
 
     fn uncached_node(&mut self, node: NodeId) -> Option<Arc<PaintNode>> {
         if self.tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::EXITING)) {
-            let ghost = self.owner.ghosts.get(&node).cloned();
+            let ghost = self.owner.ghosts.get(node).cloned();
+            let scope = self.owner.nodes.get(node).and_then(|entry| entry.scene.as_ref()).map_or_else(Scope::default, |scene| scene.scope);
             let children = self.uncached_children(node);
-            return Some(Arc::new(PaintNode::ghost(ghost, children)));
+            return Some(Arc::new(PaintNode::ghost(ghost, children, scope)));
         }
         let (bounds, local) = self.geometry(node)?;
         let visual = self.tree.visual(node);
         let samples = image_samples(self.tree, node);
         let drawing = self.drawing(node, self.draw_key(node, visual, local, &samples), samples);
-        let motion = self.owner.nodes.get(&node).and_then(|entry| entry.motion.clone());
+        let motion = self.owner.nodes.get(node).and_then(|entry| entry.motion.clone());
         let mut element = self.element(node, bounds, visual, &drawing, motion);
-        if let Some(sample) = self.owner.nodes.get(&node).and_then(|entry| entry.scene.as_ref()?.element.as_ref()) {
+        if let Some(sample) = self.owner.nodes.get(node).and_then(|entry| entry.scene.as_ref()?.element.as_ref()) {
             element.reveal = sample.reveal;
             element.reveal_tint = sample.reveal_tint;
         }
         let children = self.uncached_children(node);
-        let translates = self.owner.nodes.get(&node).and_then(|node| node.scene.as_ref()).is_some_and(|scene| scene.translates);
+        let translates = self.owner.nodes.get(node).and_then(|node| node.scene.as_ref()).is_some_and(|scene| scene.translates);
         Some(Arc::new(PaintNode::element(Arc::new(element), children, translates)))
     }
 
@@ -822,14 +837,20 @@ impl Compile<'_> {
             let rect = Rect::new(bounds.x + local.x, bounds.y + local.y, local.w, local.h);
             Some((Item::Quad(solid(node, rect, visual.text)), start))
         });
+        // Layout resolves overflow and paint containment into a single clip in client coordinates.
+        let axes = self.layout.clip_axes(node);
+        let child_clip = self
+            .layout
+            .local_client(node)
+            .filter(|_| axes != [false; 2])
+            .map(|client| (Rect::new(bounds.x + client.x, bounds.y + client.y, client.w, client.h), axes));
         Element {
             source: node,
             bounds,
-            child_clip: self.layout.local_client(node).and_then(|client| {
-                let axes = self.layout.clip_axes(node);
-                (axes != [false; 2]).then(|| (Rect::new(bounds.x + client.x, bounds.y + client.y, client.w, client.h), axes))
-            }),
+            child_clip,
             scroll: self.layout.scroll_range(node).is_some(),
+            scope: Scope { clip: self.layout.clip_ancestor(node), scroll: self.layout.scroll_ancestor(node) },
+            overlay_root: node == self.tree.overlay_root(),
             visual,
             decoration: drawing.decoration.clone(),
             own: drawing.items.clone(),

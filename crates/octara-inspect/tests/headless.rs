@@ -39,7 +39,10 @@ use octara_model::{
 use octara_pipeline::NativeEngineConfig;
 
 fn driver() -> HeadlessDriver {
-    HeadlessDriver::with_namespace([11, 29], NativeEngineConfig { check_paint_cache: true, check_a11y_cache: true, ..Default::default() })
+    HeadlessDriver::with_namespace(
+        [11, 29],
+        NativeEngineConfig { check_layout_cache: true, check_paint_cache: true, check_a11y_cache: true, ..Default::default() },
+    )
 }
 
 fn options() -> WindowOptions {

@@ -45,7 +45,7 @@ fn scroll_anchoring_keeps_window_bounds_stable_in_the_layout_that_moves_the_chil
     let hidden = receipt.node(hidden).unwrap();
     let anchor = receipt.node(anchor).unwrap();
     let viewport = WindowViewport { size: Size::new(200.0, 200.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-    let mut layout = LayoutEngine::default();
+    let mut layout = LayoutKernel::default();
     let mut text = TextEngine::new(false);
     delta.merge(tree.apply_runtime(RuntimeOp::RequestScroll { node: port, target: Vec2::new(0.0, 90.0) }));
     for update in layout.project(&tree, &delta, viewport, &mut text) {
@@ -106,7 +106,7 @@ fn initial_keyboard_focus_reveals_an_inline_link_before_link_projection() {
     let link = tree.children(receipt.node(label).unwrap())[0];
     delta.merge(tree.apply_runtime(RuntimeOp::SetFocus { node: Some(link), visible: true }));
     let viewport = WindowViewport { size: Size::new(200.0, 200.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-    let mut layout = LayoutEngine::default();
+    let mut layout = LayoutKernel::default();
     let mut text = TextEngine::new(false);
     assert!(layout.bounds(link).is_none());
     layout.project(&tree, &delta, viewport, &mut text);
@@ -184,7 +184,7 @@ fn scroll_moves_links_lazily_and_projects_dependent_anchors() {
     let second = receipt.node(second).unwrap();
     let idle = receipt.node(idle).unwrap();
     let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-    let mut layout = LayoutEngine::default();
+    let mut layout = LayoutKernel::default();
     let mut text = TextEngine::new(false);
     for update in layout.project(&tree, &delta, viewport, &mut text) {
         tree.apply_runtime(update);
@@ -247,7 +247,7 @@ fn aborted_topology_restores_projected_geometry_and_reuses_taffy() {
     let existing = receipt.node(existing).unwrap();
     let retired = receipt.node(retired).unwrap();
     let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-    let mut layout = LayoutEngine::default();
+    let mut layout = LayoutKernel::default();
     let mut text = TextEngine::new(false);
     layout.project(&tree, &delta, viewport, &mut text);
     layout.commit_stage();
@@ -267,7 +267,7 @@ fn aborted_topology_restores_projected_geometry_and_reuses_taffy() {
     layout.project(&tree, &delta, viewport, &mut text);
     let staged = layout.bounds(existing).unwrap();
     let computes = layout.work().computes;
-    assert_eq!(layout.taffy.total_node_count(), tree.nodes().count());
+    assert_eq!(layout.meta.len(), tree.nodes().count());
     assert!(staged.y > committed.y);
     assert!(layout.bounds(created).is_some());
     layout.rollback_stage();
@@ -280,7 +280,7 @@ fn aborted_topology_restores_projected_geometry_and_reuses_taffy() {
     assert_eq!(layout.bounds(existing), Some(staged));
     assert!(layout.bounds(created).is_some());
     assert_eq!(layout.bounds(retired), None);
-    assert_eq!(layout.taffy.total_node_count(), tree.nodes().count());
+    assert_eq!(layout.meta.len(), tree.nodes().count());
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn fixed_height_editor_reveals_the_caret_and_replaces_text_without_recomputing_t
     let editor = receipt.node(editor).unwrap();
     delta.merge(tree.apply_runtime(RuntimeOp::SetFocus { node: Some(editor), visible: true }));
     let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-    let mut layout = LayoutEngine::default();
+    let mut layout = LayoutKernel::default();
     let mut text = TextEngine::new(false);
     layout.project(&tree, &delta, viewport, &mut text);
     layout.commit_stage();
@@ -360,7 +360,7 @@ fn growing_editor_recomputes_layout_after_the_value_changes() {
     delta.merge(created);
     let editor = receipt.node(editor).unwrap();
     let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-    let mut layout = LayoutEngine::default();
+    let mut layout = LayoutKernel::default();
     let mut text = TextEngine::new(false);
     layout.project(&tree, &delta, viewport, &mut text);
     let before = layout.work();
@@ -401,7 +401,7 @@ fn settles_safe_fit_scroll_feedback_and_destroyed_layout_nodes() {
         safe_area: Some(Rect::new(12.0, 16.0, 144.0, 112.0)),
         keyboard_inset: 0.0,
     };
-    let mut layout = LayoutEngine::default();
+    let mut layout = LayoutKernel::default();
     let mut text = TextEngine::new(false);
     let updates = layout.project(&tree, &delta, viewport, &mut text);
     assert_eq!(layout.bounds(overlay), Some(Rect::new(20.0, 40.0, 100.0, 80.0)));
@@ -441,7 +441,7 @@ fn unanchored_portal_geometry_follows_the_display_of_its_owner() {
     let page = receipt.node(page).unwrap();
     let portal = receipt.node(portal).unwrap();
     let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
-    let mut layout = LayoutEngine::default();
+    let mut layout = LayoutKernel::default();
     let mut text = TextEngine::new(false);
     layout.project(&tree, &delta, viewport, &mut text);
     let bounds = layout.bounds(portal).expect("visible portal bounds");
@@ -452,4 +452,242 @@ fn unanchored_portal_geometry_follows_the_display_of_its_owner() {
         layout.project(&tree, &delta, viewport, &mut text);
         assert_eq!(layout.bounds(portal), expected);
     }
+}
+
+#[test]
+fn a_newly_escaping_absolute_child_escalates_local_layout() {
+    let mut tree = Tree::new(TreeId::new([3, 5], 13), Default::default());
+    let mut tx = tree.transaction();
+    let space = tx.create(NodeSpec::new(NodeContent::Box));
+    let boundary = tx.create(NodeSpec::new(NodeContent::Box));
+    let child = tx.create(NodeSpec::new(NodeContent::Box));
+    tx.change(space, style([StyleProp::Height(Length::Px(30.0)), StyleProp::Shrink(0.0)]));
+    tx.change(
+        boundary,
+        style([
+            StyleProp::Width(Length::Px(100.0)),
+            StyleProp::Height(Length::Px(40.0)),
+            StyleProp::OverflowX(Overflow::Clip),
+            StyleProp::OverflowY(Overflow::Clip),
+        ]),
+    );
+    tx.change(child, style([StyleProp::Width(Length::Px(10.0)), StyleProp::Height(Length::Px(10.0))]));
+    tx.place(tree.node_ref(tree.root()), 0, space);
+    tx.place(tree.node_ref(tree.root()), 1, boundary);
+    tx.place(boundary, 0, child);
+    let (receipt, delta) = tree.apply(tx.finish()).unwrap();
+    let child = receipt.node(child).unwrap();
+    let viewport = WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
+    let mut layout = LayoutKernel::default();
+    let mut text = TextEngine::new(false);
+    layout.project(&tree, &delta, viewport, &mut text);
+    layout.commit_stage();
+    assert_eq!(layout.bounds(child), Some(Rect::new(0.0, 30.0, 10.0, 10.0)));
+
+    let before = layout.work();
+    let mut tx = tree.transaction();
+    tx.change(
+        tree.node_ref(child),
+        style([
+            StyleProp::Position(Position::Absolute),
+            StyleProp::Left(Length::Px(70.0)),
+            StyleProp::Top(Length::Px(90.0)),
+            StyleProp::Width(Length::Px(10.0)),
+            StyleProp::Height(Length::Px(10.0)),
+        ]),
+    );
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    layout.project(&tree, &delta, viewport, &mut text);
+    assert_eq!(layout.work().boundaries_hit - before.boundaries_hit, 1);
+    assert_eq!(layout.work().escalations - before.escalations, 1);
+    assert_eq!(layout.geometry(child).unwrap().rect, Rect::new(70.0, 60.0, 10.0, 10.0));
+    assert_eq!(layout.bounds(child), Some(Rect::new(70.0, 90.0, 10.0, 10.0)));
+}
+
+#[test]
+fn strict_containment_sizes_as_empty_and_lays_out_fixed_descendants_locally() {
+    let mut tree = Tree::new(TreeId::new([3, 5], 14), Default::default());
+    let mut tx = tree.transaction();
+    let space = tx.create(NodeSpec::new(NodeContent::Box));
+    let boundary = tx.create(NodeSpec::new(NodeContent::Box));
+    let child = tx.create(NodeSpec::new(NodeContent::Box));
+    tx.change(space, style([StyleProp::Height(Length::Px(30.0)), StyleProp::Shrink(0.0)]));
+    tx.change(boundary, style([StyleProp::Contain(Contain::STRICT)]));
+    tx.place(tree.node_ref(tree.root()), 0, space);
+    tx.place(tree.node_ref(tree.root()), 1, boundary);
+    tx.place(boundary, 0, child);
+    let (receipt, delta) = tree.apply(tx.finish()).unwrap();
+    let boundary = receipt.node(boundary).unwrap();
+    let child = receipt.node(child).unwrap();
+    let viewport = WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
+    let mut layout = LayoutKernel::default();
+    let mut text = TextEngine::new(false);
+    layout.project(&tree, &delta, viewport, &mut text);
+    layout.commit_stage();
+    assert_eq!(layout.bounds(boundary), Some(Rect::new(0.0, 30.0, 320.0, 0.0)));
+
+    let before = layout.work();
+    let mut tx = tree.transaction();
+    tx.change(
+        tree.node_ref(child),
+        style([
+            StyleProp::Position(Position::Fixed),
+            StyleProp::Left(Length::Px(10.0)),
+            StyleProp::Top(Length::Px(20.0)),
+            StyleProp::Width(Length::Px(60.0)),
+            StyleProp::Height(Length::Px(80.0)),
+        ]),
+    );
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    layout.project(&tree, &delta, viewport, &mut text);
+    assert_eq!(layout.work().computes - before.computes, 1);
+    assert_eq!(layout.work().boundaries_hit - before.boundaries_hit, 1);
+    assert_eq!(layout.work().escalations, before.escalations);
+    assert_eq!(layout.bounds(boundary), Some(Rect::new(0.0, 30.0, 320.0, 0.0)));
+    assert_eq!(layout.bounds(child), Some(Rect::new(10.0, 50.0, 60.0, 80.0)));
+    assert!(layout.clip(child).unwrap().is_empty());
+}
+
+#[test]
+fn reparented_cached_leaf_changes_world_bounds_without_local_deformation() {
+    let mut tree = Tree::new(TreeId::new([3, 5], 15), Default::default());
+    let mut tx = tree.transaction();
+    let first = tx.create(NodeSpec::new(NodeContent::Box));
+    let second = tx.create(NodeSpec::new(NodeContent::Box));
+    let child = tx.create(NodeSpec::new(NodeContent::Box));
+    for (index, parent) in [first, second].into_iter().enumerate() {
+        tx.change(parent, style([StyleProp::Height(Length::Px(30.0)), StyleProp::Shrink(0.0)]));
+        tx.place(tree.node_ref(tree.root()), index, parent);
+    }
+    tx.change(child, style([StyleProp::Width(Length::Px(10.0)), StyleProp::Height(Length::Px(10.0))]));
+    tx.place(first, 0, child);
+    let (receipt, _) = tree.apply(tx.finish()).unwrap();
+    let [second, child] = [second, child].map(|node| receipt.node(node).unwrap());
+    let viewport = WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
+    let mut layout = LayoutKernel::default();
+    let mut text = TextEngine::new(false);
+    layout.project(&tree, &TreeDelta::default(), viewport, &mut text);
+    layout.commit_stage();
+    assert_eq!(layout.bounds(child), Some(Rect::new(0.0, 0.0, 10.0, 10.0)));
+
+    let mut tx = tree.transaction();
+    tx.place(tree.node_ref(second), 0, tree.node_ref(child));
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    layout.project(&tree, &delta, viewport, &mut text);
+    assert_eq!(layout.bounds(child), Some(Rect::new(0.0, 30.0, 10.0, 10.0)));
+    assert!(layout.changed().contains(&child));
+    assert!(!layout.local_changed().contains(&child));
+}
+
+#[test]
+fn a_flex_items_parent_probes_can_escalate_local_layout() {
+    let mut tree = Tree::new(TreeId::new([3, 5], 16), Default::default());
+    let mut tx = tree.transaction();
+    let row = tx.create(NodeSpec::new(NodeContent::Box));
+    let child = tx.create(NodeSpec::new(NodeContent::Box));
+    let child_height = |height| style([StyleProp::Height(Length::Px(height))]);
+    tx.change(
+        row,
+        style([
+            StyleProp::Direction(FlexDirection::Column),
+            StyleProp::OverflowX(Overflow::Hidden),
+            StyleProp::OverflowY(Overflow::Hidden),
+        ]),
+    );
+    tx.change(child, child_height(20.0));
+    tx.place(tree.node_ref(tree.root()), 0, row);
+    tx.place(row, 0, child);
+    let (receipt, delta) = tree.apply(tx.finish()).unwrap();
+    let [row, child] = [row, child].map(|node| receipt.node(node).unwrap());
+    let viewport = WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
+    let mut layout = LayoutKernel::default();
+    let mut text = TextEngine::new(false);
+    layout.project(&tree, &delta, viewport, &mut text);
+    layout.commit_stage();
+    assert_eq!(layout.bounds(row).unwrap().h, 20.0);
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(child), child_height(36.0));
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    layout.project(&tree, &delta, viewport, &mut text);
+    assert_eq!(layout.bounds(row).unwrap().h, 36.0);
+}
+
+#[test]
+fn empty_and_size_contained_grids_keep_explicit_track_gaps() {
+    let mut tree = Tree::new(TreeId::new([3, 5], 17), Default::default());
+    let mut tx = tree.transaction();
+    let empty = tx.create(NodeSpec::new(NodeContent::Box));
+    let contained = tx.create(NodeSpec::new(NodeContent::Box));
+    let child = tx.create(NodeSpec::new(NodeContent::Box));
+    let grid = [StyleProp::Display(Display::Grid), StyleProp::GridRows(2), StyleProp::GapY(Length::Px(12.0)), StyleProp::Shrink(0.0)];
+    tx.change(empty, style(grid));
+    tx.change(contained, style(grid.into_iter().chain([StyleProp::Contain(Contain::STRICT)])));
+    tx.change(child, style([StyleProp::Width(Length::Px(40.0)), StyleProp::Height(Length::Px(80.0))]));
+    tx.place(tree.node_ref(tree.root()), 0, empty);
+    tx.place(tree.node_ref(tree.root()), 1, contained);
+    tx.place(contained, 0, child);
+    let (receipt, delta) = tree.apply(tx.finish()).unwrap();
+    let [empty, contained, child] = [empty, contained, child].map(|node| receipt.node(node).unwrap());
+    let viewport = WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
+    let mut layout = LayoutKernel::default();
+    let mut text = TextEngine::new(false);
+    layout.project(&tree, &delta, viewport, &mut text);
+    assert_eq!(layout.bounds(empty), Some(Rect::new(0.0, 0.0, 320.0, 12.0)));
+    assert_eq!(layout.bounds(contained), Some(Rect::new(0.0, 12.0, 320.0, 12.0)));
+    assert_eq!(layout.bounds(child), Some(Rect::new(0.0, 12.0, 40.0, 80.0)));
+}
+
+#[test]
+fn parent_probes_detect_an_intrinsic_width_change_with_stable_oof_overflow() {
+    let mut tree = Tree::new(TreeId::new([3, 5], 18), Default::default());
+    let mut tx = tree.transaction();
+    let parent = tx.create(NodeSpec::new(NodeContent::Box));
+    let boundary = tx.create(NodeSpec::new(NodeContent::Box));
+    let child = tx.create(NodeSpec::new(NodeContent::Box));
+    let absolute = tx.create(NodeSpec::new(NodeContent::Box));
+    tx.change(parent, style([StyleProp::Width(Length::Px(500.0)), StyleProp::Height(Length::Px(80.0))]));
+    tx.change(
+        boundary,
+        style([
+            StyleProp::Height(Length::Px(40.0)),
+            StyleProp::Position(Position::Relative),
+            StyleProp::OverflowX(Overflow::Clip),
+            StyleProp::OverflowY(Overflow::Clip),
+        ]),
+    );
+    let child_width = |width| style([StyleProp::Width(Length::Px(width)), StyleProp::Shrink(0.0)]);
+    tx.change(child, child_width(100.0));
+    tx.change(
+        absolute,
+        style([
+            StyleProp::Position(Position::Absolute),
+            StyleProp::Left(Length::Px(300.0)),
+            StyleProp::Width(Length::Px(10.0)),
+            StyleProp::Height(Length::Px(10.0)),
+        ]),
+    );
+    tx.place(tree.node_ref(tree.root()), 0, parent);
+    tx.place(parent, 0, boundary);
+    tx.place(boundary, 0, child);
+    tx.place(boundary, 1, absolute);
+    let (receipt, delta) = tree.apply(tx.finish()).unwrap();
+    let [boundary, child, absolute] = [boundary, child, absolute].map(|node| receipt.node(node).unwrap());
+    let viewport = WindowViewport { size: Size::new(640.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
+    let mut layout = LayoutKernel::default();
+    let mut text = TextEngine::new(false);
+    layout.project(&tree, &delta, viewport, &mut text);
+    layout.commit_stage();
+    assert_eq!(layout.bounds(boundary).unwrap().w, 100.0);
+    let prior_rect = layout.layouts[boundary].scrollable_overflow_rect;
+    let before = layout.work();
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(child), child_width(50.0));
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    layout.project(&tree, &delta, viewport, &mut text);
+    assert_eq!(layout.work().escalations - before.escalations, 1);
+    assert_eq!(layout.bounds(boundary).unwrap().w, 50.0);
+    assert_eq!(layout.bounds(absolute).unwrap().x, 300.0);
+    assert_eq!(layout.layouts[boundary].scrollable_overflow_rect, prior_rect);
 }

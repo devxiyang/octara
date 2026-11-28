@@ -234,7 +234,7 @@ impl ScrollMotion {
     pub(crate) fn step(
         &mut self,
         tree: &octara_tree::Tree,
-        layout: &crate::layout::LayoutEngine,
+        layout: &crate::layout::LayoutKernel,
         updates: &mut Vec<octara_tree::RuntimeOp>,
         now: f64,
         reduced: bool,

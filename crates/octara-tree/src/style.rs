@@ -52,6 +52,7 @@ fn apply(prop: StyleProp, layout: &mut LayoutStyle, visual: &mut Unresolved, inl
         StyleProp::Basis(d) => layout.flex_basis = d.resolved(theme),
         StyleProp::AspectRatio(r) => layout.aspect_ratio = r,
         StyleProp::Position(p) => layout.position = p,
+        StyleProp::Contain(value) => layout.contain = value,
         StyleProp::GridCols(n) => layout.grid_columns = n,
         StyleProp::GridRows(n) => layout.grid_rows = n,
         StyleProp::ColStart(p) => layout.grid_column.start = p,

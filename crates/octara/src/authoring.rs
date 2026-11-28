@@ -19,7 +19,7 @@ pub use octara_model::paint::{
 };
 pub use octara_model::semantics::{A11yAction, Checked, Live, Role, TextPosition};
 pub use octara_model::style::{
-    AlignItems, Direction, Display, FlexDirection, FlexWrap, GridPos, JustifyContent, LayoutLength, Overflow, Position,
+    AlignItems, Contain, Direction, Display, FlexDirection, FlexWrap, GridPos, JustifyContent, LayoutLength, Overflow, Position,
     ScrollbarVisibility, StyleProp, UserSelect,
 };
 pub use octara_model::text::{

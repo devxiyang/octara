@@ -1,6 +1,6 @@
 //! Inline boxes reserve space for attachments and span edges while retaining source offsets.
 
-use super::{ShapeStyle, SharedShape, Span, TextEngine};
+use super::{ShapeStyle, SharedShape, Span, TextEngine, TextWork};
 use octara_model::geometry::{Point, Size};
 use octara_model::text::{InlineAlign, InlineAttachment, InlineContent, InlinePill};
 use parley::{InlineBox, InlineBoxKind, Layout, RangedBuilder, StyleProperty, TextWrapMode, VerticalAlign};
@@ -126,11 +126,12 @@ impl Box {
         }
     }
 
-    pub(super) fn align(items: &[Self], layout: &mut Layout<u16>, font_size: f32) {
+    pub(super) fn align(items: &[Self], layout: &mut Layout<u16>, font_size: f32, work: &mut TextWork) {
         if !items.iter().any(|item| item.align == InlineAlign::CapHeightCenter) {
             return;
         }
         layout.break_all_lines(None);
+        work.line_breaks += 1;
         let alignments: Vec<_> = items
             .iter()
             .enumerate()
@@ -199,7 +200,7 @@ impl TextEngine {
         );
         let (width, height, x, y, baseline) = {
             let mut shaped = shape.borrow_mut();
-            let layout = &shaped.at(None, false).layout;
+            let layout = &shaped.at(None, false, &mut self.work).layout;
             let line = layout.get(0).expect("nonempty pill label");
             let metrics = line.metrics();
             (metrics.advance, metrics.line_height, metrics.offset + metrics.inline_min_coord, metrics.block_min_coord, metrics.baseline)

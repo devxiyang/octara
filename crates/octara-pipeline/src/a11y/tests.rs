@@ -79,14 +79,16 @@ fn a_z_only_update_changes_the_accessible_modal() {
     projector.publish(&tree, &delta);
     assert!(!publication.supports_action(tree.guard(first), ak::Action::Click));
 
+    projector.project(&tree, &TreeDelta::default(), true);
     publication.set_active(AccessibilityConsumer::Platform, false);
     assert!(publication.snapshot_full().is_some());
     publication.set_active(AccessibilityConsumer::Inspector, false);
+    assert!(projector.access.commit(0).is_none());
     assert!(publication.snapshot_full().is_none());
 }
 
 struct Projection {
-    layout: LayoutEngine,
+    layout: LayoutKernel,
     text: TextEngine,
     access: AccessKitProjector,
     viewport: WindowViewport,
@@ -97,7 +99,7 @@ impl Projection {
         let publication = AccessPublication::default();
         publication.set_active(AccessibilityConsumer::Inspector, true);
         Self {
-            layout: LayoutEngine::default(),
+            layout: LayoutKernel::default(),
             text: TextEngine::new(false),
             access: AccessKitProjector::new(publication),
             viewport: WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
@@ -215,6 +217,59 @@ impl AppliedUpdates {
 }
 
 #[test]
+fn projected_slot_reuse_replaces_targets_and_text_runs_at_commit() {
+    let mut tree = tree();
+    let mut tx = tree.transaction();
+    let root = tree.node_ref(tree.root());
+    let old = tx.create(NodeSpec::new(NodeContent::Text("Previous label".into())));
+    tx.change(old, NodeChange::TestId(Some("label".into())));
+    tx.place(root, 0, old);
+    let control = tx.create(NodeSpec::new(NodeContent::Box));
+    tx.change(
+        control,
+        NodeChange::Semantics(Box::new(SemanticsSlot {
+            relations: Relations { labelled_by: Some("label".into()), ..Default::default() },
+            ..Default::default()
+        })),
+    );
+    tx.place(root, 1, control);
+    let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+    let [old, control] = [old, control].map(|node| receipt.node(node).unwrap());
+    let mut initial = tree.initial_delta();
+    initial.merge(mounted);
+    let mut projector = Projection::new();
+    let published = projector.access.publication.clone();
+    let mut applied = AppliedUpdates::default();
+    applied.apply(projector.publish(&tree, &initial));
+    let old_run = applied.nodes[&node_identity(old)].children()[0];
+    assert_eq!(applied.nodes[&node_identity(control)].labelled_by(), &[node_identity(old)]);
+
+    let mut tx = tree.transaction();
+    tx.retire(tree.node_ref(old), Retirement::Destroy);
+    let (_, mut delta) = tree.apply(tx.finish()).unwrap();
+    let mut tx = tree.transaction();
+    let new = tx.create(NodeSpec::new(NodeContent::Text("Replacement label".into())));
+    tx.change(new, NodeChange::TestId(Some("label".into())));
+    tx.place(tree.node_ref(tree.root()), 0, new);
+    let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+    delta.merge(mounted);
+    let new = receipt.node(new).unwrap();
+    assert_ne!(old, new);
+    assert_eq!(old.data().as_ffi() as u32, new.data().as_ffi() as u32);
+
+    projector.project(&tree, &delta, true);
+    assert_eq!(published.node(old_run), Some(old));
+    assert_eq!(published.node(node_identity(new)), None);
+    applied.apply(projector.commit());
+    assert_eq!(published.node(node_identity(old)), None);
+    assert_eq!(published.node(old_run), None);
+    let new_run = applied.nodes[&node_identity(new)].children()[0];
+    assert_eq!(published.node(new_run), Some(new));
+    assert_eq!(applied.nodes[&node_identity(control)].labelled_by(), &[node_identity(new)]);
+    applied.assert_snapshot(&published.snapshot_full().unwrap());
+}
+
+#[test]
 fn edits_and_local_scroll_do_dirty_work_with_a_lazy_committed_snapshot() {
     let mut tree = tree();
     let mut initial = tree.initial_delta();
@@ -320,6 +375,61 @@ fn edits_and_local_scroll_do_dirty_work_with_a_lazy_committed_snapshot() {
     assert_eq!(projector.access.staging.built, 1);
     applied.apply(projector.commit());
     applied.assert_snapshot(&published.snapshot_full().unwrap());
+}
+
+#[test]
+fn ancestor_translation_updates_only_the_moved_accessible_container() {
+    let mut tree = tree();
+    let mut tx = tree.transaction();
+    let root = tree.node_ref(tree.root());
+    let spacer = tx.create(NodeSpec::new(NodeContent::Box));
+    tx.change(spacer, style([StyleProp::Height(16.25.into()), StyleProp::Shrink(0.0)]));
+    tx.place(root, 0, spacer);
+    let row = tx.create(NodeSpec::new(NodeContent::Box));
+    tx.change(row, style([StyleProp::Height(40.into()), StyleProp::Shrink(0.0)]));
+    tx.place(root, 1, row);
+    let label = tx.create(NodeSpec::new(NodeContent::Text("Stable local text".into())));
+    tx.place(row, 0, label);
+    let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+    let [spacer, row, label] = [spacer, row, label].map(|node| receipt.node(node).unwrap());
+    let mut initial = tree.initial_delta();
+    initial.merge(mounted);
+    let mut projector = Projection::new();
+    projector.viewport.scale = 1.5;
+    let publication = projector.access.publication.clone();
+    let mut applied = AppliedUpdates::default();
+    applied.apply(projector.publish(&tree, &initial));
+    let previous = publication.snapshot_full().unwrap();
+    let previous_label = applied.nodes[&node_identity(label)].clone();
+    let previous_bounds = projector.layout.bounds(label).unwrap();
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(spacer), style([StyleProp::Height(29.5.into()), StyleProp::Shrink(0.0)]));
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    projector.project(&tree, &delta, true);
+    assert!(projector.layout.changed().contains(&label));
+    assert!(!projector.layout.local_changed().contains(&label));
+    assert!(projector.layout.local_changed().contains(&row));
+    assert!(projector.access.staging.geometry.contains_key(row));
+    assert!(!projector.access.staging.geometry_dirty.contains(&label));
+    assert!(!projector.access.staging.entry_dirty.contains(&label));
+    assert_eq!(publication.snapshot_full().unwrap(), previous);
+    projector.rollback();
+    assert_eq!(projector.layout.bounds(label), Some(previous_bounds));
+    assert_eq!(publication.snapshot_full().unwrap(), previous);
+
+    let update = projector.publish(&tree, &delta);
+    assert_eq!(update.nodes.len(), 2);
+    assert!(update.nodes.iter().any(|(id, _)| *id == node_identity(row)));
+    applied.apply(update);
+    let label_node = &applied.nodes[&node_identity(label)];
+    assert_eq!(*label_node, previous_label);
+    let [root_transform, row_transform, label_transform] =
+        [tree.root(), row, label].map(|id| *applied.nodes[&node_identity(id)].transform().unwrap());
+    let projected = (root_transform * row_transform * label_transform).transform_rect_bbox(label_node.bounds().unwrap());
+    let world = projector.layout.bounds(label).unwrap();
+    assert_eq!(projected.y0, f64::from(world.y) * f64::from(projector.viewport.scale));
+    applied.assert_snapshot(&publication.snapshot_full().unwrap());
 }
 
 #[test]
