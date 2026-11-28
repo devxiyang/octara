@@ -51,7 +51,7 @@ See also: [Octara Master Roadmap (`0.0.8` → `0.1.0` → `0.2.0`)](roadmap.md).
    - `Ingress → React → Commit → Project (bounded ≤16 rounds) → Publish`.
    - During `React`, user code and view builders never hold `&mut Tree`; all creates, static props, styles, policies, and placements stream into one `TransactionBuilder` using `NodeRef::Pending` and commit as **one atomic `Transaction`**.
 5. **Strict Target Isolation & Pluggable `HostEngine`**:
-   - **Native pipeline** (`octara-pipeline` + `octara-render` + `octara-gpu` + `octara-host-native`): Taffy, Parley, `MotionEngine`, incremental `PaintCompiler`, AccessKit, pure `RenderGraph`, event-driven `DeviceExecutor` (no 1ms spin-poll), and `OsHost`/`OsWindow` trait isolating macOS/iOS/desktop backends with near-zero `#[cfg(target_os)]` in core orchestration.
+   - **Native pipeline** (`octara-pipeline` + `octara-render` + `octara-gpu` + `octara-host-native`) uses `LayoutKernel`, Parley, `MotionEngine`, an incremental `PaintCompiler`, and AccessKit. A pure `RenderGraph` and event-driven `DeviceExecutor` drive rendering. The `OsHost` and `OsWindow` traits isolate the direct AppKit, UIKit, Wayland, and X11 backends from shared orchestration.
    - **Web pipeline** (`octara-host-web`): Pure `TreeDelta` DOM Patcher + lightweight Undo-Log atomic rollback + `moveBefore` editor parking + **single-crossing JS batched `Float32Array` geometry bridge** + zero-PNG/Base64 `<canvas>`/`Blob` images + zero heavy native crates in default `.wasm` (WebGPU strictly opt-in via `feature = "webgpu"`).
 6. **Deterministic Simulation Testing (DST) & Agent Verifiability by Construction**:
    - Because there is zero `thread_local!`, explicit virtual clock, serializable 4-channel input, and pluggable `HostEngine` + CPU Reference Renderer oracle, any multi-window app can be fuzz-tested deterministically across parallel test threads and replayed from a seed.
@@ -90,7 +90,7 @@ flowchart TB
         Pipeline["octara-pipeline<br/>NativeEngine (HostEngine): LayoutKernel · Parley Text Geometry<br/>MotionEngine · PaintCompiler · AccessKitProjector"]
         Render["octara-render (Thread-Agnostic: Native + WebGPU)<br/>RenderGraph(plan) · Batch · Atlas · wgpu Encode<br/>Custom Shaders · CPU Reference Oracle"]
         Gpu["octara-gpu (Native Only)<br/>Event-Driven DeviceExecutor · Surface/Readback Leases<br/>Async Background PNG Writer"]
-        HostNative["octara-host-native<br/>Platform-neutral shell + OsHost/OsWindow SPI<br/>os/{macos, ios, linux, windows}"]
+        HostNative["octara-host-native<br/>Platform-neutral shell + OsHost/OsWindow SPI<br/>AppKit · UIKit · Wayland · X11"]
     end
 
     subgraph L3W["Layer 3b: Web Pipeline & Host"]
@@ -142,6 +142,7 @@ flowchart TB
 
 ### Hard Dependency Guarantees
 - **`octara-model`**: Only `slotmap`, `bitflags`, `color`, `kurbo`, `serde`, `serde_json`, `unicode-segmentation`. **Forbidden**: `taffy`, `parley`, `accesskit`, `wgpu`, `swash`, `zeno`, `png`, `roxmltree`.
+- **`octara-tree`** resolves locale direction with a compact BCP-47 script and language table, with an explicit script taking precedence.
 - **`octara-render`**: Zero `std::thread`, zero windowing, zero OS FFI — compiles cleanly for both Native and `wasm32` WebGPU.
 - **`octara-host-web` (default)**: Links **only** `octara` + `wasm-bindgen`/`web-sys`/`js-sys` — **zero** `taffy`, `parley`, `accesskit`, `wgpu`, `swash`, `zeno`, `png`, `roxmltree`.
 
@@ -341,7 +342,7 @@ Replaces v1's 25-variant flat `InputEvent` and eliminates the Native vs Hosted p
    - `Wheel { pos, delta, phase, mods }` / `Key(KeyEvent)` / `BackGesture { id, phase }` / `WindowActive(bool)`
    - *Native hit-test and Web `WeakMap` lookup both emit `ContactTarget { hit: TargetGuard, action: Option<TargetGuard> }`. `InteractionArbiter` is the single state machine for press capture, outside-dismiss, modal scope, iOS keyboard-dismiss re-verification, and focus handoff.*
 2. **`EditorEvent`**:
-   - `Edit`, `Select`, `Command`, and `KeyIntercept` carry a session and expected revision across native, Web, and deterministic hosts. Native adapters use `HostTextBridge` to reconcile synchronous IME queries with retained editor state.
+   - `Edit`, `Select`, `Command`, and `KeyIntercept` carry a session and expected revision across native, Web, and deterministic hosts. `Command` wraps a semantic `EditorCommand`. Native adapters use `HostTextBridge` to reconcile synchronous IME queries and platform text offsets with the retained UTF-8 editor state. The input method receives composition keys first, and focused key handlers and shortcuts can intercept other keys before default editing.
 3. **`HostReply`**:
    - `ViewportChanged`, `ChromeChanged`, `GeometryChanged`, `MenuCommand`, `AskAnswer`, `ServiceReply`, `NativeEvent`, `NativeMeasurement`, `NativeSnapshot`, `ExitFinished(ExitTicket)`, `AccessibilityAction`.
 4. **`AgentCommand`** (isolated in `octara-inspect`):
@@ -366,9 +367,9 @@ pub trait HostEngine {
 
 ### 7.1 Native Stack (`octara-pipeline` + `octara-render` + `octara-gpu` + `octara-host-native`)
 - **`octara-pipeline::NativeEngine`**:
-  - `layout/`: `LayoutKernel` runs Taffy's flex and grid algorithms on ECS nodes and uses relayout boundaries to isolate subtrees.
-  - `flat_tree.rs`: Lazy spatial indexing and exact hit testing in scroll space.
-  - `projected.rs`: Shared dense transaction journals for layout, text, paint, and accessibility.
+  - `layout/` stores hot layout metadata and projection caches by ECS node ID. `LayoutKernel` calls Taffy’s stateless flex and grid algorithms directly on the retained tree, and relayout boundaries limit recomputation when a subtree’s external size stays stable.
+  - `flat_tree.rs` indexes geometry on demand for exact hit testing in scroll space. The layout projection tracks local geometry changes and changes in viewport position separately.
+  - `projected.rs` provides shared dense rollback journals for layout, text, paint, and accessibility. `NativeEngineConfig::check_layout_cache` compares incremental layout with a cold projection.
   - `text/`: Parley shaping, font registry, incremental paragraph cache keyed by `Arc<str>`, caret/selection/soft-wrap geometry, AccessKit text runs.
   - `motion/`: `MotionEngine` (analytic spring/fade tracks, exit ghosts, scroll glides, caret blink, password reveal).
   - `paint/`: Incremental `PaintCompiler` → frozen `PaintScene` (pure paint animations sampled at display timestamp; debug uncached self-check controlled by explicit `check_paint_cache: bool`).
@@ -380,11 +381,11 @@ pub trait HostEngine {
   - **Event-driven GPU completion**: `queue.on_submitted_work_done` and buffer-map callbacks actively wake the executor thread (adaptive backoff fallback only if a backend lacks prompt callback delivery), eliminating the constant `1ms` polling loop.
 - **`octara-host-native`**:
   - The platform-neutral shell consumes `PlatformEvent` and manages `HostWindow` without OS-specific branching. Each `OsHost` owns its event loop and supplies raw surface handles through `OsWindow`.
-  - Apple hosts share a `CADisplayLink` driver with on-demand drawable acquisition.
-    - `os/macos/`: AppKit application and window delegates, an `NSView` implementing `NSTextInputClient`, direct AccessKit, and AppKit menus and asks.
-    - `os/ios/`: UIKit application and scene delegates, a `UIViewController` for presentation, and a `UIView` implementing `UITextInput` with VoiceOver support.
-    - `os/linux/`: Wayland windowing and input, an X11 fallback, XDG Portal preferences, and demand-driven AT-SPI accessibility.
-    - `os/windows/`: The host reports that direct Win32 support is scheduled for 0.2.0.
+  - Apple hosts share a `CADisplayLink` driver with on-demand drawable acquisition. URLSession and ImageIO handle image transfers and decoding on Apple. The native media loader uses a bounded worker pool and accepts a `MediaTransport` override. Linux apps supply a transport for HTTP image fetches.
+  - `os/macos/` uses AppKit application and window delegates, `NSWindow` and `NSPanel`, an `NSView` implementing `NSTextInputClient`, direct AccessKit, and AppKit menus and asks.
+  - `os/ios/` uses UIKit application and scene delegates, a `UIViewController` for presentation, and a `UIView` implementing `UITextInput` with VoiceOver support.
+  - `os/linux/` selects Wayland for a configured Wayland session and X11 otherwise. It uses Smithay Client Toolkit for Wayland, `x11rb` for X11, XDG Portal preferences, and demand-driven AT-SPI accessibility.
+  - Clipboard services use `NSPasteboard`, `UIPasteboard`, Wayland data devices, and X11 selections. The platform-neutral `ServiceRequest::WriteClipboard` carries the same typed payload across hosts.
 
 ### 7.2 Web Stack (`octara-host-web`)
 - **`DomEngine`**:
@@ -399,6 +400,7 @@ pub trait HostEngine {
 ## 8. Authoring API & Component Kit (`octara` + `octara-kit`)
 
 - **Minimal Value-Polymorphic `Styled`**: Drop Tailwind scale-method explosion; keep concise orthogonal methods (`.p()`, `.px()`, `.w()`, `.h()`, `.gap()`, `.bg()`, `.rounded()`, `.shadow()`, `.text_size()`, `.when(State::HOVER, |s| ...)`) accepting typed units/tokens (`sp(4)`, `px(12)`, `rel(0.5)`, `ColorToken::Surface`, `Radius::Lg`).
+- **Containment and platform presentation** use typed APIs. `Styled::contain` configures native layout containment and Web CSS `contain`. `El::on_drag_start` provides a batch of `DragItem` values for the platform drag session. `WindowPresentation` carries window level and status bar style, which also support reactive bindings on `WindowDefinition`. `NativeViewFactory::airspace_policy` can opt into snapshots for occluded overlay views.
 - **Declarative Release Bridge**: Signed UI packets (`octara-release`) compile directly to `octara_tree::Transaction` + bound `ReadSignal` / `Command` references, sharing 100% of the runtime & security boundary.
 - **`octara-kit`**: Pure public-API components & streaming Markdown, with zero framework backdoors.
 
@@ -406,13 +408,13 @@ pub trait HostEngine {
 
 ## 9. Phased Execution & Verification Plan
 
-Execute in an isolated worktree branched cleanly from `origin/init` (`branch: arch-v2`):
+The original `arch-v2` implementation phases established these verification gates.
 
 | Phase | Deliverables | Mandatory Exit Gate |
 | --- | --- | --- |
 | **Phase 0** | Lock `docs/design/architecture-v2.md` & update `tools/check_layers.py` target DAG | Layer checker enforces v2 DAG |
 | **Phase 1** | `octara-model` + `octara-tree` (sparse ECS `NodeCore ≤ 48B`, `TreeDelta`, `InteractionArbiter`, logical `EditorSession`) | Unit + property tests pass; `size_of::<NodeCore>() <= 48` asserted; zero heavy deps |
 | **Phase 2** | `octara-runtime` (`TypedSlab`, All-`Copy` handles, `BuildCx`/`ReadCx`/`WriteCx`/`CleanupCx`/`TaskCx`, unified Value+Delta topological graph, 5-phase Cycle Engine, `HostEngine`) + `octara` facade | Compile-fail doctests verify capability isolation (`WRITE_IN_DERIVE`, `WRITE_IN_BUILD`, `STRICT_READ_UNTRACKED`, `SIGNAL_BORROW`, `VIEW_READS_STATE`); 200-node mount = 1 `Transaction`; zero `thread_local!` |
-| **Phase 3** | `octara-pipeline` (Taffy/Parley/Motion/Paint/AccessKit) + modular thread-agnostic `octara-render` + native `octara-gpu` (event-driven `DeviceExecutor`) + `octara-inspect` (with parallel DST fuzz tests) | Headless deterministic suite & DST fuzzing pass (rename, nested scroll, modal focus, virtual lists, selection, replay, CPU/GPU parity) |
-| **Phase 4** | `octara-host-native` (`OsHost`/`OsWindow`: macOS, iOS, desktop) + `octara-host-web` (Delta DOM, UndoLog, JS batch measure, Canvas/Blob images, opt WebGPU) | `cargo check --target wasm32-unknown-unknown -p octara-host-web` passes with zero forbidden deps; native builds & macOS/Chromium checks pass |
+| **Phase 3** | `octara-pipeline` (LayoutKernel/Parley/Motion/Paint/AccessKit) + modular thread-agnostic `octara-render` + native `octara-gpu` (event-driven `DeviceExecutor`) + `octara-inspect` (with parallel DST fuzz tests) | Headless deterministic suite & DST fuzzing pass (rename, nested scroll, modal focus, virtual lists, selection, replay, CPU/GPU parity) |
+| **Phase 4** | `octara-host-native` (`OsHost`/`OsWindow` on macOS, iOS, and Linux) + `octara-host-web` (Delta DOM, UndoLog, JS batch measure, Canvas/Blob images, opt WebGPU) | `cargo check --target wasm32-unknown-unknown -p octara-host-web` passes with zero forbidden deps; native builds & macOS/Chromium checks pass |
 | **Phase 5** | Migrate `octara-kit`, `octara-cli`, `apps/chat`, `examples`, docs, skills; delete all v1 legacy crates/shims | `python3 tools/check_layers.py`, `cargo test --workspace`, `cargo test -p octara-cli --doc`, `cargo clippy --workspace --all-targets`, skill export fresh, measurable metrics report |

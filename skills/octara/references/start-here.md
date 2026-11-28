@@ -1,4 +1,4 @@
-# Build interfaces with Octara 0.0.9
+# Build interfaces with Octara 0.0.10
 
 Octara composes views with ordinary Rust functions. The app owns reactive state and the window tree. The host projects the tree into a native window or the browser DOM. The Apple deployment baselines are macOS 15.4 and iOS 18.4. `cargo test -p octara-cli --doc` compiles and runs the Rust examples marked for doctesting.
 
@@ -60,9 +60,11 @@ fn tags(labels: &[&str]) -> El {
 }
 ```
 
-The desktop executable calls `octara_host_native::run_app(startup())`. For a fresh browser session, call `octara_host_web::WebApp::launch(root, startup(), None)` and keep the returned `WebApp` alive. Each `WebApp` owns one browser mount.
+The desktop executable calls `octara_host_native::run_app(startup())`. It uses AppKit on macOS and selects Wayland or X11 on Linux. The iOS host uses UIKit. For a fresh browser session, call `octara_host_web::WebApp::launch(root, startup(), None)` and keep the returned `WebApp` alive. Each `WebApp` owns one browser mount.
 
 Declare a drop target with `El::on_file_drop`. Its handler receives `WriteCx` and a borrowed slice of `DroppedFile` values. Native hosts provide local paths, and browsers provide file display names.
+
+Use `El::on_drag_start(|w| ...)` to start a drag that can leave the app on macOS, Linux, or the Web. Return `Some(Vec<DragItem>)` to offer text, file paths, or images, or return `None` to decline. File paths in a drag are supported on macOS and Linux. Use `El::draggable(DragPayload)` for in-app reordering.
 
 Use `BuildCx::menus` to register menus that update with reactive state, and `BuildCx::on_chord` to register scoped shortcuts. The `mod` modifier maps to Command on macOS and Control elsewhere. Menus and shortcuts can share a command handler. `WindowDefinition` also supports both registration methods.
 
@@ -96,6 +98,8 @@ fn inspector(cx: &mut BuildCx<'_>) -> El {
 Assign a stable, unique `persistence_key` to each window whose geometry should be restored. Exporting `RestartState` includes geometry for these windows. Pass that state to `AppDefinition::launch` on the next startup to restore it.
 
 On macOS, `TitlebarStyle::HiddenInset` extends content into the native title bar, and `BuildCx::window_chrome()` reports the title bar height and the space taken by the traffic light buttons. Mark a draggable area with `window_drag_region(true)`. Double-clicking it toggles maximization. Buttons, inputs, and other controls within the area handle their own clicks and focus. `WindowMaterial::Vibrancy` uses AppKit to apply a system material to transparent areas. Other hosts use the window capabilities available on their platform.
+
+Set `WindowPresentation::level` to `WindowLevel::Floating` or `WindowLevel::AlwaysOnTop` to request above-normal stacking on macOS or X11. Set `WindowOptions::non_activating_panel` to create an AppKit `NSPanel` that can take keyboard focus without activating the app. On iOS, set `WindowPresentation::status_bar` to `StatusBarStyle::Light`, `Dark`, or `Hidden`. `Auto` chooses a contrasting foreground based on the window theme. Bind these presentation values with `WindowDefinition::level_with` and `status_bar_with`, or update them in a handler with `WriteCx::set_window_level` and `set_window_status_bar`.
 
 ```rust
 use octara::prelude::*;
@@ -135,6 +139,8 @@ fn workspace() -> WindowDefinition {
 Use `octara::module` for typed platform calls. The first-party packages are `octara-webview`, `octara-video`, `octara-picker`, and `octara-haptics`. Add the optional dependencies you need, then register them with `AppDefinition::with_module`. For headless tests, disable the package’s default features and register its pure-Rust `mock()` backend.
 
 Register WebView with `.with_module(octara_webview::module())`. Apple hosts use WKWebView, and the browser uses a sandboxed iframe. macOS uses an underlay by default so Octara popups can receive clicks above the WebView. iOS defaults to an overlay. Within a window, use `octara_webview::send` and a mounted WebView’s `test_id` to send typed commands, and use `on_typed_native` to receive `WebViewEvent`. The Apple backend lets trusted documents call the app through Promise-based RPC. Use `WebViewProps::html` for app-owned documents and `trust_origin` to specify which external origins can use the bridge.
+
+For a custom native overlay, `octara::module::NativeViewFactory::airspace_policy` can return `AirspacePolicy::SnapshotOnOcclude`. The native pipeline can then display a snapshot while an Octara popup covers the view. The Apple WebView factory opts into this behavior.
 
 ```rust
 use octara::prelude::*;
@@ -354,7 +360,17 @@ Create `PullToRefresh::new(build, threshold)` and attach it to a vertical scroll
 
 Set `.keyboard_type(...)`, `.return_key(...)`, `.content_type(...)`, `.autocapitalize(...)`, and `.autocorrect(...)` on `TextInput` to configure the native iOS keyboard and browser input attributes. Continue validating the submitted value in the app.
 
+Pair `TextInput::submit_on_enter()` with `on_submit(...)` to submit on Enter. Use `observe_composition` to track whether the editor has marked text. Native hosts give keys to an active input method during composition. Focused `on_key` handlers and shortcuts can consume non-composing keys before default editing. When implementing a host adapter, send `octara::EditorEvent::{Edit, Select, Command, KeyIntercept}` with the active session and expected revision. Use `EditorCommand` for semantic actions such as deleting a word or extending a selection.
+
+From a user gesture, call `WriteCx::request_service` with `ServiceRequest::WriteClipboard { items }` to write a batch of `ClipboardItem` values. Handle `ServiceOutcome::ClipboardWritten` or `ServiceOutcome::Error` in the callback. Supported formats depend on the host. The Web clipboard path accepts plain text and PNG where browser support and permissions allow it.
+
 Direction defaults to the host locale and inherits along logical parents. Set `.text_direction(Direction::Rtl)` for a right-to-left subtree. Use `.ms(...)` and `.me(...)` for inline margins, `.ps(...)` and `.pe(...)` for inline padding, and `.start(...)` and `.end(...)` for inline insets. Read `build.system_preferences()` to follow changes in locale, text scale, and contrast.
+
+## Contain layout and load images
+
+Use `.contain(Contain::LAYOUT | Contain::PAINT)` or `.contain_content()` to isolate layout and clip painted descendants. Use `.contain_strict()` to also exclude descendants from intrinsic sizing. Give a strictly contained box an explicit size or let its parent determine its size. Native layout applies these flags in `LayoutKernel`, and the Web host maps them to CSS `contain`.
+
+Pass `ImageSource::File(path.into())` to `image_source` for an app-authorized local image on native hosts. For bytes already available to the app, use `ImageSource::Encoded { bytes, mime }`. Apple hosts fetch remote images with URLSession and decode with ImageIO. To enable HTTP image fetching on Linux or override the Apple transport, implement `octara_host_native::MediaTransport` and pass `NativeAppOptions::default().with_media_transport(transport)` to `run_app_with_options(startup(), options)`. The loader still handles caching and decoding, and the transport honors the byte limit, redirect policy, and cancellation.
 
 ## Verify native frame pacing and scroll rendering
 
@@ -413,10 +429,10 @@ Make the app library and desktop launcher members of the same workspace. Expose 
 
 ```toml
 [dependencies]
-octara = "0.0.9"
+octara = "0.0.10"
 
 [dev-dependencies]
-octara-inspect = "0.0.9"
+octara-inspect = "0.0.10"
 ```
 
 The sibling `my-app-desktop/Cargo.toml` depends on the app library and native host. Call `octara_host_native::run_app(my_app::startup())` from the desktop package’s `src/main.rs`.
@@ -424,7 +440,7 @@ The sibling `my-app-desktop/Cargo.toml` depends on the app library and native ho
 ```toml
 [dependencies]
 my-app = { path = "../my-app" }
-octara-host-native = "0.0.9"
+octara-host-native = "0.0.10"
 ```
 
 Use `cargo test -p my-app` to run headless tests for the app library on its own. Use `HeadlessDriver::launch(startup())` to launch the same app definition or open a single view for testing. The driver uses `octara-pipeline` for layout and semantics and the `octara-render` CPU renderer for painted screenshots. Use `cargo tree -p my-app` to check for dependencies such as `octara-host-native`, `octara-gpu`, `wgpu`, and `objc2`. Building the app library by itself keeps desktop dependency features out of the test build. [Cargo tree reference](https://doc.rust-lang.org/cargo/commands/cargo-tree.html) · [Cargo feature resolution](https://doc.rust-lang.org/cargo/reference/resolver.html#features)
@@ -465,6 +481,8 @@ Use `octara run` to send JSONL requests through the same protocol. Pass `--conne
 ```json
 {"protocol":"octara.inspect/2","op":"list_windows"}
 ```
+
+For native verification after source changes, launch again with `octara launch -p my-app --socket SOCKET --receipt FILE` using a fresh absolute socket path and a new receipt file. `octara launch` stages a copy of the rebuilt executable and records its SHA-256 digest and process ID. Verify that the responding process matches the receipt with `octara inspect --connect SOCKET --receipt FILE --json`. Use `octara run --connect SOCKET --require-build FILE` to check that identity before sending actions. A Cargo rebuild leaves any previously launched process running its staged executable.
 
 Look up runtime diagnostics through `octara::diagnostics` or with `octara explain CODE`. Unsettled projections, stale targets, and destroyed reactive handles have distinct diagnostics.
 

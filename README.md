@@ -1,6 +1,8 @@
-# Octara 0.0.9
+# Octara 0.0.10
 
-Build native and Web interfaces in Rust. Explicit capability contexts let you compose views and update state. Native hosts render on the GPU, and the Web host projects views into the DOM. Use the same target and editor session protocol to test interactions, track frame progress, and replay failures.
+Build native and Web interfaces in Rust. Explicit capability contexts let you compose views and update state. Direct AppKit, UIKit, Wayland, and X11 hosts render on the GPU. The Web host projects views into the DOM. Use the same target and editor session protocol to test interactions, track frame progress, and replay failures.
+
+In 0.0.10, Octara’s native `LayoutKernel` runs Taffy’s flex and grid algorithms directly on the retained ECS tree. Native hosts share an IME bridge and use platform clipboard APIs. Apple hosts use URLSession and ImageIO for images, and Linux apps can supply an HTTP image transport. The release adds layout containment, desktop drag-out, iOS status bar styling, and desktop window levels. [Release roadmap](docs/design/roadmap.md)
 
 - Start with the [Getting Started guide](docs/start-here.md).
 - Use themed controls from `octara-kit`, or compose behavior from `octara_kit::headless` with styles from `octara_kit::parts`.
@@ -39,7 +41,7 @@ On a Mac with the iOS Simulator SDK and the matching Rust target, check the nati
 IPHONEOS_DEPLOYMENT_TARGET=18.4 cargo check --target aarch64-apple-ios-sim -p octara-host-native
 ```
 
-Preflight all 23 publishable Octara 0.0.9 crates together. Cargo resolves internal dependencies in the release batch and builds from the unpacked archives.
+Preflight all 23 publishable Octara 0.0.10 crates together. Cargo resolves internal dependencies in the release batch and builds from the unpacked archives.
 
 ```sh
 cargo publish --workspace --dry-run

@@ -21,24 +21,23 @@
 
 | # | Pillar | Core vs. Module Boundary | Target Milestone |
 | --- | --- | --- | --- |
-| **1** | **Four-Platform Core Interaction & Forms** (unified gestures, Pull-to-Refresh, soft-keyboard & OTP traits, scroll-dismiss keyboard, Drag Out, `WindowLevel`/`NSPanel`, Linux Wayland IME/HiDPI/Portal) | Core (`octara-model` / `tree` / `runtime` / `host-*`) | `0.0.9` |
-| **2** | **Full Accessibility & Internationalization** (macOS/Linux AccessKit, Web ARIA Focus Trap/`inert`, **iOS `UIAccessibility` VoiceOver**, BiDi/RTL layout, Dynamic Type `text_scale`, `locale`, `high_contrast`) | Core (`octara-model` / `tree` / `pipeline` / `host-*`) | `0.0.9` |
-| **3** | **Airspace & WebView Completeness** (`AirspacePolicy::SnapshotOnOcclude`, `WKWebsiteDataStore`, `WKUserScript`, download policy, Linux `WebKitGTK`) | Airspace in Core (`0.0.9`); WebView in `modules/octara-webview` (`0.0.10`–`0.0.11`) | `0.0.9` – `0.0.11` |
-| **4** | **High-Frequency Platform Modules** (`notifications`, `secure-store`, `desktop-shell`, `storage`, `share`, `network`) | Optional `modules/*` (SPI-7) | `0.0.10` |
-| **5** | **Production Complex Components** (`DataTable`, `TreeView`, `SplitPane`, gesture `BottomSheet`/`Drawer`, `Toast` stack, `DatePicker`/`ColorPicker`, `CommandPalette`, `Form Validation`) | `octara-headless` + `octara-kit` | `0.0.11` |
-| **6** | **Modern Graphics, Motion & Export** (GPU `backdrop-filter` blur, spring physics & FLIP layout transitions, 120Hz frame pacing telemetry, vector PDF/print export from `DisplayList`) | `octara-pipeline` + `octara-render` + `octara-gpu` | `0.0.11` |
-| **7** | **Advanced Hardware Modules** (`biometrics`, `audio`, `camera`, `location`, declarative deep-link routing helpers) | Optional `modules/*` (SPI-7) | `0.0.11` |
+| **1** | **Four-Platform Core Interaction & Forms** (unified gestures, Pull-to-Refresh, soft-keyboard & OTP traits, scroll-dismiss keyboard, Drag Out, `WindowLevel`/`NSPanel`, Linux Wayland IME/HiDPI/Portal) | Core (`octara-model` / `tree` / `runtime` / `host-*`) | `0.0.9`–`0.0.10` |
+| **2** | **Full Accessibility & Internationalization** (macOS/Linux AccessKit, Web ARIA Focus Trap/`inert`, **iOS `UIAccessibility` VoiceOver**, BiDi/RTL layout, Dynamic Type `text_scale`, `locale`, `high_contrast`) | Core (`octara-model` / `tree` / `pipeline` / `host-*`) | `0.0.9`–`0.0.10` |
+| **3** | **Airspace & WebView Completeness** (`AirspacePolicy::SnapshotOnOcclude`, `WKWebsiteDataStore`, `WKUserScript`, download policy, Linux `WebKitGTK`) | Airspace in core and WebView in `modules/octara-webview` | `0.0.10`–`0.0.12` |
+| **4** | **High-Frequency Platform Modules** (`notifications`, `secure-store`, `desktop-shell`, `storage`, `share`, `network`) | Optional `modules/*` (SPI-7) | `0.0.11` |
+| **5** | **Production Complex Components** (`DataTable`, `TreeView`, `SplitPane`, gesture `BottomSheet`/`Drawer`, `Toast` stack, `DatePicker`/`ColorPicker`, `CommandPalette`, `Form Validation`) | `octara-headless` + `octara-kit` | `0.0.12` |
+| **6** | **Modern Graphics, Motion & Export** (GPU `backdrop-filter` blur, spring physics & FLIP layout transitions, 120Hz frame pacing telemetry, vector PDF/print export from `DisplayList`) | `octara-pipeline` + `octara-render` + `octara-gpu` | `0.0.12` |
+| **7** | **Advanced Hardware Modules** (`biometrics`, `audio`, `camera`, `location`, declarative deep-link routing helpers) | Optional `modules/*` (SPI-7) | `0.0.12` |
 | **8** | **Engineering DX, Packaging & DevTools** (`octara dev` state-preserving fast restart via `RestartState`, `octara bundle` for macOS/iOS/Web/Linux, visual DevTools HUD over `octara-inspect`, API freeze) | `octara-cli` + `octara-inspect` | `0.1.0` |
 
 ---
 
 ## 3. Milestone Plan
 
-### `0.0.8` — Cycle Naming Cleanup, `octara::module` Spine & Initial Official Modules *(In Progress)*
+### `0.0.8` — Cycle Naming Cleanup, `octara::module` Spine & Initial Official Modules *(Released)*
 - **Spec**: [14 — Cycle Terminology Cleanup & `octara::module` Platform Extension Architecture](v2/14-octara-module-architecture.md)
-- **Delivered / In Flight**:
-  - **Wave 1 *(Complete)*:** `turn.rs` → `cycle.rs`, `TurnError` → `AppError`, `TurnReceipt` → `CycleReceipt`; full `octara::module` SPI-7 spine (`octara-model::module` + `octara-runtime::module` → `octara::module`), `HostSurface`, `ModuleDispatcher`, `ScopeId` cancellation, `HostLifecycleEvent` bus, `NativeViewFactory`/`NativeViewRegistry`, `HeadlessDriver` DST stubs, `tools/check_layers.py` plugin layer.
-  - **Wave 2 *(Complete)*:** Extract `modules/octara-webview` (upgraded Apple `WKWebView` + Web `<iframe>` + Headless `mock()`), `modules/octara-video` (removing `objc2-web-kit`/`AVKit` from `octara-host-native`), `modules/octara-picker` (macOS/iOS `PHPicker`+`UIDocumentPicker`/Linux/Web/Headless, deleting legacy `Ask::Paths`/`ServiceRequest::PickFile`), `modules/octara-haptics`, and `octara-cli` declarative `octara-module.toml` merger.
+- The runtime adopted Cycle terminology with `AppError` and `CycleReceipt`. The `octara::module` SPI added typed calls, scope cancellation, lifecycle events, native view registration, and headless mocks.
+- WebView, video, file picking, and haptics moved into optional first-party modules. `octara modules merge` collects platform metadata declared in each module’s `octara-module.toml`.
 
 ---
 
@@ -50,23 +49,13 @@
 
 ---
 
-### `0.0.10` — Zero-`winit` Direct Native Hosts, Zero-`TaffyTree` ECS Layout Kernel, Unified Native IME & Zero-Bloat Core *(In Progress)*
+### `0.0.10` — Direct Native Hosts, ECS Layout Kernel, Unified Native IME & Smaller Core Dependencies *(Released)*
 - **Specs**: [15 — Tier-1 Core Closure](v2/15-four-platform-core-polish.md) (C3–C6), [17 — Direct Native Platform Hosts (Zero `winit` Architecture)](v2/17-native-platform-hosts-without-winit.md), [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture)](v2/18-native-layout-and-spatial-kernel.md), [19 — Unified Native IME, Text Editing & Clipboard Hygiene](v2/19-unified-native-ime-and-text-editing.md) & [20 — Zero-Bloat Core Dependencies & Native OS Primitives](v2/20-zero-bloat-core-dependencies.md)
-- **Scope**:
-  1. **iOS & Web Production Closure (C3 + C4, Wave B2 — Done)**: iOS `UIAccessibility` VoiceOver bridge + `StatusBarStyle` + scene-local keyboard layout; Web `visualViewport`, `document.title`/`theme-color`, `beforeunload`, unified multimodal `WriteClipboard`, and modal ARIA focus trap + `inert`.
-  2. **100% `winit` & `accesskit_winit` Removal (Waves D1 Done, D2 Running)**: Pure platform-neutral `OsHost` / `OsWindow` / `PlatformEvent` SPI in `octara-host-native`; direct macOS `15.4+` AppKit host (`NSApplication` / `NSWindow` / `NSPanel` / `NSTextInputClient` / `accesskit_macos`), direct iOS `18.4+` UIKit host (`UIApplicationMain` / `UIWindowSceneDelegate` / `UIViewController`), and direct Linux Wayland (`smithay-client-toolkit`, `zwp_text_input_v3`, `zwp_pointer_gestures_v1`, `wp_fractional_scale_v1`, `wl_data_device`, XDG Portal) + X11 (`x11rb`) host.
-  3. **Desktop Drag-Out, Window Levels/Panels & Airspace Closure (C5 + C6, Wave D2)**: `DragItem` / `el.on_drag_start` (`NSDraggingSession`, Web `DataTransfer`, Linux `wl_data_device`), `WindowLevel` + native macOS `NSPanel`, and `AirspacePolicy::SnapshotOnOcclude`.
-  4. **Zero-`TaffyTree` Native ECS Layout & Spatial Kernel (Wave D3)**:
-     - **Delete `TaffyTree` completely** (`taffy_tree` feature removed); build Octara's hot/cold SoA `LayoutKernel` (`8 B` `LayoutMeta` + dense `SecondaryMap` + shared `DenseProjected` rollback journal across `layout`/`text`/`paint`/`a11y`) implementing Taffy's zero-copy `LayoutPartialTree` / `LayoutContainingBlock` / `LayoutFlexboxContainer` / `LayoutGridContainer` traits directly over `octara-tree` and interned `Arc<ResolvedStyle>`, with O(1) leaf/hidden fast paths and zero `FxHashMap` fragmentation.
-     - **Mathematically Sound Dual-Layer `RelayoutBoundary` + Cross-Platform `Contain`**: Zero-config automatic tight-box+clipped boundaries + first-class W3C `Contain::LAYOUT | SIZE | PAINT` (projected to native containment and Web CSS `contain`), plus isolated anchored overlay layout roots and automatic escalation.
-     - **Rigid-Body `local_changed()` vs `world_changed()` Separation + Epoch-Pruned Projection + Lazy/Incremental `FlatTree` + Content-Addressed `Shape` Probe Cache + `check_layout_cache` Oracle**: Eliminate full-window `collect_frames`, eager spatial rebuilds, and streaming-growth sibling cascades (`1,832 → <= 16` geometry visits on 160-row hover; 0 sibling text/a11y re-projections on rigid-body row shifts; 0.00 ms spatial work on non-pointer frames), verified bit-for-bit against cold full-tree layout in DST.
-  5. **Unified Native IME, Text Editing & Clipboard Hygiene (Wave D4)**:
-     - Collapse `winit`-era duplicate `EditorEvent` variants into minimal orthogonal `Edit` / `Select` / `Command(EditorCommand)` / `KeyIntercept` (with `TextEdit::DeleteSurrounding` and CJK `MarkedClause` underlines) and execute every `EditorCommand` in one shared `octara-tree`/`octara-runtime` path.
-     - Extract one platform-neutral `HostTextBridge` in `octara-host-native` (shared `EditorMirror`, optimistic prediction reconciliation, UTF-8↔UTF-16 mapping, 4000 B Wayland `surrounding_text`, `TextGeometry` queries), deleting duplicated per-platform shadow state machines (`os/ios/draft.rs` & AppKit command duplication) and enforcing the deterministic 4-tier key routing law.
-     - Delete dead `arboard` dependency workspace-wide (every Tier-1 platform uses native OS clipboard directly).
-  6. **Zero-Bloat Core Dependencies & Native OS Primitives (Wave D5)**:
-     - Delete `tokio` & `reqwest` (+ `rustls`/`hyper`, ~100+ transitive crates) from `octara-host-native`, replacing `media.rs` with a pluggable `MediaTransport` SPI, direct Apple `NSURLSession`, and Octara's own QoS worker pool.
-     - Remove `objc2-map-kit` & `objc2-core-location` from core `octara-host-native`, replace `image` on Apple with hardware `ImageIO` (`CGImageSource` / `CGImageDestination`), purge Linux redundant wrappers (`clipboard-rs`, `wl-clipboard-rs`, `x11-dl`, `open`), replace `icu_locale` in Layer-1 `octara-tree` with a 35-line pure-Rust BCP-47 RTL table (0 CLDR blob in `.wasm`), and self-own `block_on` (deleting `pollster`).
+- The native shell uses `OsHost`, `OsWindow`, and `PlatformEvent` with direct AppKit, UIKit, Wayland and X11 backends. iOS adds VoiceOver, `StatusBarStyle`, and scene-local keyboard layout. The Web host adds visual viewport handling, page metadata, close confirmation, and modal focus isolation.
+- `El::on_drag_start` offers `DragItem` data to AppKit, Linux, or the browser. `WindowLevel` adjusts stacking on macOS and X11, and macOS supports non-activating panels. `AirspacePolicy::SnapshotOnOcclude` lets native view factories opt into snapshotting for covered overlay views.
+- `LayoutKernel` runs Taffy’s flex and grid algorithms over ECS nodes. It isolates relayout boundaries, tracks local geometry separately from viewport position, and updates the spatial index on demand. `Contain` also maps to CSS on the Web. Dense rollback journals preserve committed projection state when a cycle fails.
+- Native hosts share `HostTextBridge` for IME composition and session reconciliation. The runtime routes `EditorCommand` through a common editing path, and `ServiceRequest::WriteClipboard` offers text, images, or files through platform clipboard APIs where supported.
+- Apple hosts use `NSURLSession` and ImageIO for image loading. Native media workers accept an app-provided `MediaTransport` for HTTP images, and Linux uses its window protocols for clipboard transfers. The host dropped its Tokio and Reqwest dependencies, `octara-tree` now uses a compact BCP-47 direction table, and the renderer owns its blocking helper.
 
 ---
 
