@@ -1,8 +1,11 @@
 //! Launch an individual Octara example using the native host.
 
-use octara::prelude::*;
+#[cfg(feature = "wgpu")]
+use octara::Size;
 use octara_examples::{apps, failure, showcase, window_options};
-use octara_examples_desktop::{gpu_lab, native};
+#[cfg(feature = "wgpu")]
+use octara_examples_desktop::gpu_lab;
+use octara_examples_desktop::native;
 use octara_host_native::ShellError;
 
 fn main() -> Result<(), ShellError> {
@@ -11,6 +14,7 @@ fn main() -> Result<(), ShellError> {
     if name == "counter" {
         return native::run_app(apps::counter_app());
     }
+    #[cfg(feature = "wgpu")]
     if name == "gpu_lab" {
         let mut options = gpu_lab::options();
         return match args.next().as_deref() {

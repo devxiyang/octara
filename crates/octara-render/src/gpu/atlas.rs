@@ -1,6 +1,6 @@
 use super::custom::with_error_scopes_async;
 use crate::glyphs::{GlyphCache, GlyphImage, GlyphKey};
-use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, ImageMips, PACKED_IMAGE_MAX_LOD, full_lod, opaque, packed_footprint, packed_lod};
+use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, ImageMips, PACKED_IMAGE_MAX_LOD, full_lod, opaque, packed_image_layout};
 use crate::paths::{self, MaskKey};
 use crate::plan::packing::{Box2, Guillotine, glyph_atlas_edge};
 use crate::plan::{ArrayId, Region};
@@ -201,10 +201,9 @@ impl Atlases {
         for (lod, level) in (0..=region.max_lod).zip(ImageMips::from_base(base, padded, region.max_lod)) {
             let origin = region.origin.map(|axis| axis >> lod);
             if padded {
-                let size = level.size.map(|axis| axis + 2);
-                let rect = Box2 { origin: origin.map(|axis| axis - 1), size };
-                let pixels = extrude_edges(&level);
-                self.push_upload(region, lod, rect, pixels, size[0] * 4, 0);
+                let level = level.with_gutter();
+                let rect = Box2 { origin: origin.map(|axis| axis - 1), size: level.size };
+                self.push_upload(region, lod, rect, level.pixels, level.size[0] * 4, 0);
             } else {
                 let size = level.size;
                 self.push_upload(region, lod, Box2 { origin, size }, level.pixels, size[0] * 4, 0);
@@ -287,7 +286,7 @@ impl Atlases {
         let edge = family.edge(limits.max_texture_dimension_2d);
         let available = self.frame_limit - self.frame_bytes;
         let packed = match family {
-            Family::Image => packed_lod(size, IMAGE_ATLAS_EDGE).map(|lod| (packed_footprint(size, lod), lod, 1 << lod)),
+            Family::Image => packed_image_layout(size, IMAGE_ATLAS_EDGE).map(|(footprint, lod)| (footprint, lod, 1 << lod)),
             _ => Some((size, 0, 0)),
         };
         if let Some((footprint, lod, gutter)) = packed
@@ -470,20 +469,6 @@ fn checked_bytes(existing: u64, added: u64, limit: u64) -> Result<u64, RecordErr
     if bytes > limit { Err(RecordError::TextureBudget { bytes, limit }) } else { Ok(bytes) }
 }
 
-fn extrude_edges(level: &ImageLevel) -> Arc<[u8]> {
-    let [width, height] = level.size.map(|axis| axis as usize);
-    let stride = width * 4;
-    let mut padded = Vec::with_capacity((width + 2) * (height + 2) * 4);
-    for y in 0..height + 2 {
-        let start = y.saturating_sub(1).min(height - 1) * stride;
-        let row = &level.pixels[start..start + stride];
-        padded.extend_from_slice(&row[..4]);
-        padded.extend_from_slice(row);
-        padded.extend_from_slice(&row[stride - 4..]);
-    }
-    padded.into()
-}
-
 /// The largest piece of a path's mask in the atlas.
 const TILE: u32 = 1024;
 
@@ -620,7 +605,7 @@ mod tests {
         let level = levels.next().unwrap();
         assert_eq!(level.size, [1, 1]);
         assert_eq!(&*level.pixels, &[188, 0, 0, 128]);
-        assert_eq!(&*extrude_edges(&level), &[188, 0, 0, 128].repeat(9));
+        assert_eq!(&*level.with_gutter().pixels, &[188, 0, 0, 128].repeat(9));
         assert!(levels.next().is_none());
     }
 
@@ -636,8 +621,7 @@ mod tests {
         let mut rgba = [255, 0, 0, 255, 0, 0, 255, 128].repeat(texels.div_ceil(2));
         rgba.truncate(texels * 4);
         let pixels = rgba.into();
-        let lod = packed_lod(size, IMAGE_ATLAS_EDGE).unwrap();
-        let footprint = packed_footprint(size, lod);
+        let (footprint, lod) = packed_image_layout(size, IMAGE_ATLAS_EDGE).unwrap();
         let mut spill = Atlases { frame_limit: array_bytes(Family::Image, footprint, lod), ..Atlases::default() };
         let mut shared = Atlases::default();
         for atlas in [&mut shared, &mut spill] {

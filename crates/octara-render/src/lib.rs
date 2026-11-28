@@ -4,7 +4,7 @@
 //! rasterizers, instance packing, and damage tracking. The `wgpu` feature records those
 //! plans into GPU commands on native and WebGPU devices.
 
-#[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "plan", not(target_arch = "wasm32")))]
 mod blocking;
 #[cfg(feature = "plan")]
 pub mod cpu;
@@ -23,7 +23,7 @@ pub mod plan;
 #[cfg(feature = "plan")]
 pub mod shape;
 
-#[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "plan", not(target_arch = "wasm32")))]
 #[doc(hidden)]
 pub use blocking::block_on;
 #[cfg(feature = "wgpu")]

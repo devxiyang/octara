@@ -4,10 +4,10 @@ mod frame_input;
 
 use self::frame_input::FrameInput;
 use crate::os::{
-    self, FileDropPhase, HostEvent, LoopState, NativeGpuBackend, NativeGpuDevice, NativeSurfaceLease, NativeSurfaceSession, OsHost,
-    OsWindowContext, PlatformEvent, PlatformKey, PlatformSender, PointerPhase, ShellDriver,
+    self, FileDropPhase, HostEvent, LoopState, NativeGpuBackend, NativeGpuDevice, NativeSurfaceLease, NativeSurfaceRendererFactory,
+    NativeSurfaceSession, OsHost, OsWindowContext, PlatformEvent, PlatformKey, PlatformSender, PointerPhase, ShellDriver,
 };
-use crate::window::{FileDrop, HostWindow, create_surface, transparent_background};
+use crate::window::{DisplayPulse, DrawTime, FileDrop, HostWindow, create_surface, transparent_background};
 use crate::{NativeAppOptions, ShellConfig, ShellHook, trace};
 use octara::module::HostLifecycleEvent;
 use octara::runtime::cycle::AppError;
@@ -16,7 +16,7 @@ use octara::tree::editor::EditorSession;
 use octara::{App, AppDefinition, WindowOptions};
 use octara_gpu::{
     CaptureOutput, CapturePixels, CaptureWriter, DeviceGeneration, DeviceNotice, FrameProgress, GpuBackend, GpuDevice, GpuTask,
-    StagedCapture, SurfaceRendererFactory,
+    StagedCapture,
 };
 use octara_model::ask::{Answer, ServiceError, ServiceOutcome, ServiceRequest};
 use octara_model::capture::FrameReceipt;
@@ -60,7 +60,7 @@ struct Shell {
     frame_input: FrameInput,
     backend: NativeGpuBackend,
     device: Option<NativeGpuDevice>,
-    surface_renderer: Option<SurfaceRendererFactory>,
+    surface_renderer: Option<NativeSurfaceRendererFactory>,
     generation: u64,
     drain: Option<GpuTask<NativeSurfaceLease>>,
     started: Instant,
@@ -500,16 +500,26 @@ impl Shell {
             }
         }
         let Some(device) = &self.device else { return Ok(()) };
-        if self.drain.is_none() && (!self.retired.is_empty() || self.windows.values().any(|host| host.can_configure(now))) {
+        let mut resize_draws = Vec::new();
+        for host in self.windows.values_mut().filter(|host| host.configures_without_drain() && host.can_configure(now)) {
+            if host.configure(&self.backend, device, None)? {
+                host.request_frame();
+                if let Some(pulse) = host.take_resize_draw() {
+                    resize_draws.push((host.id, pulse));
+                }
+            }
+        }
+        if self.drain.is_none()
+            && (!self.retired.is_empty() || self.windows.values().any(|host| !host.configures_without_drain() && host.can_configure(now)))
+        {
             self.drain = Some(device.drain_surfaces().map_err(|error| error.to_string())?);
         }
         if let Some(result) = self.drain.as_mut().and_then(GpuTask::try_take) {
             self.drain = None;
             let lease = result.map_err(|error| error.to_string())?;
             self.retired.clear();
-            let mut resize_draws = Vec::new();
-            for host in self.windows.values_mut().filter(|host| host.can_configure(now)) {
-                if host.configure(&self.backend, device, &lease)? {
+            for host in self.windows.values_mut().filter(|host| !host.configures_without_drain() && host.can_configure(now)) {
+                if host.configure(&self.backend, device, Some(&lease))? {
                     host.request_frame();
                     if let Some(target) = host.take_resize_draw() {
                         resize_draws.push((host.id, target));
@@ -517,11 +527,10 @@ impl Shell {
                 }
             }
             drop(lease);
-            // The lease can arrive between display ticks. Submit the resize frame for the
-            // tick that requested it, so the next resize cannot overtake its drawable.
-            for (window, target) in resize_draws {
-                self.draw(window, target, true)?;
-            }
+        }
+        // Submit a resize frame for the tick that requested it.
+        for (window, pulse) in resize_draws {
+            self.draw(window, pulse.target, Some(pulse.received_at))?;
         }
         Ok(())
     }
@@ -560,13 +569,13 @@ impl Shell {
         Ok(())
     }
 
-    fn draw(&mut self, id: WindowId, target: Instant, from_clock: bool) -> Result<(), String> {
+    fn draw(&mut self, id: WindowId, target: Instant, tick_at: Option<Instant>) -> Result<(), String> {
         if self.drain.is_none()
             && let (Some(host), Some(runtime), Some(device)) =
                 (self.windows.get_mut(&id), self.app.runtime().window(id), self.device.as_ref())
         {
             let sample = if self.config.manual_clock { self.app.runtime().now() } else { target.saturating_duration_since(self.started) };
-            host.draw(runtime, device, sample, Instant::now(), from_clock)?;
+            host.draw(runtime, device, DrawTime { sample, now: Instant::now(), tick_at, trace_stages: self.config.trace_frame_stages })?;
         }
         Ok(())
     }
@@ -634,7 +643,7 @@ impl Shell {
         Ok(())
     }
 
-    fn run_ready(&mut self, os: &mut dyn OsHost, display_tick: Option<(WindowId, Instant)>) -> Result<(), String> {
+    fn run_ready(&mut self, os: &mut dyn OsHost, display_tick: Option<(WindowId, DisplayPulse)>) -> Result<(), String> {
         if self.config.manual_clock {
             self.app.runtime_mut().settle().map_err(|error| error.to_string())?;
         } else {
@@ -643,7 +652,7 @@ impl Shell {
         self.run_ready_after_clock(os, display_tick)
     }
 
-    fn run_ready_after_clock(&mut self, os: &mut dyn OsHost, display_tick: Option<(WindowId, Instant)>) -> Result<(), String> {
+    fn run_ready_after_clock(&mut self, os: &mut dyn OsHost, display_tick: Option<(WindowId, DisplayPulse)>) -> Result<(), String> {
         self.drain_commands(os)?;
         self.finish_frames()?;
         let resized: Vec<_> = self
@@ -681,7 +690,7 @@ impl Shell {
         // latest settled revision once when the OS has no separate frame clock.
         let ready: Vec<_> = self.windows.iter_mut().filter_map(|(&id, host)| host.needs_unpaced_frame(now).then_some(id)).collect();
         for id in ready {
-            self.draw(id, now, false)?;
+            self.draw(id, now, None)?;
         }
         Ok(())
     }
@@ -1008,7 +1017,7 @@ impl Shell {
                     self.refresh_viewport(window)?;
                 }
             }
-            PlatformEvent::WindowRedrawRequested(window) => self.draw(window, Instant::now(), false)?,
+            PlatformEvent::WindowRedrawRequested(window) => self.draw(window, Instant::now(), None)?,
             PlatformEvent::WindowFocused { window, active } => {
                 self.focus_changed |= os.follows_window_focus();
                 if let Some(host) = self.windows.get_mut(&window) {
@@ -1038,19 +1047,20 @@ impl Shell {
                 }
                 return self.dispatch(window, Input::Host(reply));
             }
-            PlatformEvent::Frame { window, target } => self.draw(window, target, false)?,
+            PlatformEvent::Frame { window, target } => self.draw(window, target, None)?,
             PlatformEvent::FrameClockTick { window, tick } => {
+                let pulse = DisplayPulse { target: tick.target, received_at: Instant::now() };
                 if self.config.trace_frame_clock {
                     trace::display_tick(window, tick, self.started);
                 }
                 self.app.runtime_mut().set_frame_interval(tick.interval);
                 let time = (!self.config.manual_clock).then(|| self.started.elapsed());
                 if self.frame_input.window == Some(window) && self.flush_frame_input(time)? {
-                    self.run_ready_after_clock(os, Some((window, tick.target)))?;
+                    self.run_ready_after_clock(os, Some((window, pulse)))?;
                 } else {
-                    self.run_ready(os, Some((window, tick.target)))?;
+                    self.run_ready(os, Some((window, pulse)))?;
                 }
-                self.draw(window, tick.target, true)?;
+                self.draw(window, pulse.target, Some(pulse.received_at))?;
                 if let Some(host) = self.windows.get_mut(&window) {
                     host.idle_frame_clock_if_clean();
                 }

@@ -6,6 +6,7 @@ use octara_model::paint::DisplayList;
 use octara_render::OutputColor;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Platform presentation support for the selected adapter, or for the backend before device selection.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -50,6 +51,7 @@ pub trait GpuDevice: Sized {
     fn generation(&self) -> &Arc<DeviceGeneration>;
     fn draw(&self, work: DrawWork<Box<Self::Drawable>>) -> Result<GpuTask<DeviceDrawnFrame<Self>>, GpuError>;
     fn drain_surfaces(&self) -> Result<GpuTask<Self::SurfaceLease>, GpuError>;
+    /// Make an accepted frame's retained output available to subsequent draws.
     fn accept_presentation(&self, presentation: Self::Presentation) -> Result<(), GpuError>;
     fn capture(&self, list: Arc<DisplayList>, scale: f32, sample: Option<PaintSample>) -> Result<GpuTask<CapturePixels>, GpuError>;
 
@@ -59,6 +61,16 @@ pub trait GpuDevice: Sized {
 
 pub trait SurfaceSession {
     type Device: GpuDevice;
+
+    /// Whether the surface can change its drawable configuration while submitted work finishes.
+    fn supports_configure_without_drain(&self) -> bool {
+        false
+    }
+
+    /// Reconfigure in place if the backend manages drawable allocation independently of the queue.
+    fn configure_without_drain(&self, _device: &Self::Device, _size: [u32; 2], _transparent: bool) -> Option<Result<OutputColor, String>> {
+        None
+    }
 
     /// Configure the surface using the lease returned by the device's drain operation.
     fn configure(
@@ -70,16 +82,44 @@ pub trait SurfaceSession {
     ) -> Result<OutputColor, String>;
 
     fn acquire(&self, color: OutputColor) -> DrawableAcquisition<<Self::Device as GpuDevice>::Drawable>;
+
+    fn acquire_with_transaction(
+        &self,
+        color: OutputColor,
+        _transactional: bool,
+    ) -> DrawableAcquisition<<Self::Device as GpuDevice>::Drawable> {
+        self.acquire(color)
+    }
 }
 
-/// A drawable travels to the worker for rendering and returns to the host for presentation.
+/// A drawable travels to the worker for rendering and returns to the host for frame acceptance.
 pub trait DrawableTarget: Send + 'static {
+    /// Complete any remaining presentation work on the host.
     fn present(self: Box<Self>) -> Result<(), String>;
+
+    fn report_stages(&mut self, _tick_at: Option<Instant>, _cpu_done_at: Instant, _report: FrameStageReport) {}
 
     fn suboptimal(&self) -> bool {
         false
     }
 }
+
+/// CPU and hardware timestamps for a presented frame. Hardware times use the platform media clock.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameStageTimings {
+    pub tick_at: Option<Instant>,
+    pub cpu_done_at: Instant,
+    pub encode_done_at: Instant,
+    pub clock_at: Instant,
+    pub clock_media_s: f64,
+    pub gpu_start_s: f64,
+    pub gpu_end_s: f64,
+    /// Actual display time, when the drawable reports one.
+    pub presented_at_s: Option<f64>,
+}
+
+/// Report CPU, GPU, and display timestamps once rendering and presentation have finished.
+pub type FrameStageReport = Box<dyn FnOnce(FrameStageTimings) + Send>;
 
 pub enum DrawableAcquisition<T: DrawableTarget + ?Sized> {
     Ready(Box<T>),

@@ -1,11 +1,17 @@
 //! Render a small card with the available renderers.
 //! `cargo run -p octara-gpu --example card_png -- <dir>`
 
-use octara_gpu::{CaptureWriter, DeviceExecutor, DeviceGeneration, StagedCapture};
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+use octara_gpu::DeviceExecutor;
+use octara_gpu::{CaptureWriter, DeviceGeneration, StagedCapture};
+#[cfg(all(not(feature = "wgpu"), any(target_os = "macos", target_os = "ios")))]
+use octara_gpu::{GpuDevice, MetalGpuDevice};
 use octara_model::geometry::{Rect, Size};
 use octara_model::paint::{DisplayList, Item, Part, Quad};
 use octara_model::theme::rgb;
-use octara_render::{CpuRenderer, WgpuRenderer};
+use octara_render::CpuRenderer;
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+use octara_render::WgpuRenderer;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -27,15 +33,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     publish(wait(&wakes, || cpu.try_take())?, &wake, &wakes)?;
 
-    if let Some(renderer) = WgpuRenderer::new() {
-        let device_wake = wake.clone();
-        let generation = Arc::new(DeviceGeneration::new(
-            0,
-            Some(Arc::new(move |_, _| {
-                let _ = device_wake.send(());
-            })),
-        ));
-        let executor = DeviceExecutor::spawn(renderer, generation)?;
+    let device_wake = wake.clone();
+    let generation = Arc::new(DeviceGeneration::new(
+        0,
+        Some(Arc::new(move |_, _| {
+            let _ = device_wake.send(());
+        })),
+    ));
+    #[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+    let executor = WgpuRenderer::new().map(|renderer| DeviceExecutor::spawn(renderer, generation)).transpose()?;
+    #[cfg(all(not(feature = "wgpu"), any(target_os = "macos", target_os = "ios")))]
+    let executor = Some(MetalGpuDevice::new(generation, false, || {})?);
+    if let Some(executor) = executor {
         let mut capture = executor.capture(card, 2.0, None)?;
         let pixels = wait(&wakes, || capture.try_take())?;
         let gpu_wake = wake.clone();

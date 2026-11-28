@@ -35,6 +35,8 @@ use objc2_ui_kit::{
 use octara::WindowOptions;
 use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
 use octara::runtime::WindowId;
+#[cfg(not(feature = "wgpu"))]
+use octara_gpu::DrawableTarget;
 use octara_gpu::SurfaceSession;
 use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::WindowViewport;
@@ -409,7 +411,7 @@ impl WindowPresentation for IosWindow {
             return DrawableAcquisition::WaitingForClock;
         }
         set_transactional(&self.layer, self.transactional);
-        retry_on_clock(surface.acquire(color), externally_paced)
+        retry_on_clock(surface.acquire_with_transaction(color, self.transactional), externally_paced)
     }
 
     fn present_with_native_views(&mut self, drawable: Box<Drawable>, _: u64, commit_native_views: &mut dyn FnMut()) -> Result<(), String> {

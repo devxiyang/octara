@@ -3,7 +3,6 @@
 use crate::generation::ReadbackLease;
 use octara_model::capture::{PaintReceipt, PaintedPicture};
 use octara_model::paint::Picture;
-use octara_render::gpu::MappedReadback;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions, Permissions};
 use std::io::{self, BufWriter};
@@ -16,23 +15,28 @@ use tempfile::NamedTempFile;
 
 /// A mapped readback and the device capacity it still occupies.
 pub struct CapturePixels {
-    // Drop the buffer before releasing its capacity, including on cancellation.
-    mapped: MappedReadback,
+    size: [u32; 2],
+    // Drop the readback storage before releasing its capacity, including on cancellation.
+    unpack: Prepare,
     _lease: Arc<ReadbackLease>,
 }
 
 impl CapturePixels {
-    pub(super) fn new(mapped: MappedReadback, lease: Arc<ReadbackLease>) -> Self {
-        Self { mapped, _lease: lease }
+    pub(super) fn new(
+        size: [u32; 2],
+        unpack: impl FnOnce() -> Result<PaintedPicture, String> + Send + 'static,
+        lease: Arc<ReadbackLease>,
+    ) -> Self {
+        Self { size, unpack: Box::new(unpack), _lease: lease }
     }
 
     pub fn size(&self) -> [u32; 2] {
-        self.mapped.size()
+        self.size
     }
 
     /// Unpack aligned GPU rows into the model's contiguous picture.
     pub fn finish(self) -> Result<PaintedPicture, String> {
-        self.mapped.finish()
+        (self.unpack)()
     }
 }
 

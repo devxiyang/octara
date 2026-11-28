@@ -13,11 +13,11 @@ Build and run from the repository root. `octara-examples` contains the example a
 | Multiple windows and per-window undo history | `cargo run -p octara-examples-desktop --bin window -- windows` or `undo` |
 | Virtualized row geometry and offscreen editors | `cargo run -p octara-examples-desktop --bin virtual_geometry` or `--bin virtual_interaction` |
 | System input methods and marked text | `cargo run -p octara-examples-desktop --bin ime`. [IME walkthrough](IME.md) |
-| Interactive GPU materials, flow fields, and refraction | `cargo run -p octara-examples-desktop --bin window -- gpu_lab` |
+| Interactive GPU materials, flow fields, and refraction | `cargo run -p octara-examples-desktop --features wgpu --bin window -- gpu_lab` |
 | CPU reference screenshots | `cargo run -p octara-examples --bin screenshot -- /tmp/octara-shots 2 --bundled` |
 | CPU projection benchmark | `cargo run --release -p octara-examples --bin bench` |
 | Retained scroll, Markdown flings, and list switches | `cargo run --release -p octara-examples --bin scroll_bench -- 120` |
-| GPU painting and cache benchmarks | `cargo run --release -p octara-examples-desktop --bin gpu_bench -- gpu` or `-- gpu-retain` |
+| wgpu painting and cache benchmarks | `cargo run --release -p octara-examples-desktop --features wgpu --bin gpu_bench -- gpu` or `-- gpu-retain` |
 
 CPU screenshots use bundled fonts by default. To use system fonts, add the Cargo flag `--features system-fonts` and omit `--bundled`.
 

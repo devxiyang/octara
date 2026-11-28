@@ -1,0 +1,35 @@
+[package]
+name = "octara-render-metal"
+description = "Native Metal encoding for Octara's device-free render plans."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[features]
+default = []
+custom-wgsl = ["dep:naga"]
+wgpu = ["octara-render/wgpu"]
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+octara-model.workspace = true
+octara-render = { workspace = true, features = ["plan"] }
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-metal = { workspace = true, features = [
+    "std", "block2", "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer",
+    "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDepthStencil", "MTLDevice",
+    "MTLDrawable", "MTLLibrary", "MTLPipeline", "MTLPixelFormat", "MTLRenderCommandEncoder",
+    "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLTexture", "MTLTypes",
+] }
+naga = { version = "30.0.2", optional = true, default-features = false, features = ["wgsl-in", "msl-out"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dev-dependencies]
+octara-fonts = { workspace = true, features = ["cjk"] }
+swash.workspace = true

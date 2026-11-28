@@ -12,10 +12,12 @@ mod window;
 
 pub use config::{LaunchCapture, ShellConfig};
 pub use media::{DiskMediaCache, MediaCancelRegistration, MediaFetchRequest, MediaFetchResponse, MediaTransport};
+pub use octara_gpu::FrameStageTimings;
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
 pub use octara_gpu::{SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use os::apple_media::AppleImageSource;
-pub use os::{HostWake, PlatformEvent};
+pub use os::{HostWake, NativeSurfaceRendererFactory, PlatformEvent};
 
 use octara::runtime::{BuildCx, Input, WindowId, WindowOptions};
 use octara::{App, AppDefinition, IntoView, WindowDefinition};
@@ -48,6 +50,7 @@ pub fn run_app_with_config(application: AppDefinition, config: ShellConfig) -> R
 }
 
 /// Launches the application with a surface backend shared by its native windows.
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
 pub fn run_app_with_surface_renderer(application: AppDefinition, factory: SurfaceRendererFactory) -> Result<(), ShellError> {
     run_app_with_options(application, NativeAppOptions { surface_renderer: Some(factory), ..Default::default() })
 }
@@ -81,7 +84,7 @@ pub struct NativeAppOptions {
     pub config: Option<ShellConfig>,
     /// Defaults to the platform's built-in host.
     pub os_host: Option<Box<dyn OsHost>>,
-    pub surface_renderer: Option<SurfaceRendererFactory>,
+    pub surface_renderer: Option<NativeSurfaceRendererFactory>,
     /// Overrides the platform's default HTTP image transport.
     pub media_transport: Option<Arc<dyn MediaTransport>>,
     pub hook: Option<Box<dyn ShellHook>>,

@@ -1,12 +1,18 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use octara_gpu::{CaptureWriter, DeviceExecutor, DeviceGeneration, GpuError};
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+use octara_gpu::DeviceExecutor;
+use octara_gpu::{CaptureWriter, DeviceGeneration, GpuError};
+#[cfg(all(not(feature = "wgpu"), any(target_os = "macos", target_os = "ios")))]
+use octara_gpu::{GpuDevice, MetalGpuDevice};
 use octara_model::{
     geometry::{Rect, Size},
     paint::{DisplayList, Item, Part, Quad},
     theme::rgb,
 };
-use octara_render::{CpuRenderer, WgpuRenderer};
+use octara_render::CpuRenderer;
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+use octara_render::WgpuRenderer;
 use std::fmt::Debug;
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -25,6 +31,7 @@ fn wait<T, E: Debug>(wakes: &mpsc::Receiver<()>, mut take: impl FnMut() -> Optio
 
 #[test]
 fn gpu_capture_stages_a_cpu_equivalent_png_until_publication() {
+    #[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     let Some(renderer) = WgpuRenderer::new() else {
         eprintln!("No GPU adapter available for capture parity");
         return;
@@ -58,7 +65,10 @@ fn gpu_capture_stages_a_cpu_equivalent_png_until_publication() {
             let _ = device_wake.send(());
         })),
     ));
+    #[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     let executor = DeviceExecutor::spawn(renderer, generation.clone()).unwrap();
+    #[cfg(all(not(feature = "wgpu"), any(target_os = "macos", target_os = "ios")))]
+    let executor = MetalGpuDevice::new(generation.clone(), false, || {}).unwrap();
     let mut capture = executor.capture(list.clone(), 1.0, None).unwrap();
     let mapped = wait(&wakes, || capture.try_take());
     assert!(matches!(executor.capture(list, 1.0, None), Err(GpuError::Busy)));

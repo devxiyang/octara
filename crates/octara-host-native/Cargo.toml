@@ -12,6 +12,11 @@ keywords.workspace = true
 categories.workspace = true
 publish = true
 
+[features]
+default = []
+wgpu = ["octara-gpu/wgpu", "octara-render/wgpu"]
+custom-wgsl = ["octara-gpu/custom-wgsl"]
+
 [[test]]
 name = "native_window"
 harness = false
@@ -35,7 +40,7 @@ octara.workspace = true
 octara-gpu.workspace = true
 octara-model.workspace = true
 octara-pipeline = { workspace = true, features = ["system-fonts"] }
-octara-render = { workspace = true, features = ["wgpu"] }
+octara-render.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smallvec.workspace = true

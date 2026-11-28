@@ -5,7 +5,9 @@ use octara::WindowOptions;
 use octara::module::{HostSurface, HostSurfaceKind};
 use octara::runtime::{Input, WindowId};
 use octara::tree::editor::{Composition, EditorSlot};
-use octara_gpu::{BackendCapabilities, DeviceDrawnFrame, GpuBackend, GpuDevice, WgpuBackend};
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(feature = "wgpu")))]
+use octara_gpu::DrawableTarget;
+use octara_gpu::{BackendCapabilities, DeviceDrawnFrame, GpuBackend, GpuDevice};
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceRequest};
 use octara_model::geometry::{Rect, Size, WindowViewport};
 use octara_model::identity::{EditorSessionId, NativeId, TargetGuard};
@@ -62,8 +64,12 @@ pub fn create_os_host() -> Box<dyn OsHost> {
     platform::create()
 }
 
-pub(crate) type NativeGpuBackend = WgpuBackend;
+#[cfg(all(any(target_os = "macos", target_os = "ios"), not(feature = "wgpu")))]
+pub(crate) type NativeGpuBackend = octara_gpu::MetalBackend;
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+pub(crate) type NativeGpuBackend = octara_gpu::WgpuBackend;
 pub(crate) type NativeGpuDevice = <NativeGpuBackend as GpuBackend>::Device;
+pub type NativeSurfaceRendererFactory = <NativeGpuBackend as GpuBackend>::RendererFactory;
 pub(crate) type NativeSurfaceLease = <NativeGpuDevice as GpuDevice>::SurfaceLease;
 pub(crate) type NativeDrawnFrame = DeviceDrawnFrame<NativeGpuDevice>;
 pub type NativeSurfaceSession = <NativeGpuBackend as GpuBackend>::Surface;

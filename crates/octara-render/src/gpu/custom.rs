@@ -27,7 +27,7 @@ pub mod local;
 /// can be batched with different parameter values. An invalid shader uses the box's
 /// ordinary paint.
 pub fn material(wgsl: &'static str) -> PaintProgram {
-    PaintProgram::new(Material::new(wgsl))
+    crate::plan::material(wgsl)
 }
 
 /// A canvas draw records render, compute or copy commands into a local GPU target. The
@@ -341,6 +341,7 @@ impl Programs {
         material: Material,
         node: NodeId,
     ) -> bool {
+        let Some(source) = material.wgsl() else { return false };
         use std::collections::hash_map::Entry;
         let pipeline = match self.materials.entry((material, format)) {
             Entry::Occupied(entry) => entry.into_mut(),
@@ -348,9 +349,7 @@ impl Programs {
                 let pipeline = checked_async(device, || {
                     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some("octara material"),
-                        source: wgpu::ShaderSource::Wgsl(
-                            format!("{}\n{SHARED_SHADER}{}", material.wgsl(), include_str!("material.wgsl")).into(),
-                        ),
+                        source: wgpu::ShaderSource::Wgsl(format!("{source}\n{SHARED_SHADER}{}", include_str!("material.wgsl")).into()),
                     });
                     render_pipeline(device, layout, format, &shader, "octara material", Phase::Material, true)
                 })

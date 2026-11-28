@@ -3,24 +3,27 @@
 use color::{AlphaColor, LinearSrgb, Srgb};
 use std::sync::{Arc, LazyLock};
 
-pub(crate) const IMAGE_ATLAS_EDGE: u32 = 2048;
-pub(crate) const PACKED_IMAGE_MAX_LOD: u8 = 6;
+/// Preferred edge for an image atlas layer.
+pub const IMAGE_ATLAS_EDGE: u32 = 2048;
+/// Deepest mip stored for an image sharing an atlas layer.
+pub const PACKED_IMAGE_MAX_LOD: u8 = 6;
 
-pub(crate) fn full_lod(size: [u32; 2]) -> u8 {
-    size[0].max(size[1]).ilog2() as u8
+/// Deepest mip for a dedicated image.
+pub fn full_lod(size: [u32; 2]) -> u8 {
+    size[0].max(size[1]).max(1).ilog2() as u8
 }
 
-pub(crate) fn packed_footprint(size: [u32; 2], lod: u8) -> [u32; 2] {
-    let alignment = 1 << lod;
-    size.map(|axis| (axis.div_ceil(alignment) + 2) * alignment)
-}
-
-pub(crate) fn packed_lod(size: [u32; 2], edge: u32) -> Option<u8> {
-    if size.into_iter().any(|axis| axis > edge) {
+/// The aligned footprint and deepest mip for an image with a one-texel gutter
+/// at every level. Returns `None` when the reservation exceeds the atlas edge.
+pub fn packed_image_layout(size: [u32; 2], edge: u32) -> Option<([u32; 2], u8)> {
+    if size.into_iter().any(|axis| axis == 0 || axis > edge) {
         return None;
     }
     let lod = full_lod(size).min(PACKED_IMAGE_MAX_LOD);
-    packed_footprint(size, lod).into_iter().all(|axis| axis <= edge).then_some(lod)
+    let alignment = 1 << lod;
+    let padded = |axis: u32| axis.div_ceil(alignment).checked_add(2)?.checked_mul(alignment);
+    let footprint = [padded(size[0])?, padded(size[1])?];
+    footprint.into_iter().all(|axis| axis <= edge).then_some((footprint, lod))
 }
 
 pub(crate) fn opaque(rgba: &[u8]) -> bool {
@@ -92,6 +95,21 @@ impl Iterator for ImageMips {
 }
 
 impl ImageLevel {
+    /// Repeats the edge texels into a one-texel border on every side.
+    pub fn with_gutter(&self) -> Self {
+        let [width, height] = self.size.map(|axis| axis as usize);
+        let stride = width * 4;
+        let mut padded = Vec::with_capacity((width + 2) * (height + 2) * 4);
+        for y in 0..height + 2 {
+            let start = y.saturating_sub(1).min(height - 1) * stride;
+            let row = &self.pixels[start..start + stride];
+            padded.extend_from_slice(&row[..4]);
+            padded.extend_from_slice(row);
+            padded.extend_from_slice(&row[stride - 4..]);
+        }
+        Self { size: self.size.map(|axis| axis + 2), pixels: padded.into() }
+    }
+
     pub(crate) fn base(size: [u32; 2], rgba: &Arc<[u8]>, opaque: bool) -> Self {
         let pixels = if opaque {
             rgba.clone()

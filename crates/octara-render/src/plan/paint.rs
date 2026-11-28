@@ -11,16 +11,19 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::ptr;
 use std::time::Duration;
 
-/// Source and stable batching identity of a WGSL material.
+/// Source and stable batching identity of a fragment material.
 #[derive(Clone, Copy, Debug, Eq)]
 pub struct Material {
-    wgsl: &'static str,
+    source: &'static str,
+    native_msl: bool,
     hash: u64,
 }
 
 impl PartialEq for Material {
     fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash && (ptr::eq(self.wgsl, other.wgsl) || self.wgsl == other.wgsl)
+        self.hash == other.hash
+            && self.native_msl == other.native_msl
+            && (ptr::eq(self.source, other.source) || self.source == other.source)
     }
 }
 
@@ -32,13 +35,26 @@ impl Hash for Material {
 
 impl Material {
     pub fn new(wgsl: &'static str) -> Self {
-        Self { wgsl, hash: FxBuildHasher.hash_one(wgsl) }
+        Self { source: wgsl, native_msl: false, hash: FxBuildHasher.hash_one((false, wgsl)) }
     }
 
-    /// The shader source to compile for this material.
-    pub fn wgsl(self) -> &'static str {
-        self.wgsl
+    /// An Apple Metal fragment material.
+    pub fn new_msl(msl: &'static str) -> Self {
+        Self { source: msl, native_msl: true, hash: FxBuildHasher.hash_one((true, msl)) }
     }
+
+    pub fn wgsl(self) -> Option<&'static str> {
+        (!self.native_msl).then_some(self.source)
+    }
+
+    pub fn msl(self) -> Option<&'static str> {
+        self.native_msl.then_some(self.source)
+    }
+}
+
+/// A WGSL material function taking UV and four parameters and returning straight linear RGBA.
+pub fn material(wgsl: &'static str) -> PaintProgram {
+    PaintProgram::new(Material::new(wgsl))
 }
 
 pub struct CanvasPaint {

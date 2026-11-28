@@ -28,7 +28,7 @@ mod spatial;
 
 pub use crate::cpu::CpuRenderer;
 pub use crate::glyphs::GlyphCache;
-pub use crate::image_mips::{ImageLevel, ImageMips};
+pub use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, ImageMips, PACKED_IMAGE_MAX_LOD, full_lod, packed_image_layout};
 pub use crate::shape::{ClipNode, ClipStack, ClipState};
 pub use batch::{Batch, Draw, Paint, Pass, PlannedBatch, Shape};
 pub use damage::{DamageRect, SceneSnapshot};
@@ -40,10 +40,12 @@ pub use instances::{
 pub use metrics::{TextFrameMetrics, TextFramePlanner};
 pub use output::OutputColor;
 pub use packing::{ArrayId, Region};
-pub use paint::{CanvasMode, CanvasPaint, CanvasProgram, Material};
+pub use paint::{CanvasMode, CanvasPaint, CanvasProgram, Material, material};
 pub use profile::{FrameProfile, GpuPassKind, GpuPassTiming, GpuTimings};
 pub use schedule::{fallback_draw, schedule_pass};
 pub use spatial::{SpatialTable, SpatialWrite};
+#[doc(hidden)]
+pub use {bytemuck, color};
 
 /// A pass's pixel bounds in window coordinates, before rounding its allocation up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

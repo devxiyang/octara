@@ -10,7 +10,7 @@ use octara::runtime::engine::AccessibilityConsumer;
 use octara::runtime::{AppRuntime, WindowId, WindowRuntime};
 use octara::tree::editor::EditorSession;
 use octara::tree::resolve_cursor;
-use octara_gpu::{DrawWork, FrameProgress, GpuBackend, GpuDevice, GpuError, GpuTask, SurfaceSession};
+use octara_gpu::{DrawWork, DrawableTarget, FrameProgress, GpuBackend, GpuDevice, GpuError, GpuTask, SurfaceSession};
 use octara_model::geometry::{Point, Size, WindowViewport};
 use octara_model::identity::TargetGuard;
 use octara_model::input::{CursorStyle, DroppedFile, Modifiers};
@@ -26,6 +26,19 @@ struct SurfaceInfo {
     color: OutputColor,
     width: u32,
     height: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DisplayPulse {
+    pub target: Instant,
+    pub received_at: Instant,
+}
+
+pub(crate) struct DrawTime {
+    pub sample: Duration,
+    pub now: Instant,
+    pub tick_at: Option<Instant>,
+    pub trace_stages: bool,
 }
 
 pub(crate) struct FileDrop {
@@ -55,8 +68,8 @@ pub(crate) struct HostWindow {
     surface_info: Option<SurfaceInfo>,
     requested_size: [u32; 2],
     pending_resize: bool,
-    resize_tick: Option<Instant>,
-    resize_draw_at: Option<Instant>,
+    resize_tick: Option<DisplayPulse>,
+    resize_draw_at: Option<DisplayPulse>,
     transparent: bool,
     draw: Option<GpuTask<NativeDrawnFrame>>,
     cursor: CursorStyle,
@@ -179,7 +192,7 @@ impl HostWindow {
     }
 
     /// Apply the latest native geometry at a display tick, after any old-size frame presents.
-    pub fn resize_for_frame(&mut self, display_target: Option<Instant>) -> bool {
+    pub fn resize_for_frame(&mut self, display_target: Option<DisplayPulse>) -> bool {
         if !self.pending_resize || self.suspended {
             return false;
         }
@@ -199,7 +212,7 @@ impl HostWindow {
         true
     }
 
-    pub fn take_resize_draw(&mut self) -> Option<Instant> {
+    pub fn take_resize_draw(&mut self) -> Option<DisplayPulse> {
         self.resize_draw_at.take()
     }
 
@@ -234,7 +247,16 @@ impl HostWindow {
         }
     }
 
-    pub fn configure(&mut self, backend: &NativeGpuBackend, device: &NativeGpuDevice, lease: &NativeSurfaceLease) -> Result<bool, String> {
+    pub fn configures_without_drain(&self) -> bool {
+        self.surface.supports_configure_without_drain()
+    }
+
+    pub fn configure(
+        &mut self,
+        backend: &NativeGpuBackend,
+        device: &NativeGpuDevice,
+        lease: Option<&NativeSurfaceLease>,
+    ) -> Result<bool, String> {
         if !self.can_configure(Instant::now()) {
             return Ok(true);
         }
@@ -246,7 +268,13 @@ impl HostWindow {
             self.surface = create_surface(backend, self.os.as_ref())?;
         }
         let [width, height] = self.requested_size;
-        let color = self.surface.configure(device, lease, [width, height], self.transparent)?;
+        let color = match lease {
+            Some(lease) => self.surface.configure(device, lease, [width, height], self.transparent)?,
+            None => self
+                .surface
+                .configure_without_drain(device, [width, height], self.transparent)
+                .ok_or("the GPU surface needs a configuration lease")??,
+        };
         self.surface_info = Some(SurfaceInfo { color, width, height });
         self.presentation.configure([width, height]);
         self.redraw_at = None;
@@ -388,14 +416,9 @@ impl HostWindow {
         }
     }
 
-    pub fn draw(
-        &mut self,
-        runtime: &WindowRuntime,
-        device: &NativeGpuDevice,
-        sample: Duration,
-        now: Instant,
-        from_clock: bool,
-    ) -> Result<(), String> {
+    pub fn draw(&mut self, runtime: &WindowRuntime, device: &NativeGpuDevice, time: DrawTime) -> Result<(), String> {
+        let DrawTime { sample, now, tick_at, trace_stages } = time;
+        let from_clock = tick_at.is_some();
         if self.draw.is_some()
             || self.suspended
             || self.configure_needed()
@@ -428,9 +451,18 @@ impl HostWindow {
             None => self.surface.acquire(surface.color),
         };
         match target {
-            DrawableAcquisition::Ready(target) => {
+            DrawableAcquisition::Ready(mut target) => {
                 let list = frame.scene.as_ref().map_or_else(|| frame.draw.clone(), |scene| scene.sample(sample.as_secs_f64()));
                 let stamp = self.presentation.stamp(runtime.tree().id(), device.generation().number(), frame.number, sample);
+                if trace_stages {
+                    let id = self.id;
+                    DrawableTarget::report_stages(
+                        target.as_mut(),
+                        tick_at,
+                        Instant::now(),
+                        Box::new(move |stages| crate::trace::frame_stages(id, stamp, stages)),
+                    );
+                }
                 match device.draw(DrawWork {
                     target,
                     list,

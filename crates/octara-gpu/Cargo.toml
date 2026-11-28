@@ -12,13 +12,29 @@ keywords.workspace = true
 categories.workspace = true
 publish = true
 
+[features]
+custom-wgsl = ["octara-render-metal/custom-wgsl"]
+wgpu = ["octara-render/wgpu"]
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 octara-model.workspace = true
-octara-render = { workspace = true, features = ["wgpu"] }
+octara-render = { workspace = true, features = ["plan"] }
 png.workspace = true
 raw-window-handle = "0.6.2"
 tempfile.workspace = true
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(all(not(target_arch = "wasm32"), not(any(target_os = "macos", target_os = "ios"))))'.dependencies]
+octara-render = { workspace = true, features = ["wgpu"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+block2.workspace = true
 objc2.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-metal = { workspace = true, features = [
+    "MTLAllocation", "MTLBlitCommandEncoder", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder",
+    "MTLCommandQueue", "MTLDevice", "MTLDrawable", "MTLPixelFormat", "MTLResource", "MTLTexture",
+    "MTLTypes", "block2", "objc2-core-foundation",
+] }
 objc2-quartz-core = { workspace = true, features = ["CAMetalLayer", "objc2-metal"] }
+octara-render-metal.workspace = true

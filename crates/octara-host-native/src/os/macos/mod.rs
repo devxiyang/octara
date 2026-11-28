@@ -8,10 +8,11 @@ mod drag;
 mod editor;
 mod input;
 mod menus;
-mod metal_frame;
 mod preferences;
 mod services;
 mod view;
+#[cfg(feature = "wgpu")]
+mod wgpu_drawable;
 mod window;
 
 use super::apple_frame_clock::{DisplayClock, retry_on_clock};
@@ -32,6 +33,8 @@ use objc2_quartz_core::CATransaction;
 use octara::module::{HostSurface, HostSurfaceKind, RawNativeSurface};
 use octara::runtime::WindowId;
 use octara::{StatusBarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
+#[cfg(not(feature = "wgpu"))]
+use octara_gpu::DrawableTarget;
 use octara_gpu::SurfaceSession;
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::WindowViewport;
@@ -492,11 +495,13 @@ impl WindowPresentation for MacWindow {
 
     fn try_acquire_drawable(&mut self, surface: &NativeSurfaceSession, color: OutputColor, from_clock: bool) -> DrawableAcquisition {
         let externally_paced = self.externally_paced();
-        if externally_paced && !from_clock {
+        let visible = self.window.occlusionState().contains(NSWindowOcclusionState::Visible);
+        // On an occluded window, Metal can wait for a drawable with no display cycle to retire it.
+        if externally_paced && (!from_clock || !visible) {
             return DrawableAcquisition::WaitingForClock;
         }
-        let Some(acquisition) = &mut self.acquisition else { return surface.acquire(color) };
-        let resizing = self.resizing && self.window.occlusionState().contains(NSWindowOcclusionState::Visible);
+        let Some(acquisition) = &mut self.acquisition else { return surface.acquire_with_transaction(color, self.transactional) };
+        let resizing = self.resizing && visible;
         let acquired = acquisition.acquire(surface, color, externally_paced, self.transactional, resizing);
         retry_on_clock(acquired, externally_paced)
     }

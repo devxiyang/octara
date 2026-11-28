@@ -11,13 +11,26 @@ const AGE_AFTER: Duration = Duration::from_millis(50);
 pub(super) enum Lane {
     Draw,
     Drain,
+    #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     Resource,
     Capture,
+    #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     Canvas,
+    #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     Profile,
 }
 
-const LANES: [Lane; 6] = [Lane::Draw, Lane::Drain, Lane::Resource, Lane::Capture, Lane::Canvas, Lane::Profile];
+const LANES: &[Lane] = &[
+    Lane::Draw,
+    Lane::Drain,
+    #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+    Lane::Resource,
+    Lane::Capture,
+    #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+    Lane::Canvas,
+    #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+    Lane::Profile,
+];
 
 pub(super) struct Schedule<T> {
     queues: [VecDeque<(Instant, T)>; LANES.len()],
@@ -41,7 +54,7 @@ impl<T> Schedule<T> {
         })
     }
 
-    pub(super) fn take(&mut self, now: Instant, pending: usize, resource_running: bool) -> Option<T> {
+    pub(super) fn take(&mut self, now: Instant, pending: usize, _resource_running: bool) -> Option<T> {
         let at = |lane: Lane| self.queues[lane as usize].front().map(|(at, _)| *at);
         // Once a drain is due, stop feeding the queue even when both slots are occupied.
         if at(Lane::Drain).is_some_and(|at_drain| at(Lane::Draw).is_none() || now.saturating_duration_since(at_drain) >= DRAIN_AFTER) {
@@ -54,11 +67,14 @@ impl<T> Schedule<T> {
         let ready = |lane: Lane| match lane {
             Lane::Draw => true,
             Lane::Drain => false,
-            Lane::Resource => !resource_running,
+            #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+            Lane::Resource => !_resource_running,
             // Keep the other submission slot free for an interactive frame.
-            Lane::Capture | Lane::Canvas | Lane::Profile => pending == 0 || aged(lane),
+            Lane::Capture => pending == 0 || aged(lane),
+            #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+            Lane::Canvas | Lane::Profile => pending == 0 || aged(lane),
         };
-        let candidates = LANES.into_iter().filter(|&lane| ready(lane)).filter_map(|lane| at(lane).map(|at| (lane, at)));
+        let candidates = LANES.iter().copied().filter(|&lane| ready(lane)).filter_map(|lane| at(lane).map(|at| (lane, at)));
         let lane = candidates
             .clone()
             .filter(|(lane, _)| !matches!(lane, Lane::Draw) && aged(*lane))

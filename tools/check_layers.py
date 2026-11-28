@@ -26,7 +26,8 @@ ALLOWED = {
     "octara-markdown": {"octara", "octara-headless", "octara-icons"},
     "octara-pipeline": {"octara-model", "octara-tree", "octara-runtime"},
     "octara-render": {"octara-model"},
-    "octara-gpu": {"octara-model", "octara-render"},
+    "octara-render-metal": {"octara-model", "octara-render"},
+    "octara-gpu": {"octara-model", "octara-render", "octara-render-metal"},
     "octara-host-native": {
         "octara", "octara-model", "octara-pipeline", "octara-render", "octara-gpu",
     },

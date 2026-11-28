@@ -1,11 +1,14 @@
 //! Lifetime and capacity accounting for one native GPU device.
 
-use crate::executor::{GpuError, Inbox};
+use crate::GpuError;
 use octara_model::CacheLine;
-use octara_render::gpu::DeviceLoss;
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
 use octara_render::wgpu;
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
 use std::any::Any;
-use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+use std::panic::resume_unwind;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -22,6 +25,11 @@ pub enum DeviceNotice {
 
 /// Wake the host for an event from the identified generation. Keep the callback short.
 pub type DeviceNotifier = Arc<dyn Fn(u64, DeviceNotice) + Send + Sync>;
+
+pub(super) trait DeviceEvents: Send + Sync {
+    fn gpu_event(&self);
+    fn cancel(&self, token: &Arc<AtomicBool>);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceCapacity {
@@ -46,12 +54,19 @@ struct ReadbackAllocation {
     on_gpu: bool,
 }
 
+enum LossEvidence {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    Metal,
+    #[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
+    Wgpu((wgpu::DeviceLostReason, String)),
+}
+
 pub struct DeviceGeneration {
     number: CacheLine<u64>,
-    loss: DeviceLoss,
+    loss: OnceLock<LossEvidence>,
     stopped: CacheLine<AtomicBool>,
     work: Mutex<Work>,
-    inbox: OnceLock<Weak<Inbox>>,
+    inbox: OnceLock<Weak<dyn DeviceEvents>>,
     notifier: Option<DeviceNotifier>,
 }
 
@@ -59,7 +74,7 @@ impl DeviceGeneration {
     pub fn new(number: u64, notifier: Option<DeviceNotifier>) -> Self {
         Self {
             number: CacheLine(number),
-            loss: DeviceLoss::default(),
+            loss: OnceLock::new(),
             stopped: CacheLine(AtomicBool::new(false)),
             work: Mutex::default(),
             inbox: OnceLock::new(),
@@ -95,12 +110,17 @@ impl DeviceGeneration {
     }
 
     /// Ignore callbacks from retired generations when deciding whether to replace the current device.
+    #[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     pub fn loss_for(&self, number: u64) -> Option<&(wgpu::DeviceLostReason, String)> {
-        self.loss.get().filter(|_| self.number() == number)
+        match self.loss.get() {
+            Some(LossEvidence::Wgpu(evidence)) if self.number() == number => Some(evidence),
+            _ => None,
+        }
     }
 
-    pub(super) fn attach(&self, inbox: &Arc<Inbox>) -> std::io::Result<()> {
-        self.inbox.set(Arc::downgrade(inbox)).map_err(|_| std::io::Error::other("GPU generation already has an executor"))
+    pub(super) fn attach(&self, inbox: &Arc<impl DeviceEvents + 'static>) -> std::io::Result<()> {
+        let inbox = Arc::downgrade(inbox);
+        self.inbox.set(inbox).map_err(|_| std::io::Error::other("GPU generation already has an executor"))
     }
 
     pub(super) fn stop(&self) {
@@ -119,14 +139,14 @@ impl DeviceGeneration {
 
     pub(super) fn notify(&self, notice: DeviceNotice) {
         if let Some(notify) = &self.notifier {
-            // A user callback can run inside wgpu's device-poll or on a dying worker.
+            // An observer can run on a driver callback or on a dying worker.
             let _ = catch_unwind(AssertUnwindSafe(|| notify(self.number(), notice)));
         }
     }
 
     pub(super) fn gpu_event(&self) {
         if let Some(inbox) = self.inbox.get().and_then(Weak::upgrade) {
-            inbox.signal_gpu_event();
+            inbox.gpu_event();
         }
     }
 
@@ -143,43 +163,59 @@ impl DeviceGeneration {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub(super) fn mark_metal_lost(&self) {
+        self.record_loss(LossEvidence::Metal);
+    }
+
+    fn record_loss(&self, evidence: LossEvidence) {
+        if self.loss.set(evidence).is_ok() {
+            self.gpu_event();
+            if !self.is_stopped() {
+                self.notify(DeviceNotice::Lost);
+            }
+        }
+    }
+
+    #[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     pub(super) fn watch_loss(self: &Arc<Self>, device: &wgpu::Device) {
         let generation = Arc::downgrade(self);
         device.set_device_lost_callback(move |reason, message| {
-            if let Some(generation) = generation.upgrade()
-                && generation.loss.record(reason, message)
-            {
-                generation.gpu_event();
-                if !generation.is_stopped() {
-                    generation.notify(DeviceNotice::Lost);
-                }
+            if let Some(generation) = generation.upgrade() {
+                generation.record_loss(LossEvidence::Wgpu((reason, message)));
             }
         });
     }
 
     /// Count the work until the driver runs the callback or discards it on teardown.
+    #[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     pub(super) fn observe_submission(
         self: &Arc<Self>,
         queue: &wgpu::Queue,
         upload_bytes: u64,
         on_complete: impl FnOnce() + Send + 'static,
     ) {
-        let mut work = self.work.lock().expect("GPU work accounting");
-        work.submissions += 1;
-        work.upload_bytes += upload_bytes;
-        drop(work);
-        let lease = SubmissionLease { generation: self.clone(), upload_bytes };
+        let lease = self.begin_submission(upload_bytes);
         queue.on_submitted_work_done(move || {
             on_complete();
             drop(lease);
         });
     }
 
+    pub(super) fn begin_submission(self: &Arc<Self>, upload_bytes: u64) -> SubmissionLease {
+        let mut work = self.work.lock().expect("GPU work accounting");
+        work.submissions += 1;
+        work.upload_bytes += upload_bytes;
+        SubmissionLease { generation: self.clone(), upload_bytes }
+    }
+
+    #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     pub(super) fn gpu_work_pending(&self) -> bool {
         let work = self.work.lock().expect("GPU work accounting");
         work.submissions != 0 || work.readback.as_ref().is_some_and(|readback| readback.on_gpu)
     }
 
+    #[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     pub(super) fn reserve_resource(self: &Arc<Self>) -> Result<ResourceLease, GpuError> {
         let mut work = self.work.lock().expect("GPU work accounting");
         if let Some(error) = self.unavailable(false) {
@@ -206,6 +242,7 @@ impl DeviceGeneration {
 
     /// wgpu can unwind when polling a lost device or using invalidated handles.
     /// Only suppress a matching driver panic after this generation reports loss.
+    #[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
     pub(super) fn run<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
         if self.is_lost() {
             return None;
@@ -218,7 +255,7 @@ impl DeviceGeneration {
     }
 }
 
-struct SubmissionLease {
+pub(super) struct SubmissionLease {
     generation: Arc<DeviceGeneration>,
     upload_bytes: u64,
 }
@@ -233,8 +270,10 @@ impl Drop for SubmissionLease {
     }
 }
 
+#[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
 pub(super) struct ResourceLease(Arc<DeviceGeneration>);
 
+#[cfg(any(test, feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
 impl Drop for ResourceLease {
     fn drop(&mut self) {
         self.0.work.lock().expect("GPU work accounting").resources -= 1;
@@ -273,6 +312,7 @@ impl Drop for ReadbackLease {
     }
 }
 
+#[cfg(any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios"))))]
 fn is_wgpu_loss_panic(payload: &(dyn Any + Send)) -> bool {
     let Some(message) = payload.downcast_ref::<String>() else { return false };
     if message.starts_with("Error in Device::poll:") {

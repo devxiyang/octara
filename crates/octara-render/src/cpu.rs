@@ -3,7 +3,7 @@
 //! take screenshots without a GPU.
 
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
-use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, full_lod, opaque, packed_lod};
+use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, full_lod, opaque, packed_image_layout};
 use crate::paths::{self, PathCache};
 use crate::shape::{ClipStack, blend, blend_premultiplied, coverage, inner_rect, raster_offsets, sd_round_rect, shadow_alpha};
 use color::{LinearSrgb, PremulColor, Rgba8};
@@ -294,7 +294,7 @@ fn image(t: &mut Target, i: &ImagePaint, scale: f32) {
         return;
     }
     let size = [f.width, f.height];
-    let packed_lod = packed_lod(size, IMAGE_ATLAS_EDGE);
+    let packed_lod = packed_image_layout(size, IMAGE_ATLAS_EDGE).map(|(_, lod)| lod);
     let packed = packed_lod.is_some();
     let max_lod = packed_lod.unwrap_or_else(|| full_lod(size));
     let lod = (f.width as f32 / w).max(f.height as f32 / h).log2().clamp(0.0, f32::from(max_lod));

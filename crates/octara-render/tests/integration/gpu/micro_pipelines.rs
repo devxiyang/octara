@@ -126,18 +126,7 @@ fn hollow_shadows_keep_the_portions_visible_through_cards() {
 #[test]
 fn minified_atlas_images_keep_premultiplied_mips_and_isolated_edges() {
     let Some(mut gpu) = gpu_or_skip() else { return };
-    let stripes = (0..64 * 64).flat_map(|i| if i / 64 % 4 == 0 { [255, 0, 0, 255] } else { [0, 255, 255, 0] }).collect::<Vec<_>>();
-    let red = Image::rgba(64, 64, stripes);
-    let green = Image::rgba(64, 64, [0, 255, 0, 255].repeat(64 * 64));
-    let blue = Image::rgba(64, 64, [0, 0, 255, 255].repeat(64 * 64));
-    let dl = list(
-        (66.0, 24.0),
-        Color::TRANSPARENT,
-        [&green, &red, &blue].into_iter().enumerate().map(|(i, image)| {
-            let x = 1.25 + 22.0 * i as f32;
-            sample(image, Rect::new(x, 2.0, 16.0, 16.0), Rect::new(x - 1.0, 1.0, 18.0, 18.0), 0.0, 1.0)
-        }),
-    );
+    let dl = super::super::parity::minified_images();
     let mut cpu = CpuRenderer::new();
     let reference = cpu.render(&dl, 1.0);
     assert_eq!(reference.pixel(30, 8), Some([255, 0, 0, 64]), "one opaque red row per 4×4 mip texel");

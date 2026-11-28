@@ -1,11 +1,13 @@
 //! AppKit drawable acquisition, including the delayed test path.
 
-use super::metal_frame::MetalFrame;
+#[cfg(feature = "wgpu")]
+use super::wgpu_drawable::MetalFrame;
 use crate::os::apple_metal::set_transactional;
-use crate::os::{DrawableAcquisition, NativeSurfaceSession};
+use crate::os::{Drawable, DrawableAcquisition, NativeSurfaceSession};
 use block2::RcBlock;
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+use objc2::sel;
 use objc2_metal::{MTLDrawable, MTLPixelFormat};
 use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer, CATransaction, kCAGravityResize, kCAGravityTopLeft};
 use octara_gpu::SurfaceSession;
@@ -152,13 +154,16 @@ impl Acquisition {
                 }
             }
         }
-        let Some(layer) = &self.layer else { return surface.acquire(color) };
+        let Some(layer) = &self.layer else { return surface.acquire_with_transaction(color, transactional) };
         align_contents(layer, resizing || self.waiting_for_display());
         if externally_paced && resizing && direct_target(layer) {
             // Hold the drawable through native display acknowledgement, which wgpu's
             // surface texture does not expose. A subsequent configure can replace its storage.
             set_transactional(layer, transactional);
             let Some(drawable) = layer.nextDrawable() else { return DrawableAcquisition::WaitingForClock };
+            if !drawable.respondsToSelector(sel!(addPresentedHandler:)) {
+                return DrawableAcquisition::Ready(drawable_target(drawable, layer, color, transactional));
+            }
             let done = Arc::new(AtomicBool::new(false));
             let callback_done = done.clone();
             let wake = self.wake.clone();
@@ -169,24 +174,16 @@ impl Acquisition {
             // SAFETY: Metal copies the block; the atomic flag is safe on the callback thread.
             unsafe { drawable.addPresentedHandler(RcBlock::as_ptr(&callback)) };
             self.displaying = Some((Instant::now(), done));
-            let size = layer.drawableSize();
-            return DrawableAcquisition::Ready(Box::new(MetalFrame::new(
-                drawable,
-                (size.width as u32, size.height as u32),
-                color,
-                transactional,
-            )));
+            return DrawableAcquisition::Ready(drawable_target(drawable, layer, color, transactional));
         }
         if externally_paced {
             set_transactional(layer, transactional);
-            return surface.acquire(color);
+            return surface.acquire_with_transaction(color, transactional);
         }
         if let Some(worker) = self.worker.as_mut().filter(|_| direct_target(layer)) {
             if let Some(drawable) = worker.take() {
                 set_transactional(layer, transactional);
-                let size = layer.drawableSize();
-                let size = (size.width as u32, size.height as u32);
-                return DrawableAcquisition::Ready(Box::new(MetalFrame::new(drawable, size, color, transactional)));
+                return DrawableAcquisition::Ready(drawable_target(drawable, layer, color, transactional));
             }
             if worker.request(layer) {
                 return DrawableAcquisition::Retry;
@@ -194,8 +191,19 @@ impl Acquisition {
             self.worker = None;
         }
         set_transactional(layer, transactional);
-        surface.acquire(color)
+        surface.acquire_with_transaction(color, transactional)
     }
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn drawable_target(drawable: NativeDrawable, _layer: &CAMetalLayer, color: OutputColor, transactional: bool) -> Box<Drawable> {
+    Box::new(octara_gpu::MetalDrawableTarget::new(drawable, color, transactional))
+}
+
+#[cfg(feature = "wgpu")]
+fn drawable_target(drawable: NativeDrawable, layer: &CAMetalLayer, color: OutputColor, transactional: bool) -> Box<Drawable> {
+    let size = layer.drawableSize();
+    Box::new(MetalFrame::new(drawable, (size.width as u32, size.height as u32), color, transactional))
 }
 
 pub(super) fn align_contents(layer: &CALayer, live_resize: bool) {

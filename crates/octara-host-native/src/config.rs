@@ -21,6 +21,7 @@ pub struct ShellConfig {
     pub trace_native_input: bool,
     pub trace_scroll: bool,
     pub trace_frame_clock: bool,
+    pub trace_frame_stages: bool,
     pub trace_presented: bool,
     pub metal_acquire_delay: Duration,
 }
@@ -52,6 +53,7 @@ impl ShellConfig {
             trace_native_input: enabled("OCTARA_TRACE_NATIVE_INPUT"),
             trace_scroll: enabled("OCTARA_TRACE_SCROLL"),
             trace_frame_clock: enabled("OCTARA_TRACE_FRAME_CLOCK"),
+            trace_frame_stages: enabled("OCTARA_TRACE_FRAME_STAGES"),
             trace_presented: enabled("OCTARA_TRACE_PRESENTED"),
             metal_acquire_delay: duration("OCTARA_METAL_ACQUIRE_DELAY_MS", 0).min(Duration::from_secs(1)),
         }

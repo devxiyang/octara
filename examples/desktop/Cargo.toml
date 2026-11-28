@@ -12,9 +12,21 @@ keywords.workspace = true
 categories.workspace = true
 publish = false
 
+[features]
+default = []
+wgpu = ["octara-render/wgpu", "octara-host-native/wgpu"]
+
+[[bin]]
+name = "gpu_bench"
+required-features = ["wgpu"]
+
 [[test]]
 name = "native_webview"
 harness = false
+
+[[test]]
+name = "gpu_lab"
+required-features = ["wgpu"]
 
 [dependencies]
 octara.workspace = true
@@ -25,13 +37,14 @@ octara-inspect.workspace = true
 octara-kit.workspace = true
 octara-picker = { workspace = true, features = ["platform"] }
 octara-pipeline.workspace = true
-octara-render = { workspace = true, features = ["wgpu"] }
+octara-render.workspace = true
 octara-video = { workspace = true, features = ["platform"] }
 octara-webview = { workspace = true, features = ["platform"] }
 
 [dev-dependencies]
 octara-fonts.workspace = true
 octara-markdown = { workspace = true, features = ["composer", "math", "media"] }
+octara-render = { workspace = true, features = ["wgpu"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation.workspace = true

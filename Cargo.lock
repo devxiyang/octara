@@ -2263,10 +2263,15 @@ version = "0.0.10"
 name = "octara-gpu"
 version = "0.0.10"
 dependencies = [
+ "block2 0.6.2",
  "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "octara-model",
  "octara-render",
+ "octara-render-metal",
  "png",
  "raw-window-handle",
  "tempfile",
@@ -2503,6 +2508,20 @@ dependencies = [
  "web-time",
  "wgpu",
  "zeno",
+]
+
+[[package]]
+name = "octara-render-metal"
+version = "0.0.10"
+dependencies = [
+ "naga",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "octara-fonts",
+ "octara-model",
+ "octara-render",
+ "swash",
 ]
 
 [[package]]

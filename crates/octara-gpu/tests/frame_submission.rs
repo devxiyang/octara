@@ -1,4 +1,4 @@
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(all(not(target_arch = "wasm32"), any(feature = "wgpu", not(any(target_os = "macos", target_os = "ios")))))]
 
 use octara_model::{
     capture::{PaintOutcome, PaintSample},

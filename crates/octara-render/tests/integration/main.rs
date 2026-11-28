@@ -4,4 +4,6 @@ mod cpu;
 mod fixtures;
 #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
 mod gpu;
+#[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
+mod parity;
 mod paths;
