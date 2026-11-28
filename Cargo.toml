@@ -35,7 +35,7 @@ members = [
 edition = "2024"
 rust-version = "1.100"
 license = "MIT OR Apache-2.0"
-version = "0.0.10"
+version = "0.0.11"
 repository = "https://github.com/octoii-works/octara"
 homepage = "https://github.com/octoii-works/octara/blob/main/docs/start-here.md"
 readme = "README.md"
@@ -85,27 +85,27 @@ pulldown-cmark = { version = "0.13.6", default-features = false }
 roxmltree = "0.21.2"
 unicode-segmentation = "1.13.3"
 wgpu = "30.0.2"
-octara = { path = "crates/octara", version = "0.0.10" }
-octara-fonts = { path = "crates/octara-fonts", version = "0.0.10" }
-octara-gpu = { path = "crates/octara-gpu", version = "0.0.10" }
-octara-headless = { path = "crates/octara-headless", version = "0.0.10" }
-octara-host-native = { path = "crates/octara-host-native", version = "0.0.10" }
-octara-icons = { path = "crates/octara-icons", version = "0.0.10" }
-octara-inspect = { path = "crates/octara-inspect", version = "0.0.10" }
-octara-kit = { path = "crates/octara-kit", version = "0.0.10" }
-octara-markdown = { path = "crates/octara-markdown", version = "0.0.10" }
-octara-macros = { path = "crates/octara-macros", version = "0.0.10" }
-octara-model = { path = "crates/octara-model", version = "0.0.10" }
-octara-pipeline = { path = "crates/octara-pipeline", version = "0.0.10" }
-octara-picker = { path = "modules/octara-picker", version = "0.0.10", default-features = false }
-octara-release = { path = "crates/octara-release", version = "0.0.10" }
-octara-render = { path = "crates/octara-render", version = "0.0.10", default-features = false, features = ["plan"] }
-octara-render-metal = { path = "crates/octara-render-metal", version = "0.0.10", default-features = false }
-octara-runtime = { path = "crates/octara-runtime", version = "0.0.10" }
-octara-svg = { path = "crates/octara-svg", version = "0.0.10" }
-octara-tree = { path = "crates/octara-tree", version = "0.0.10" }
-octara-video = { path = "modules/octara-video", version = "0.0.10", default-features = false }
-octara-webview = { path = "modules/octara-webview", version = "0.0.10", default-features = false }
+octara = { path = "crates/octara", version = "0.0.11" }
+octara-fonts = { path = "crates/octara-fonts", version = "0.0.11" }
+octara-gpu = { path = "crates/octara-gpu", version = "0.0.11" }
+octara-headless = { path = "crates/octara-headless", version = "0.0.11" }
+octara-host-native = { path = "crates/octara-host-native", version = "0.0.11" }
+octara-icons = { path = "crates/octara-icons", version = "0.0.11" }
+octara-inspect = { path = "crates/octara-inspect", version = "0.0.11" }
+octara-kit = { path = "crates/octara-kit", version = "0.0.11" }
+octara-markdown = { path = "crates/octara-markdown", version = "0.0.11" }
+octara-macros = { path = "crates/octara-macros", version = "0.0.11" }
+octara-model = { path = "crates/octara-model", version = "0.0.11" }
+octara-pipeline = { path = "crates/octara-pipeline", version = "0.0.11" }
+octara-picker = { path = "modules/octara-picker", version = "0.0.11", default-features = false }
+octara-release = { path = "crates/octara-release", version = "0.0.11" }
+octara-render = { path = "crates/octara-render", version = "0.0.11", default-features = false, features = ["plan"] }
+octara-render-metal = { path = "crates/octara-render-metal", version = "0.0.11", default-features = false }
+octara-runtime = { path = "crates/octara-runtime", version = "0.0.11" }
+octara-svg = { path = "crates/octara-svg", version = "0.0.11" }
+octara-tree = { path = "crates/octara-tree", version = "0.0.11" }
+octara-video = { path = "modules/octara-video", version = "0.0.11", default-features = false }
+octara-webview = { path = "modules/octara-webview", version = "0.0.11", default-features = false }
 
 # Optimize dependencies while workspace members keep the default unoptimized builds.
 [profile.dev.package."*"]

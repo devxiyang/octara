@@ -2,9 +2,9 @@
 
 #![cfg(any(target_os = "macos", all(target_os = "ios", target_abi = "sim")))]
 
-#[path = "../../octara-render/tests/integration/fixtures.rs"]
+#[path = "support/fixtures.rs"]
 mod fixtures;
-#[path = "../../octara-render/tests/integration/parity.rs"]
+#[path = "support/parity.rs"]
 mod parity;
 
 use objc2::{

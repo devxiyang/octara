@@ -24,7 +24,7 @@
 | **1** | **Four-Platform Core Interaction & Forms** (unified gestures, Pull-to-Refresh, soft-keyboard & OTP traits, scroll-dismiss keyboard, Drag Out, `WindowLevel`/`NSPanel`, Linux Wayland IME/HiDPI/Portal) | Core (`octara-model` / `tree` / `runtime` / `host-*`) | `0.0.9`–`0.0.10` |
 | **2** | **Full Accessibility & Internationalization** (macOS/Linux AccessKit, Web ARIA Focus Trap/`inert`, **iOS `UIAccessibility` VoiceOver**, BiDi/RTL layout, Dynamic Type `text_scale`, `locale`, `high_contrast`) | Core (`octara-model` / `tree` / `pipeline` / `host-*`) | `0.0.9`–`0.0.10` |
 | **3** | **Airspace & WebView Completeness** (`AirspacePolicy::SnapshotOnOcclude`, `WKWebsiteDataStore`, `WKUserScript`, download policy, Linux `WebKitGTK`) | Airspace in core and WebView in `modules/octara-webview` | `0.0.10`–`0.0.12` |
-| **4** | **High-Frequency Platform Modules** (`notifications`, `secure-store`, `desktop-shell`, `storage`, `share`, `network`) | Optional `modules/*` (SPI-7) | `0.0.11` |
+| **4** | **High-Frequency Platform Modules** (`notifications`, `secure-store`, `desktop-shell`, `storage`, `share`, `network`) | Optional `modules/*` (SPI-7) | `0.0.12` |
 | **5** | **Production Complex Components** (`DataTable`, `TreeView`, `SplitPane`, gesture `BottomSheet`/`Drawer`, `Toast` stack, `DatePicker`/`ColorPicker`, `CommandPalette`, `Form Validation`) | `octara-headless` + `octara-kit` | `0.0.12` |
 | **6** | **Modern Graphics, Motion & Export** (GPU `backdrop-filter` blur, spring physics & FLIP layout transitions, 120Hz frame pacing telemetry, vector PDF/print export from `DisplayList`) | `octara-pipeline` + `octara-render` + `octara-gpu` | `0.0.12` |
 | **7** | **Advanced Hardware Modules** (`biometrics`, `audio`, `camera`, `location`, declarative deep-link routing helpers) | Optional `modules/*` (SPI-7) | `0.0.12` |
@@ -59,18 +59,13 @@
 
 ---
 
-### `0.0.11` — Direct Apple Metal Renderer (`octara-render-metal`), Ultra-Low-Latency Presentation & 2.5D / Zero-Copy 3D Compositor *(In Progress)*
-- **Spec**: [21 — Direct Apple Metal Renderer (`octara-render-metal`), Ultra-Low-Latency Presentation & 2.5D / Zero-Copy 3D Compositor](v2/21-direct-metal-renderer-and-25d-compositor.md)
-- **Scope**:
-  1. **Wave E1 — Empirical 144 Hz Clock, Zero-Stall Resize, Precision Wheel Coalescing & Backend-Agnostic `octara-gpu`**:
-     - Resolve M4 dual-display 144 Hz clocking empirically (`NSView` vs `NSScreen` vs `CAMetalDisplayLink` vs `CVDisplayLink`) + `NSWindowDidChangeScreenNotification` re-bind.
-     - VSync-coalesced zero-stall live resize (`pending_resize`, never abandon valid in-flight drawables, `inLiveResize` `presentsWithTransaction` + `kCAGravityTopLeft`).
-     - Precision `WindowRuntime::can_coalesce_wheel()` so 120 Hz wheel bursts on `virtual_each`/transcripts coalesce cleanly per VSync.
-     - Split `octara-render` into device-free `plan` + optional `wgpu`; introduce backend-polymorphic `GpuBackend` in `octara-gpu`.
-  2. **Wave E2 — First-Party `octara-render-metal` (Apple 0 `wgpu` / 0 `naga` + Single-CB Zero-Bounce Present)**:
-     - Direct `objc2-metal` 4 micro-pipelines + `MTLStorageModeMemoryless` Early-Z depth + 5K `DamageRect` single-CB blit + zero main-thread bounce `presentDrawable` + `maximumDrawableCount = 2` + hardware `FrameStageTimings` telemetry (opt-in `custom-wgsl`).
-  3. **Wave E3 — 2.5D `Mat4` Layer Transforms & Zero-Copy `ExternalTexture` Bridge**:
-     - `Transform3D` (`Mat4` in `SpatialTable` + 1:1 Web CSS `matrix3d`) and zero-copy `ExternalTexture` (`MTLTexture`/`IOSurface`/`CVPixelBuffer`, `wgpu::Texture`, Web `<canvas>`) compositing.
+### `0.0.11` — Direct Apple Metal Renderer (`octara-render-metal`), Ultra-Low-Latency Presentation & 2.5D / Zero-Copy 3D Compositor *(Released)*
+
+- The original design and target metrics are in [Specification 21](v2/21-direct-metal-renderer-and-25d-compositor.md).
+- **Wave E1** split device-free `plan` from optional `wgpu` encoding in `octara-render`. The native host shares device and surface lifecycle code through `octara-gpu::GpuBackend`. `WindowRuntime::can_coalesce_wheel()` lets eligible same-direction wheel events share a hit test between display ticks. AppKit uses Core Video for interactive display ticks and rebinds the clock when the window changes screens. [Display clock hardware results](../../tools/macos-display-clock/README.md)
+- **Wave E2** made `octara-render-metal` the default renderer on macOS and iOS, with zero `wgpu` or `naga` dependencies in default Apple host builds. Linux uses `wgpu`, which is also available on Apple through the native host’s opt-in `wgpu` feature. Metal uses native MSL pipelines, retains a backing texture for partial redraws, and schedules non-transactional presentation on the rendering command buffer. `FrameStageTimings` reports CPU and GPU stages and actual presentation timestamps on Metal. The `custom-wgsl` feature enables WGSL translation.
+- **Wave E3** added `Transform3D` with `Mat4` in `SpatialTable` and CSS `matrix3d` on the Web. Use `ImageSource::External` for zero-copy compositing of Metal textures, IOSurfaces, supported Core Video pixel buffers, `wgpu` textures, or a browser `<canvas>`.
+- **Wave E4** made AppKit live resize progressive in `d8b0d87`. The host applies the latest pending size after display acknowledgement of the submitted frame. It retains transactional presentation and top-left alignment and updates drawable size without draining the GPU queue. In two approximately two-second drag trials on a 60 Hz Dell S2725QS, each trial presented 39 distinct, strictly increasing sizes. All 41 drawables acquired during each drag were submitted and reported positive, strictly increasing `presentedTime` values. The measured presentation cadence was 21.36 Hz in both trials. The maximum gap during the drag and the gap spanning mouse-up were both 50 ms. The first frame at the final size appeared 65.3–65.6 ms after AppKit ended live resize. The release coordinator accepted these results for `0.0.11`. The original 60 Hz live-resize cadence and sub-50 ms final-size recovery targets remain open.
 
 ---
 

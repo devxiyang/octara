@@ -22,7 +22,7 @@ This document is the architectural overview. Exact crate layouts, naming convent
 13. [13 — Window Presentation, Dual-Parent Inheritance, Multimodal Input & Real-Metric Inline Primitives (`0.0.7`)](v2/13-window-presentation-multimodal-input-and-inline-primitives.md)
 14. [14 — Cycle Terminology Cleanup & `octara::module` Platform Extension Architecture (`0.0.8`)](v2/14-octara-module-architecture.md)
 15. [15 — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure (`0.0.9`–`0.0.10`)](v2/15-four-platform-core-polish.md)
-16. [16 — High-Frequency System Modules & WebView Depth (`0.0.11`)](v2/16-high-frequency-modules.md)
+16. [16 — High-Frequency System Modules & WebView Depth](v2/16-high-frequency-modules.md) (roadmap target `0.0.12`)
 17. [17 — Direct Native Platform Hosts (Zero `winit` Architecture) (`0.0.10`)](v2/17-native-platform-hosts-without-winit.md)
 18. [18 — Native ECS Layout & Spatial Kernel (Zero-`TaffyTree` Architecture) (`0.0.10`)](v2/18-native-layout-and-spatial-kernel.md)
 19. [19 — Unified Native IME, Text Editing & Clipboard Hygiene (`0.0.10`)](v2/19-unified-native-ime-and-text-editing.md)
@@ -51,7 +51,7 @@ See also: [Octara Master Roadmap (`0.0.8` → `0.1.0` → `0.2.0`)](roadmap.md).
    - `Ingress → React → Commit → Project (bounded ≤16 rounds) → Publish`.
    - During `React`, user code and view builders never hold `&mut Tree`; all creates, static props, styles, policies, and placements stream into one `TransactionBuilder` using `NodeRef::Pending` and commit as **one atomic `Transaction`**.
 5. **Strict Target Isolation & Pluggable `HostEngine`**:
-   - **Native pipeline** (`octara-pipeline` + `octara-render` + `octara-gpu` + `octara-host-native`) uses `LayoutKernel`, Parley, `MotionEngine`, an incremental `PaintCompiler`, and AccessKit. A pure `RenderGraph` and event-driven `DeviceExecutor` drive rendering. The `OsHost` and `OsWindow` traits isolate the direct AppKit, UIKit, Wayland, and X11 backends from shared orchestration.
+   - **Native pipeline** uses `LayoutKernel`, Parley, `MotionEngine`, an incremental `PaintCompiler`, and AccessKit. Device-free frame planning feeds the backend selected through `octara-gpu::GpuBackend`. macOS and iOS default to `octara-render-metal`, and Linux uses `wgpu`. The `OsHost` and `OsWindow` traits isolate the direct AppKit, UIKit, Wayland, and X11 backends from shared orchestration.
    - **Web pipeline** (`octara-host-web`): Pure `TreeDelta` DOM Patcher + lightweight Undo-Log atomic rollback + `moveBefore` editor parking + **single-crossing JS batched `Float32Array` geometry bridge** + zero-PNG/Base64 `<canvas>`/`Blob` images + zero heavy native crates in default `.wasm` (WebGPU strictly opt-in via `feature = "webgpu"`).
 6. **Deterministic Simulation Testing (DST) & Agent Verifiability by Construction**:
    - Because there is zero `thread_local!`, explicit virtual clock, serializable 4-channel input, and pluggable `HostEngine` + CPU Reference Renderer oracle, any multi-window app can be fuzz-tested deterministically across parallel test threads and replayed from a seed.
@@ -61,7 +61,7 @@ See also: [Octara Master Roadmap (`0.0.8` → `0.1.0` → `0.2.0`)](roadmap.md).
 
 ## 2. Crate Topology & Strict Dependency DAG
 
-**12 focused core crates** (plus macros/assets/apps/examples), enforced by `tools/check_layers.py`:
+The core crate dependency boundaries are enforced by `tools/check_layers.py`.
 
 ```mermaid
 flowchart TB
@@ -88,8 +88,9 @@ flowchart TB
 
     subgraph L3N["Layer 3a: Native Pipeline, Rendering & Host"]
         Pipeline["octara-pipeline<br/>NativeEngine (HostEngine): LayoutKernel · Parley Text Geometry<br/>MotionEngine · PaintCompiler · AccessKitProjector"]
-        Render["octara-render (Thread-Agnostic: Native + WebGPU)<br/>RenderGraph(plan) · Batch · Atlas · wgpu Encode<br/>Custom Shaders · CPU Reference Oracle"]
-        Gpu["octara-gpu (Native Only)<br/>Event-Driven DeviceExecutor · Surface/Readback Leases<br/>Async Background PNG Writer"]
+        Render["octara-render (Native + WebGPU)<br/>Device-Free Frame Planning · CPU Reference Renderer<br/>Optional wgpu Encoder"]
+        Metal["octara-render-metal (macOS + iOS)<br/>Direct Metal Encoding · Native MSL Pipelines<br/>External Texture Import"]
+        Gpu["octara-gpu (Native Only)<br/>GpuBackend · GpuDevice · SurfaceSession<br/>Metal and wgpu Workers · Async PNG Capture"]
         HostNative["octara-host-native<br/>Platform-neutral shell + OsHost/OsWindow SPI<br/>AppKit · UIKit · Wayland · X11"]
     end
 
@@ -123,8 +124,11 @@ flowchart TB
     Pipeline --> Tree
     Pipeline --> Model
     Render --> Model
+    Metal --> Render
+    Metal --> Model
     Gpu --> Render
     Gpu --> Model
+    Gpu -- "macOS / iOS" --> Metal
     HostNative --> Octara
     HostNative --> Pipeline
     HostNative --> Gpu
@@ -143,7 +147,8 @@ flowchart TB
 ### Hard Dependency Guarantees
 - **`octara-model`**: Only `slotmap`, `bitflags`, `color`, `kurbo`, `serde`, `serde_json`, `unicode-segmentation`. **Forbidden**: `taffy`, `parley`, `accesskit`, `wgpu`, `swash`, `zeno`, `png`, `roxmltree`.
 - **`octara-tree`** resolves locale direction with a compact BCP-47 script and language table, with an explicit script taking precedence.
-- **`octara-render`**: Zero `std::thread`, zero windowing, zero OS FFI — compiles cleanly for both Native and `wasm32` WebGPU.
+- **`octara-render`** keeps its default `plan` feature device-free. The optional `wgpu` feature supports native and WebGPU command encoding. The crate uses no `std::thread`, windowing, or OS FFI.
+- **`octara-host-native` on Apple** uses `octara-render-metal` through `octara-gpu` by default. Default macOS and iOS builds have no `wgpu` or `naga` dependencies.
 - **`octara-host-web` (default)**: Links **only** `octara` + `wasm-bindgen`/`web-sys`/`js-sys` — **zero** `taffy`, `parley`, `accesskit`, `wgpu`, `swash`, `zeno`, `png`, `roxmltree`.
 
 ---
@@ -365,7 +370,7 @@ pub trait HostEngine {
 }
 ```
 
-### 7.1 Native Stack (`octara-pipeline` + `octara-render` + `octara-gpu` + `octara-host-native`)
+### 7.1 Native Stack (Layer 3a)
 - **`octara-pipeline::NativeEngine`**:
   - `layout/` stores hot layout metadata and projection caches by ECS node ID. `LayoutKernel` calls Taffy’s stateless flex and grid algorithms directly on the retained tree, and relayout boundaries limit recomputation when a subtree’s external size stays stable.
   - `flat_tree.rs` indexes geometry on demand for exact hit testing in scroll space. The layout projection tracks local geometry changes and changes in viewport position separately.
@@ -374,13 +379,12 @@ pub trait HostEngine {
   - `motion/`: `MotionEngine` (analytic spring/fade tracks, exit ghosts, scroll glides, caret blink, password reveal).
   - `paint/`: Incremental `PaintCompiler` → frozen `PaintScene` (pure paint animations sampled at display timestamp; debug uncached self-check controlled by explicit `check_paint_cache: bool`).
   - `a11y/`: Incremental `AccessKitProjector` translating `octara_model::{Role, Live}` + `delta.semantics_dirty` + moved bounds.
-- **`octara-render` (Thread-Agnostic — Native & WebGPU)**:
-  - `plan.rs` (pure functional `RenderGraph` planner, unit-testable with zero GPU device), `batch.rs`, `atlas.rs`, `pipeline.rs`, `encode.rs`, `custom.rs`, `cpu.rs` (deterministic CPU Reference Oracle).
-- **`octara-gpu` (Native Only)**:
-  - Per-generation `DeviceExecutor`, surface reconfiguration barrier, readback leases, async background PNG encoding.
-  - **Event-driven GPU completion**: `queue.on_submitted_work_done` and buffer-map callbacks actively wake the executor thread (adaptive backoff fallback only if a backend lacks prompt callback delivery), eliminating the constant `1ms` polling loop.
+- **`octara-render`** compiles each display list into a device-free `FramePlan`. The `plan` feature provides shared rasterizers, instance packing, damage tracking, and the deterministic CPU reference renderer. The optional `wgpu` feature provides native and WebGPU command encoding.
+- **`octara-render-metal`** encodes those plans directly into Metal command buffers using native MSL pipelines. It retains instance buffers and backing pixels for incremental rendering and imports Metal textures, IOSurface-backed textures, and supported Core Video pixel buffers without uploading pixels.
+- **`octara-gpu`** defines `GpuBackend`, `GpuDevice`, and `SurfaceSession` so the native host shares device and surface lifecycle code across backends. Backend workers handle GPU completion, asynchronous readback, and frame timing. The Apple backend can reconfigure a drawable surface without draining the device queue.
 - **`octara-host-native`**:
   - The platform-neutral shell consumes `PlatformEvent` and manages `HostWindow` without OS-specific branching. Each `OsHost` owns its event loop and supplies raw surface handles through `OsWindow`.
+  - The host selects `MetalBackend` on Apple and `WgpuBackend` on Linux at compile time. The host’s opt-in `wgpu` feature selects `WgpuBackend` on Apple. The opt-in `custom-wgsl` feature adds Naga translation for custom WGSL on the Metal backend.
   - Apple hosts acquire drawables on demand. macOS binds an interactive Core Video display link to the window's current screen and uses an AppKit display link for low-rate and idle work. iOS uses `CADisplayLink`. URLSession and ImageIO handle image transfers and decoding on Apple. The native media loader uses a bounded worker pool and accepts a `MediaTransport` override. Linux apps supply a transport for HTTP image fetches.
   - `os/macos/` uses AppKit application and window delegates, `NSWindow` and `NSPanel`, an `NSView` implementing `NSTextInputClient`, direct AccessKit, and AppKit menus and asks.
   - `os/ios/` uses UIKit application and scene delegates, a `UIViewController` for presentation, and a `UIView` implementing `UITextInput` with VoiceOver support.

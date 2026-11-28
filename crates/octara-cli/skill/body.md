@@ -1,4 +1,4 @@
-# Build and verify apps with Octara 0.0.10
+# Build and verify apps with Octara 0.0.11
 
 Read the [Getting Started guide for this version](references/start-here.md). `octara vocab` lists the prelude, and `octara vocab <name>` shows signatures, import paths, and definitions from the app’s source dependencies. `octara explain <code>` explains diagnostics. `octara skill install` generates an [API index organized by module](references/api/index.md).
 
@@ -32,7 +32,7 @@ In one workspace, expose `startup() -> AppDefinition` from the `my-app` library 
 ```toml
 [dependencies]
 my-app = { path = "../my-app" }
-octara-host-native = "0.0.10"
+octara-host-native = "0.0.11"
 ```
 
 Use `cargo test -p my-app` to test the app library on its own. `HeadlessDriver::launch(startup())` launches the app definition with the layout pipeline and CPU renderer. Use `cargo tree -p my-app` to check for native test dependencies such as `octara-host-native`, `octara-gpu`, `wgpu`, or `objc2`. [Cargo tree reference](https://doc.rust-lang.org/cargo/commands/cargo-tree.html)
@@ -44,7 +44,7 @@ Give test nodes a stable `test_id`. Send `Observe` to get a target, then `Act` a
 3. Use `octara run` to observe and act in one session, or use `octara run --connect SOCKET --require-build FILE` to check the launch receipt before driving a running host. Write one `octara.inspect/2` request per line. Start with `{"protocol":"octara.inspect/2","op":"list_windows"}` or `{"protocol":"octara.inspect/2","op":"observe"}` to locate windows and nodes. In each `act`, pass the current snapshot’s `target` verbatim. Use the node’s geometry for coordinates and verify the window and interaction target. Look up the arguments with `octara vocab AgentRequest` and `octara vocab AgentAction`.
 4. Check `delivery`, `progress.settled`, `progress.committed_frame`, and `progress.presented_frame` after each action. Verify the value and focus with the next `observe`. If you get `STALE_TARGET` or the connection drops, observe again before deciding whether to retry. Use the `painted` capture source to verify rendered pixels, and test system input methods and presentation in the actual host.
 
-On Apple platforms, `CADisplayLink` paces native presentation at the available display rate. The generated iOS plist opts into ProMotion unless the app overrides it. Compatible scroll frames reuse retained GPU instances and transfer small spatial updates. Small damage can be redrawn in the backing texture before presentation. Use `octara audit` to request the accessibility projection. For timing work, record the input and display rates separately and use Release builds.
+The native host uses direct Metal on macOS and iOS and `wgpu` on Linux. On Apple, the native host’s `wgpu` feature selects that backend. macOS uses a Core Video display link for interactive frames, and iOS uses `CADisplayLink`. The generated iOS plist opts into ProMotion unless the app overrides it. Compatible scroll frames reuse retained GPU instances and transfer small spatial updates. Small damage can be redrawn in the backing texture before presentation. Use `octara audit` to request the accessibility projection. For timing work, record the input and actual presentation rates separately and use Release builds.
 
 ## Configure development and test builds
 

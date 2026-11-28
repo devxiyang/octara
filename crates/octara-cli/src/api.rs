@@ -30,6 +30,7 @@ pub const CRATES: &[&str] = &[
     "octara-host-web",
     "octara-pipeline",
     "octara-render",
+    "octara-render-metal",
     "octara-gpu",
     "octara-release",
     "octara-icons",

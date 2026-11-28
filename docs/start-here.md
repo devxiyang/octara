@@ -1,4 +1,4 @@
-# Build interfaces with Octara 0.0.10
+# Build interfaces with Octara 0.0.11
 
 Octara composes views with ordinary Rust functions. The app owns reactive state and the window tree. The host projects the tree into a native window or the browser DOM. The Apple deployment baselines are macOS 15.4 and iOS 18.4. `cargo test -p octara-cli --doc` compiles and runs the Rust examples marked for doctesting.
 
@@ -377,7 +377,7 @@ Pass `ImageSource::File(path.into())` to `image_source` for an app-authorized lo
 
 ## Verify native frame pacing and scroll rendering
 
-The Apple hosts use `CADisplayLink` to pace active windows at a rate chosen for the current display. Input can update the next frame while the current frame is on the GPU. Octara presents completed frames in order and applies their native view placements in the same presentation transaction. The clock pauses when the window settles.
+The native host uses direct Metal on macOS and iOS and `wgpu` on Linux. Enable the native host’s `wgpu` feature to select that backend on Apple. macOS uses a Core Video display link for interactive frames and an AppKit display link for low-rate and idle work. iOS uses `CADisplayLink`. Input can update the next frame while the current frame is on the GPU. Octara presents completed frames in order and uses transactional presentation to synchronize native view placements with rendered content. The clock pauses when the window settles.
 
 The iOS output of `octara modules merge` enables ProMotion through `CADisableMinimumFrameDurationOnPhone` by default and preserves an explicit app value. The display and system determine the available refresh rate.
 
@@ -432,10 +432,10 @@ Make the app library and desktop launcher members of the same workspace. Expose 
 
 ```toml
 [dependencies]
-octara = "0.0.10"
+octara = "0.0.11"
 
 [dev-dependencies]
-octara-inspect = "0.0.10"
+octara-inspect = "0.0.11"
 ```
 
 The sibling `my-app-desktop/Cargo.toml` depends on the app library and native host. Call `octara_host_native::run_app(my_app::startup())` from the desktop package’s `src/main.rs`.
@@ -443,7 +443,7 @@ The sibling `my-app-desktop/Cargo.toml` depends on the app library and native ho
 ```toml
 [dependencies]
 my-app = { path = "../my-app" }
-octara-host-native = "0.0.10"
+octara-host-native = "0.0.11"
 ```
 
 Use `cargo test -p my-app` to run headless tests for the app library on its own. Use `HeadlessDriver::launch(startup())` to launch the same app definition or open a single view for testing. The driver uses `octara-pipeline` for layout and semantics and the `octara-render` CPU renderer for painted screenshots. Use `cargo tree -p my-app` to check for dependencies such as `octara-host-native`, `octara-gpu`, `wgpu`, and `objc2`. Building the app library by itself keeps desktop dependency features out of the test build. [Cargo tree reference](https://doc.rust-lang.org/cargo/commands/cargo-tree.html) · [Cargo feature resolution](https://doc.rust-lang.org/cargo/reference/resolver.html#features)

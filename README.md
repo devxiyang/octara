@@ -1,8 +1,8 @@
-# Octara 0.0.10
+# Octara 0.0.11
 
 Build native and Web interfaces in Rust. Explicit capability contexts let you compose views and update state. Direct AppKit, UIKit, Wayland, and X11 hosts render on the GPU. The Web host projects views into the DOM. Use the same target and editor session protocol to test interactions, track frame progress, and replay failures.
 
-In 0.0.10, Octara’s native `LayoutKernel` runs Taffy’s flex and grid algorithms directly on the retained ECS tree. Native hosts share an IME bridge and use platform clipboard APIs. Apple hosts use URLSession and ImageIO for images, and Linux apps can supply an HTTP image transport. The release adds layout containment, desktop drag-out, iOS status bar styling, and desktop window levels. [Release roadmap](docs/design/roadmap.md)
+Octara 0.0.11 uses `octara-render-metal` by default on macOS and iOS. The default Apple host dependency graph has no `wgpu` or `naga`. The release adds `Transform3D` for perspective effects and zero-copy compositing of external textures, plus progressive AppKit live resize and Metal frame-stage timings. [Release roadmap and hardware measurements](docs/design/roadmap.md#0011--direct-apple-metal-renderer-octara-render-metal-ultra-low-latency-presentation--25d--zero-copy-3d-compositor-released)
 
 - Start with the [Getting Started guide](docs/start-here.md).
 - Use themed controls from `octara-kit`, or compose behavior from `octara_kit::headless` with styles from `octara_kit::parts`.
@@ -41,10 +41,10 @@ On a Mac with the iOS Simulator SDK and the matching Rust target, check the nati
 IPHONEOS_DEPLOYMENT_TARGET=18.4 cargo check --target aarch64-apple-ios-sim -p octara-host-native
 ```
 
-Preflight all 23 publishable Octara 0.0.10 crates together. Cargo resolves internal dependencies in the release batch and builds from the unpacked archives.
+Preflight all 24 publishable Octara 0.0.11 crates together. Cargo resolves internal dependencies in the release batch and builds from the unpacked archives.
 
 ```sh
-cargo publish --workspace --dry-run
+cargo publish --workspace --dry-run --locked
 ```
 
 Reuse the workspace Cargo cache. Clean up temporary captures, sockets, and test processes after verification. [Repository conventions](AGENTS.md)
