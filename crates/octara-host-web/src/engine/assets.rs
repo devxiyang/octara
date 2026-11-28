@@ -2,13 +2,14 @@
 
 use super::{CanvasFrame, DomEngine};
 use crate::image::{self, CanvasSize};
-use crate::{css, dom, rich};
+use crate::{css, dom, external_canvas, rich};
+#[cfg(feature = "webgpu")]
 use octara::runtime::engine::HostEngine;
 #[cfg(feature = "webgpu")]
 use octara::tree::TreeDelta;
 use octara::tree::{DirtyBitmap, NodeId, Tree};
 use octara_model::geometry::{Size, WindowViewport};
-use octara_model::image::{MediaAsset, ObjectFit};
+use octara_model::image::{ExternalTextureHandle, MediaAsset, ObjectFit};
 use octara_model::paint::{CanvasOp, Sample};
 #[cfg(feature = "webgpu")]
 use rustc_hash::FxHashSet;
@@ -20,6 +21,7 @@ use web_sys::{HtmlCanvasElement, HtmlElement};
 enum MediaContent {
     Pixels(Sample),
     Uri(Arc<str>),
+    External(ExternalTextureHandle),
 }
 
 #[derive(Clone)]
@@ -27,15 +29,69 @@ pub(super) struct MediaFrame {
     content: MediaContent,
     fit: ObjectFit,
     element: HtmlElement,
+    wrapper: HtmlElement,
 }
 
 impl MediaFrame {
     pub(super) fn is_pixels(&self) -> bool {
         matches!(self.content, MediaContent::Pixels(_))
     }
+
+    pub(super) fn mounted_external(&self) -> Option<&HtmlElement> {
+        (matches!(self.content, MediaContent::External(_)) && self.element.parent_node().as_ref() == Some(self.wrapper.as_ref()))
+            .then_some(&self.element)
+    }
+
+    fn replaced_external(&self, asset: Option<&MediaAsset>) -> Option<HtmlElement> {
+        if let (MediaContent::External(current), Some(MediaAsset::External(next))) = (&self.content, asset)
+            && current == next
+        {
+            return None;
+        }
+        self.mounted_external().cloned()
+    }
+
+    fn style(content: &MediaContent, fit: ObjectFit) -> String {
+        let clip = if matches!(content, MediaContent::External(_)) { "overflow:hidden;" } else { "" };
+        format!(
+            "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;border-radius:inherit;object-fit:{};{clip}",
+            css::object_fit(fit)
+        )
+    }
 }
 
 impl DomEngine {
+    pub(super) fn detach_external_canvases(&mut self, node: NodeId) -> Result<(), JsValue> {
+        let canvases: Vec<_> = self.entries.get(&node).into_iter().flat_map(super::EntryState::mounted_external_media).cloned().collect();
+        for canvas in canvases {
+            self.pending().undo.place(&canvas, None, None)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn release_replaced_canvases(&mut self, tree: &Tree, nodes: impl IntoIterator<Item = NodeId>) -> Result<(), JsValue> {
+        // Release every changing owner before placing any replacement so retained slots can swap canvases.
+        for node in nodes.into_iter().filter(|&node| tree.is_live(node)) {
+            let Some(entry) = self.entries.get(&node) else { continue };
+            let media = entry
+                .media
+                .as_ref()
+                .and_then(|frame| frame.replaced_external(tree.media_source(node).and_then(|slot| slot.asset.as_ref())));
+            let mut releasing: Vec<_> = media.into_iter().collect();
+            if let Some(inline) = entry.inline_media.as_deref() {
+                releasing.extend(
+                    tree.inline_media_on(node)
+                        .enumerate()
+                        .filter_map(|(occurrence, (_, slot))| inline.get(&occurrence)?.replaced_external(slot.asset.as_ref())),
+                );
+            }
+            for element in releasing {
+                self.pending().undo.place(&element, None, None)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn update_image(&mut self, node: NodeId, sample: Sample) -> Result<(), JsValue> {
         let Some(element) = self.dom.element(node) else { return Ok(()) };
         let canvas = element.dyn_into::<HtmlCanvasElement>()?;
@@ -92,18 +148,42 @@ impl DomEngine {
         asset: Option<&MediaAsset>,
         fit: ObjectFit,
     ) -> Result<bool, JsValue> {
-        let content = asset.map(|asset| match asset {
+        let mut content = asset.map(|asset| match asset {
             MediaAsset::Pixels(image) => MediaContent::Pixels(image.sample()),
             MediaAsset::BrowserUri(uri) => MediaContent::Uri(uri.clone()),
+            MediaAsset::External(handle) => MediaContent::External(handle.clone()),
         });
-        if frame.as_ref().map(|frame| (&frame.content, frame.fit)) == content.as_ref().map(|content| (content, fit)) {
-            // Rich text can rebuild its wrapper while keeping the exact same image asset.
-            if let Some(frame) = frame.as_ref() {
-                self.pending().undo.place(&frame.element, Some(wrapper), None)?;
+        let external = if let Some(MediaContent::External(handle)) = &content {
+            let element = external_canvas::resolve(handle, &self.document).filter(|element| {
+                element.parent_node().is_none() || frame.as_ref().and_then(MediaFrame::mounted_external) == Some(element)
+            });
+            if element.is_none() {
+                content = None;
             }
+            element
+        } else {
+            None
+        };
+        if let Some(previous) = frame.as_mut()
+            && content.as_ref() == Some(&previous.content)
+        {
+            let undo = &mut self.pending().undo;
+            let fit_changed = previous.fit != fit;
+            if fit_changed {
+                undo.attr(&previous.element, "style", Some(&MediaFrame::style(&previous.content, fit)))?;
+                previous.fit = fit;
+            }
+            // Rich text can rebuild its wrapper while keeping the same image asset.
+            let moved = undo.place(&previous.element, Some(wrapper), None)?;
+            previous.wrapper = wrapper.clone();
+            return Ok(fit_changed || moved);
+        }
+        if content.is_none() && frame.is_none() {
             return Ok(false);
         }
-        if let Some(previous) = frame.as_ref() {
+        if let Some(previous) = frame.as_ref()
+            && (!matches!(previous.content, MediaContent::External(_)) || previous.mounted_external().is_some())
+        {
             self.pending().undo.place(&previous.element, None, None)?;
         }
         *frame = if let Some(content) = content {
@@ -121,17 +201,13 @@ impl DomEngine {
                     element.set_attribute("src", uri)?;
                     element
                 }
+                MediaContent::External(_) => external.expect("registered external canvas"),
             };
-            element.set_attribute("aria-hidden", "true")?;
-            element.set_attribute(
-                "style",
-                &format!(
-                    "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;border-radius:inherit;object-fit:{};",
-                    css::object_fit(fit)
-                ),
-            )?;
-            self.pending().undo.place(&element, Some(wrapper), None)?;
-            Some(MediaFrame { content, fit, element })
+            let undo = &mut self.pending().undo;
+            undo.attr(&element, "aria-hidden", Some("true"))?;
+            undo.attr(&element, "style", Some(&MediaFrame::style(&content, fit)))?;
+            undo.place(&element, Some(wrapper), None)?;
+            Some(MediaFrame { content, fit, element, wrapper: wrapper.clone() })
         } else {
             None
         };
@@ -150,12 +226,14 @@ impl DomEngine {
         for node in affected {
             let Some(core) = tree.node(node).filter(|_| tree.is_live(node)) else { continue };
             let Some(operations) = tree.canvas(node) else { continue };
-            let Some(layout) = self.geometry(node) else { continue };
+            let Some(layout) = self.sample(node) else { continue };
             let Some(element) = self.dom.element(node) else { continue };
             let size = CanvasSize {
                 area: Size::new(
-                    (layout.rect.w - layout.border.left - layout.border.right - layout.padding.left - layout.padding.right).max(0.0),
-                    (layout.rect.h - layout.border.top - layout.border.bottom - layout.padding.top - layout.padding.bottom).max(0.0),
+                    (layout.box_size.width - layout.border.left - layout.border.right - layout.padding.left - layout.padding.right)
+                        .max(0.0),
+                    (layout.box_size.height - layout.border.top - layout.border.bottom - layout.padding.top - layout.padding.bottom)
+                        .max(0.0),
                 ),
                 padding: layout.padding,
                 scale: viewport.scale,
@@ -213,7 +291,10 @@ impl DomEngine {
             }
             let plan = (|| {
                 let paint = tree.paint(node)?.custom.as_ref()?;
-                let layout = self.geometry(node)?;
+                let mut layout = self.geometry(node)?;
+                let size = self.sample(node)?.box_size;
+                layout.rect.w = size.width;
+                layout.rect.h = size.height;
                 let element = self.dom.element(node)?;
                 Plan::new(node, paint, &element, layout, tree.visual(node).radius, viewport.scale, now)
             })();

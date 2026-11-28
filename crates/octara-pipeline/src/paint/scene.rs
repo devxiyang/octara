@@ -5,7 +5,7 @@ use crate::motion::NodeMotion;
 use octara_model::geometry::{Rect, Size, Vec2};
 use octara_model::motion::{TextRevealTrack, Track};
 use octara_model::paint::{DisplayList, Item, Part, ScrollPlacement, ScrollPlacements, TransitionPaint};
-use octara_model::style::Visual;
+use octara_model::style::{Transform3D, Visual};
 use octara_model::theme::Color;
 use octara_tree::{ExitTicket, NodeId};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -51,6 +51,10 @@ impl PaintScene {
 
     pub(super) fn timed_at(&self, time: f64) -> bool {
         self.root.as_ref().is_some_and(|root| root.timing.timed_at(time)) || self.translations_at(time)
+    }
+
+    pub(super) fn has_projected_layers(&self) -> bool {
+        self.root.as_ref().is_some_and(|root| root.has_projected_layers)
     }
 
     pub fn continuously_animated(&self, time: f64) -> bool {
@@ -178,8 +182,12 @@ impl ExitGhost {
             return None;
         }
         let mut parts = Vec::new();
-        let mut paint =
-            ScopedPaint { ancestors: SmallVec::new(), last_spatial_id: snapshot.max_spatial_id, independent: Some(independent) };
+        let mut paint = ScopedPaint {
+            ancestors: SmallVec::new(),
+            ancestor_start: 0,
+            last_spatial_id: snapshot.max_spatial_id,
+            independent: Some(independent),
+        };
         let mut sample = Sample { time: now, work: SampleWork::default() };
         paint.node(snapshot, &mut sample, &mut parts);
         for part in &mut parts {
@@ -247,6 +255,8 @@ struct ChildSpan {
     coverage: Option<Rect>,
     timing: Timing,
     scope: SpanScope,
+    contains_native: bool,
+    has_projected_layers: bool,
     max_spatial_id: u32,
 }
 
@@ -304,8 +314,20 @@ impl ChildSpan {
         let scope = node
             .as_ref()
             .map_or(SpanScope::Empty, |node| if node.resolves_scopes { SpanScope::Mixed } else { SpanScope::Shared(node.scope) });
+        let contains_native = node.as_ref().is_some_and(|node| node.contains_native);
+        let has_projected_layers = node.as_ref().is_some_and(|node| node.has_projected_layers);
         let max_spatial_id = node.as_ref().map_or(0, |node| node.max_spatial_id);
-        Arc::new(Self { len: 1, content: SpanContent::Leaf(node), resting, coverage, timing, scope, max_spatial_id })
+        Arc::new(Self {
+            len: 1,
+            content: SpanContent::Leaf(node),
+            resting,
+            coverage,
+            timing,
+            scope,
+            contains_native,
+            has_projected_layers,
+            max_spatial_id,
+        })
     }
 
     fn branch(left: Arc<Self>, right: Arc<Self>, rebuilt: &mut u64) -> Arc<Self> {
@@ -320,6 +342,8 @@ impl ChildSpan {
             timing: left.timing.combine(right.timing),
             coverage: left.coverage.zip(right.coverage).map(|(left, right)| union(left, right)),
             scope: left.scope.combine(right.scope),
+            contains_native: left.contains_native || right.contains_native,
+            has_projected_layers: left.has_projected_layers || right.has_projected_layers,
             max_spatial_id: left.max_spatial_id.max(right.max_spatial_id),
             content: SpanContent::Branch(left, right),
             resting,
@@ -389,6 +413,8 @@ pub(super) struct PaintNode {
     coverage: Option<Rect>,
     timing: Timing,
     resolves_scopes: bool,
+    contains_native: bool,
+    has_projected_layers: bool,
     max_spatial_id: u32,
 }
 
@@ -407,6 +433,11 @@ impl PaintNode {
     pub(super) fn element(element: Arc<Element>, children: ChildList, translates: bool) -> Self {
         let scope = element.scope;
         let resolves_scopes = children.root.as_ref().is_some_and(|children| !children.scope.fits(element.child_scope()));
+        // Use the same native markers as transition fallback. Snapshots and external textures are ordinary draws.
+        let contains_native = children.root.as_ref().is_some_and(|children| children.contains_native)
+            || element.own[element.content_start..].iter().any(|item| matches!(item, Item::Native { .. }));
+        let has_projected_layers = element.layer_transform(contains_native).is_some()
+            || children.root.as_ref().is_some_and(|children| children.has_projected_layers);
         let max_spatial_id = children
             .root
             .as_ref()
@@ -427,6 +458,7 @@ impl PaintNode {
         if !resolves_scopes {
             element.emit(
                 f64::INFINITY,
+                contains_native,
                 |output| {
                     if let Some(children) = &children.root {
                         append_covered(&children.resting, children.coverage, output);
@@ -448,7 +480,7 @@ impl PaintNode {
             }];
             None
         } else {
-            element.coverage(child_coverage)
+            element.coverage(child_coverage, contains_native)
         };
         Self {
             element: Some(element),
@@ -460,6 +492,8 @@ impl PaintNode {
             coverage,
             timing,
             resolves_scopes,
+            contains_native,
+            has_projected_layers,
             max_spatial_id,
         }
     }
@@ -473,6 +507,9 @@ impl PaintNode {
         }
         let coverage = children.root.as_ref().map_or(Some(Rect::default()), |children| children.coverage);
         let resolves_scopes = children.root.as_ref().is_some_and(|children| !children.scope.fits(scope));
+        // Frozen exit paint has its native cutouts disabled.
+        let contains_native = children.root.as_ref().is_some_and(|children| children.contains_native);
+        let has_projected_layers = children.root.as_ref().is_some_and(|children| children.has_projected_layers);
         let max_spatial_id = children.root.as_ref().map_or(0, |children| children.max_spatial_id);
         Self {
             element: None,
@@ -484,6 +521,8 @@ impl PaintNode {
             coverage,
             timing,
             resolves_scopes,
+            contains_native,
+            has_projected_layers,
             max_spatial_id,
         }
     }
@@ -500,7 +539,8 @@ impl PaintNode {
 
     fn emit_scene(&self, sample: &mut Sample, output: &mut Vec<Part>) {
         if self.resolves_scopes {
-            let mut scopes = ScopedPaint { ancestors: SmallVec::new(), last_spatial_id: self.max_spatial_id, independent: None };
+            let mut scopes =
+                ScopedPaint { ancestors: SmallVec::new(), ancestor_start: 0, last_spatial_id: self.max_spatial_id, independent: None };
             scopes.node(self, sample, output);
         } else {
             self.emit(sample, output);
@@ -523,6 +563,7 @@ impl PaintNode {
         if let Some(element) = &self.element {
             element.emit(
                 sample.time,
+                self.contains_native,
                 |output| {
                     if let Some(children) = &self.children.root {
                         children.emit(sample, output);
@@ -539,6 +580,7 @@ impl PaintNode {
         if let Some(element) = &self.element {
             element.emit(
                 time,
+                self.contains_native,
                 |output| {
                     if let Some(children) = &self.children.root {
                         children.emit_for_exit(time, independent, output);
@@ -557,6 +599,7 @@ struct ScopeEntry<'a> {
 
 struct ScopedPaint<'a> {
     ancestors: SmallVec<[ScopeEntry<'a>; 8]>,
+    ancestor_start: usize,
     last_spatial_id: u32,
     independent: Option<&'a FxHashSet<NodeId>>,
 }
@@ -580,30 +623,17 @@ impl<'a> ScopedPaint<'a> {
         }
         sample.work.nodes += 1;
         if let Some(element) = &node.element {
-            element.emit_layer(
-                sample.time,
-                |bounds, visual, output| {
-                    self.place(element.scope, |parts| element.emit_own(sample.time, bounds, visual, parts), output);
-                    let clip = element.sampled_clip(bounds, visual);
-                    self.ancestors.push(ScopeEntry { element, clip: clip.clone() });
-                    if let Some(children) = &node.children.root {
-                        self.children(children, sample, output);
-                    }
-                    self.ancestors.pop();
-                    if element.scroll {
-                        self.place(
-                            element.scope,
-                            |output| {
-                                let clipped = push_clip(clip, output);
-                                output.push(element.scroll_content(bounds, Arc::from([])));
-                                pop_clip(clipped, output);
-                            },
-                            output,
-                        );
-                    }
-                },
-                output,
-            );
+            if element.layer_transform(node.contains_native).is_some() {
+                // The incoming clip applies in the destination plane, and the incoming scroll
+                // moves the pivot along with the entire layer. Descendant scopes are local.
+                let start = std::mem::replace(&mut self.ancestor_start, self.ancestors.len());
+                let mut parts = Vec::new();
+                self.element(node, element, sample, &mut parts);
+                self.ancestor_start = start;
+                self.place(element.scope, |output| *output = parts, output);
+            } else {
+                self.element(node, element, sample, output);
+            }
         } else {
             if let Some(ghost) = node.ghost.as_ref().filter(|_| self.independent.is_none()) {
                 self.place(node.scope, |parts| ghost.emit(sample.time, parts), output);
@@ -612,6 +642,34 @@ impl<'a> ScopedPaint<'a> {
                 self.children(children, sample, output);
             }
         }
+    }
+
+    fn element(&mut self, node: &'a PaintNode, element: &'a Element, sample: &mut Sample, output: &mut Vec<Part>) {
+        element.emit_layer(
+            sample.time,
+            node.contains_native,
+            |bounds, visual, output| {
+                self.place(element.scope, |parts| element.emit_own(sample.time, bounds, visual, parts), output);
+                let clip = element.sampled_clip(bounds, visual);
+                self.ancestors.push(ScopeEntry { element, clip: clip.clone() });
+                if let Some(children) = &node.children.root {
+                    self.children(children, sample, output);
+                }
+                self.ancestors.pop();
+                if element.scroll {
+                    self.place(
+                        element.scope,
+                        |output| {
+                            let clipped = push_clip(clip, output);
+                            output.push(element.scroll_content(bounds, Arc::from([])));
+                            pop_clip(clipped, output);
+                        },
+                        output,
+                    );
+                }
+            },
+            output,
+        );
     }
 
     fn children(&mut self, span: &'a ChildSpan, sample: &mut Sample, output: &mut Vec<Part>) {
@@ -655,7 +713,7 @@ impl<'a> ScopedPaint<'a> {
         if parts.is_empty() {
             return;
         }
-        for (index, entry) in self.ancestors.iter().enumerate().rev() {
+        for (index, entry) in self.ancestors.iter().enumerate().skip(self.ancestor_start).rev() {
             let source = entry.element.source;
             let (clips, scrolls) = entry.element.take_scope(&mut scope);
             if scrolls {
@@ -695,9 +753,10 @@ impl Element {
         }
     }
 
-    fn emit(&self, time: f64, children: impl FnOnce(&mut Vec<Part>), output: &mut Vec<Part>) {
+    fn emit(&self, time: f64, contains_native: bool, children: impl FnOnce(&mut Vec<Part>), output: &mut Vec<Part>) {
         self.emit_layer(
             time,
+            contains_native,
             |bounds, visual, output| {
                 self.emit_own(time, bounds, visual, output);
                 let clipped = push_clip(self.sampled_clip(bounds, visual), output);
@@ -723,11 +782,21 @@ impl Element {
         }
     }
 
-    fn emit_layer(&self, time: f64, emit: impl FnOnce(Rect, Visual, &mut Vec<Part>), output: &mut Vec<Part>) {
+    fn layer_transform(&self, contains_native: bool) -> Option<Transform3D> {
+        // OS-native views use the host's layout coordinates. Their underlay cutouts
+        // must paint into the parent surface, so skip the transform for this subtree.
+        self.visual.transform.filter(|_| !contains_native)
+    }
+
+    fn emit_layer(&self, time: f64, contains_native: bool, emit: impl FnOnce(Rect, Visual, &mut Vec<Part>), output: &mut Vec<Part>) {
         let (visual, bounds) = self.motion.as_ref().map_or((self.visual, self.bounds), |track| (track.visual(time), track.bounds(time)));
         let alpha = visual.opacity.clamp(0.0, 1.0);
         if alpha == 0.0 {
             return;
+        }
+        let transform = self.layer_transform(contains_native);
+        if let Some(transform) = transform {
+            output.push(Part::Item(Item::PushTransform { source: self.source, rect: bounds, transform }));
         }
         let blend = alpha < 1.0 || self.transition.is_some();
         if let Some(transition) = &self.transition {
@@ -743,6 +812,9 @@ impl Element {
         }
         emit(bounds, visual, output);
         if blend {
+            output.push(Part::Item(Item::PopLayer));
+        }
+        if transform.is_some() {
             output.push(Part::Item(Item::PopLayer));
         }
     }
@@ -802,8 +874,8 @@ impl Element {
         self.decoration.shadow_bounds(bounds).fold(coverage, union)
     }
 
-    fn coverage(&self, children: Option<Rect>) -> Option<Rect> {
-        if self.transition.is_some() {
+    fn coverage(&self, children: Option<Rect>, contains_native: bool) -> Option<Rect> {
+        if self.transition.is_some() || self.layer_transform(contains_native).is_some() {
             return None;
         }
         let mut children = children?;

@@ -87,6 +87,7 @@ mod macos {
         FirstFrame,
         MoveResize,
         Opaque,
+        Retitle,
         StartupUnzoom,
         Zoom,
         Unzoom,
@@ -180,6 +181,11 @@ mod macos {
                         runtime.last_commit().unwrap().draw.as_ref().unwrap().background,
                         runtime.tree().theme().get(ColorToken::Background),
                     );
+                    app.update_window(custom, |write| write.set_window_title(CUSTOM)).unwrap();
+                    self.phase = Phase::Retitle;
+                }
+                Phase::Retitle if native.title().to_string() == CUSTOM => {
+                    verify_chrome(&native, chrome);
                     app.update_window(standard, |write| write.toggle_maximize_window()).unwrap();
                     self.phase = Phase::StartupUnzoom;
                 }
@@ -249,7 +255,11 @@ mod macos {
             let x = frame.origin.x as f32;
             let y = if content.isFlipped() { frame.origin.y } else { content.bounds().size.height - frame.max().y } as f32;
             let traffic_lights = chrome.traffic_light_rect.expect("AppKit advertised traffic lights");
-            assert!(traffic_lights.contains(Point::new(x + 1.0, y + 1.0)));
+            assert!(
+                traffic_lights.contains(Point::new(x + 1.0, y + 1.0)),
+                "{} {kind:?} has content origin ({x}, {y}), outside {chrome:?}",
+                window.title(),
+            );
             if kind == NSWindowButton::CloseButton {
                 assert!((x - OFFSET.x).abs() < 1.0 && (y - OFFSET.y).abs() < 1.0, "traffic light origin {x}, {y}");
             }

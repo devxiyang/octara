@@ -1,9 +1,11 @@
 use octara_model::geometry::{Rect, Size, Vec2, WindowViewport};
-use octara_model::identity::TreeId;
+use octara_model::identity::{NativeId, TreeId};
+use octara_model::image::{ExternalTextureHandle, ExternalTextureKind, ImageSource, ImageState, MediaAsset};
 use octara_model::input::HostReply;
 use octara_model::motion::{Curve, Motion};
+use octara_model::native::{NativeChange, NativeSlot};
 use octara_model::paint::{Image, Item, ObjectFit, Part};
-use octara_model::style::{FlexDirection, Length, Overflow, Position, ScrollbarVisibility, StyleProp};
+use octara_model::style::{FlexDirection, Length, Overflow, Position, ScrollbarVisibility, StyleProp, Transform3D};
 use octara_model::theme::{ColorValue, Fill, rgb};
 use octara_pipeline::{NativeEngine, NativeEngineConfig};
 use octara_runtime::HostEngine;
@@ -223,6 +225,215 @@ fn nested_scroll_keeps_rounded_clips_stationary_and_old_frames_immutable() {
         Item::PushClip { source, rect, radius }
             if *source == inner && *rect == Rect::new(0.0, 22.0, 80.0, 40.0) && *radius == [8.0, 0.0, 0.0, 0.0]
     )));
+}
+
+#[test]
+fn transform_layers_keep_scroll_placement_clips_and_group_opacity() {
+    let mut tree = tree();
+    let mut tx = tree.transaction();
+    let outer = tx.create(NodeSpec::new(NodeContent::Box));
+    let spacer = tx.create(NodeSpec::new(NodeContent::Box));
+    let inner = tx.create(NodeSpec::new(NodeContent::Box));
+    let leaf = tx.create(NodeSpec::new(NodeContent::Box));
+    let escaped = tx.create(NodeSpec::new(NodeContent::Box));
+    let tail = tx.create(NodeSpec::new(NodeContent::Box));
+    let transform = Transform3D::default().perspective(200.0).rotate_y(30.0);
+    let leaf_transform = Transform3D::default().rotate_z(15.0);
+    let inner_style = |transform| {
+        style([
+            StyleProp::Direction(FlexDirection::Column),
+            StyleProp::Width(80.into()),
+            StyleProp::Height(40.into()),
+            StyleProp::OverflowX(Overflow::Hidden),
+            StyleProp::OverflowY(Overflow::Scroll),
+            StyleProp::Scrollbar(ScrollbarVisibility::Hidden),
+            StyleProp::Shrink(0.0),
+            StyleProp::Opacity(0.75),
+            StyleProp::Transform3D(transform),
+        ])
+    };
+    tx.change(
+        outer,
+        style([
+            StyleProp::Position(Position::Relative),
+            StyleProp::Direction(FlexDirection::Column),
+            StyleProp::Width(100.into()),
+            StyleProp::Height(80.into()),
+            StyleProp::OverflowY(Overflow::Scroll),
+            StyleProp::Scrollbar(ScrollbarVisibility::Hidden),
+        ]),
+    );
+    tx.change(spacer, style([StyleProp::Height(20.into()), StyleProp::Shrink(0.0)]));
+    tx.change(inner, inner_style(Some(transform)));
+    tx.change(leaf, style([StyleProp::Height(80.into()), StyleProp::Shrink(0.0), StyleProp::Transform3D(Some(leaf_transform)), fill()]));
+    // The outer box is the containing block for this child, so it escapes the inner scroll and clip.
+    tx.change(
+        escaped,
+        style([
+            StyleProp::Position(Position::Absolute),
+            StyleProp::Top(60.into()),
+            StyleProp::Width(10.into()),
+            StyleProp::Height(20.into()),
+            fill(),
+        ]),
+    );
+    tx.change(tail, style([StyleProp::Height(80.into()), StyleProp::Shrink(0.0)]));
+    tx.place(tree.node_ref(tree.root()), 0, outer);
+    tx.place(outer, 0, spacer);
+    tx.place(outer, 1, inner);
+    tx.place(outer, 2, tail);
+    tx.place(inner, 0, leaf);
+    tx.place(inner, 1, escaped);
+    let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+    let [outer, inner, leaf, escaped] = [outer, inner, leaf, escaped].map(|node| receipt.node(node).unwrap());
+    let mut initial = tree.initial_delta();
+    initial.merge(mounted);
+    let mut engine = NativeEngine::new(NativeEngineConfig { check_paint_cache: true, ..Default::default() });
+    let viewport = WindowViewport { scale: 2.0, ..viewport() };
+    engine.project(&tree, &initial, viewport, 0.0).unwrap();
+    engine.commit();
+    let mut delta = tree.apply_runtime(RuntimeOp::SetScroll { node: outer, offset: Vec2::new(0.0, 10.3), clamped: false });
+    delta.merge(tree.apply_runtime(RuntimeOp::SetScroll { node: inner, offset: Vec2::new(0.0, 9.2), clamped: false }));
+    engine.project(&tree, &delta, viewport, 0.1).unwrap();
+    let draw = engine.commit().draw.unwrap();
+
+    let mut clips = Vec::new();
+    let mut layers = Vec::new();
+    let mut quads = Vec::new();
+    for item in draw.placed_items_at(2.0) {
+        match item.resolve().into_owned() {
+            Item::PushClip { source, .. } | Item::PushAxisClip { source, .. } => clips.push(source),
+            Item::PopClip => {
+                clips.pop().unwrap();
+            }
+            Item::PushTransform { source, rect, transform: value } if source == inner => {
+                assert_eq!(value, transform);
+                assert_eq!(rect, Rect::new(0.0, 9.5, 80.0, 40.0));
+                assert!(clips.contains(&outer));
+                assert!(!clips.contains(&inner));
+                layers.push(source);
+            }
+            Item::PushTransform { source, rect, transform: value } if source == leaf => {
+                assert_eq!(value, leaf_transform);
+                assert_eq!(rect.y, 0.5);
+                assert!(clips.contains(&inner));
+                layers.push(source);
+            }
+            Item::PushLayer { source, opacity } => {
+                assert_eq!((source, opacity), (inner, 0.75));
+                layers.push(source);
+            }
+            Item::PopLayer => {
+                layers.pop().unwrap();
+            }
+            Item::Quad(quad) if quad.source == leaf => {
+                assert_eq!(layers, [inner, inner, leaf]);
+                assert!(clips.contains(&inner));
+                quads.push(leaf);
+            }
+            Item::Quad(quad) if quad.source == escaped => {
+                assert_eq!(layers, [inner, inner]);
+                assert_eq!(quad.rect.y, 49.5);
+                assert!(!clips.contains(&inner));
+                quads.push(escaped);
+            }
+            _ => {}
+        }
+    }
+    assert!(clips.is_empty());
+    assert!(layers.is_empty());
+    assert_eq!(quads, [leaf, escaped]);
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(inner), inner_style(None));
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    assert!(delta.paint_dirty.contains(&inner));
+    assert!(delta.layout_dirty.is_empty());
+    engine.project(&tree, &delta, viewport, 0.2).unwrap();
+    let updated = engine.commit().draw.unwrap();
+    assert!(!updated.items().iter().any(|item| matches!(item, Item::PushTransform { source, .. } if *source == inner)));
+}
+
+#[test]
+fn live_native_underlays_keep_their_window_space_cutouts() {
+    for overflow in [Overflow::Visible, Overflow::Hidden] {
+        let mut tree = tree();
+        let mut tx = tree.transaction();
+        let parent = tx.create(NodeSpec::new(NodeContent::Box));
+        let underlay = tx.create(NodeSpec::new(NodeContent::Native { kind: "test.view", slot: NativeSlot::Underlay }));
+        // The pipeline retains the texture handle without accessing its backend payload.
+        let texture = ExternalTextureHandle::new(ExternalTextureKind::Metal, (10, 10), ());
+        let media =
+            tx.create(NodeSpec::new(NodeContent::ImageSource { source: ImageSource::External(texture.clone()), fit: ObjectFit::Fill }));
+        tx.change(
+            parent,
+            style([
+                StyleProp::Width(80.into()),
+                StyleProp::Height(40.into()),
+                StyleProp::OverflowY(overflow),
+                StyleProp::Transform3D(Some(Transform3D::default())),
+                fill(),
+            ]),
+        );
+        tx.change(underlay, style([StyleProp::Width(30.into()), StyleProp::Height(20.into())]));
+        // The absolute child escapes the parent's clip in the hidden-overflow case.
+        tx.change(
+            media,
+            style([
+                StyleProp::Position(Position::Absolute),
+                StyleProp::Top(25.into()),
+                StyleProp::Width(10.into()),
+                StyleProp::Height(10.into()),
+                StyleProp::Transform3D(Some(Transform3D::default().rotate_y(30.0))),
+            ]),
+        );
+        tx.place(tree.node_ref(tree.root()), 0, parent);
+        tx.place(parent, 0, underlay);
+        tx.place(parent, 1, media);
+        let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+        let [parent, underlay, media] = [parent, underlay, media].map(|node| receipt.node(node).unwrap());
+        let mut initial = tree.initial_delta();
+        initial.merge(mounted);
+        initial.merge(tree.apply_runtime(RuntimeOp::SetNativeLive { node: underlay, live: true }));
+        initial.merge(tree.apply_runtime(RuntimeOp::SetMedia {
+            node: media,
+            state: ImageState::Ready { natural_size: texture.size() },
+            asset: Some(MediaAsset::External(texture)),
+        }));
+        let mut engine = NativeEngine::new(NativeEngineConfig { check_paint_cache: true, ..Default::default() });
+        let publication = engine.publication();
+        engine.project(&tree, &initial, viewport(), 0.0).unwrap();
+        let items = engine.commit().draw.unwrap().items();
+        let frame = publication.latest().unwrap();
+        let placement = frame.native_changes.iter().find_map(|change| match change {
+            NativeChange::Place { placements } => placements.iter().find(|place| place.id == NativeId::from(underlay)),
+            _ => None,
+        });
+        let placement = placement.expect("native placement");
+        assert!(placement.visible);
+        assert!(items.iter().any(|item| matches!(item, Item::Native { source, rect, cut: true, .. }
+            if *source == underlay && *rect == placement.rect)));
+        let transforms = |items: &[Item]| {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::PushTransform { source, .. } => Some(*source),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(transforms(&items), [media]);
+        assert!(items.windows(3).any(|items| matches!(
+            items, [Item::PushTransform { source, .. }, Item::ExternalTexture(paint), Item::PopLayer]
+                if *source == media && paint.source == media
+        )));
+
+        let mut tx = tree.transaction();
+        tx.retire(tree.node_ref(underlay), Retirement::Destroy);
+        let (_, delta) = tree.apply(tx.finish()).unwrap();
+        engine.project(&tree, &delta, viewport(), 0.1).unwrap();
+        assert_eq!(transforms(&engine.commit().draw.unwrap().items()), [parent, media]);
+    }
 }
 
 #[test]

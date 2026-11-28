@@ -136,7 +136,7 @@ pub struct TransitionImage<'a> {
     /// Use the view as a read-only binding within this draw.
     pub view: &'a wgpu::TextureView,
     /// The top-left corner in window device pixels at this image's `scale`.
-    pub origin: [u32; 2],
+    pub origin: [i32; 2],
     /// Width and height in device pixels. Use this extent to bound samples. An empty
     /// current region has a zero extent and a transparent backing view.
     pub size: [u32; 2],

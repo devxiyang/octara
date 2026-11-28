@@ -3,7 +3,7 @@
 use crate::TextOverflow;
 use octara_model::motion::Curve;
 use octara_model::style::{
-    AlignItems, Contain, Direction, Display, FlexDirection, FlexWrap, JustifyContent, Overflow, Position, StyleProp,
+    AlignItems, Contain, Direction, Display, FlexDirection, FlexWrap, JustifyContent, Overflow, Position, StyleProp, Transform3D,
 };
 pub use octara_model::style::{FontSize, Length, LineHeight, Radius, Ring, Shadows, State, When};
 use octara_model::text::{FontWeight, TextAlign, Wrap};
@@ -148,6 +148,11 @@ pub trait Styled: Sized {
         text_wrap(Wrap) => TextWrap,
         line_height(impl Into<LineHeight>) => LineHeight,
         opacity(f32) => Opacity,
+    }
+
+    /// Applies a paint transform to the element and its descendants. Pass `None` to clear it.
+    fn transform_3d(self, value: impl Into<Option<Transform3D>>) -> Self {
+        self.style(StyleProp::Transform3D(value.into()))
     }
 
     fn size(self, length: impl Into<Length>) -> Self {

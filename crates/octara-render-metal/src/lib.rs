@@ -4,12 +4,14 @@
 
 mod atlas;
 mod encode;
+mod external;
 mod material;
 mod pipeline;
 mod prepare;
 mod target;
 mod transition;
 
+pub use external::{MetalTextureCache, external_texture_from_iosurface, external_texture_from_metal};
 pub use material::material_msl;
 pub use transition::{MetalPresentation, transition_crossfade};
 
@@ -87,6 +89,8 @@ impl MetalRenderer {
     ///
     /// Commit a successful recording before encoding another frame on the same queue to
     /// reuse its backing pixels and prepared resources. Discard the command buffer on error.
+    /// An unsubmitted successful recording can pin external texture owners until the next
+    /// recording or the renderer's destruction.
     /// The texture must belong to the renderer's device and support render targets. A
     /// drawable with framebuffer-only access uses a render transfer when needed.
     /// Unsupported author programs draw their ordinary fallback and report the outcome.
@@ -141,6 +145,7 @@ impl MetalRenderer {
             if !matches!(status, MTLCommandBufferStatus::Committed | MTLCommandBufferStatus::Scheduled | MTLCommandBufferStatus::Completed)
             {
                 self.retained = None;
+                self.previous = None;
             }
             if status != MTLCommandBufferStatus::Completed
                 && let Some(surface) = &mut self.surface
@@ -227,6 +232,7 @@ impl MetalRenderer {
             render.encode(command, root, premultiplied(list.background), raster, &mut profile)?;
         }
         surface.transfer(command, drawable, &self.pipelines, raster, &mut profile)?;
+        external::retain_until_completed(command, &frame.external);
         surface.snapshot = next_snapshot;
         profile.encode = encoding.elapsed();
         profile.atlas_bytes = frame.atlas_bytes;

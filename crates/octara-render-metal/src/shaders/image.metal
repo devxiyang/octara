@@ -88,6 +88,72 @@ fragment float4 layer_fragment(
     return layer.read(uint2(p - image.rect.xy)) * (image.fill.a * clip_coverage(world, draw, clips, spatials));
 }
 
+struct LayerTransform {
+    float4x4 matrix;
+    float4 source;
+};
+
+struct ProjectedLayerVertex {
+    float4 position [[position]];
+    float2 texel [[center_perspective]];
+    uint instance [[flat]];
+    float near_plane [[clip_distance]];
+};
+
+static_assert(sizeof(LayerTransform) == 80, "LayerTransform layout");
+
+vertex ProjectedLayerVertex projected_layer_vertex(
+    uint vertex_id [[vertex_id]], uint id [[instance_id]], constant Globals& globals [[buffer(0)]],
+    device const DrawInst* draws [[buffer(6)]], constant LayerTransform& transform [[buffer(9)]]
+) {
+    float2 texel = float2(vertex_id & 1u, vertex_id >> 1u) * transform.source.zw;
+    float4 point = transform.matrix * float4(transform.source.xy + texel, 0.0f, 1.0f);
+    float2 local = (point.xy - globals.origin * point.w) / globals.size;
+    // Keep the scheduler's painter depth after the perspective divide.
+    return {float4(2.0f * local.x - point.w, point.w - 2.0f * local.y, draws[id].depth * point.w, point.w),
+            texel, id, point.w - 0.00001f};
+}
+
+fragment float4 projected_layer_fragment(
+    ProjectedLayerVertex v [[stage_in]], constant Globals& globals [[buffer(0)]],
+    device const ImageInst* images [[buffer(2)]], device const ClipNode* clips [[buffer(5)]],
+    device const DrawInst* draws [[buffer(6)]], device const float4* spatials [[buffer(8)]],
+    texture2d<float> layer [[texture(4)]], sampler image_sampler [[sampler(3)]]
+) {
+    float2 world = v.position.xy + globals.origin;
+    DrawInst draw = draws[v.instance];
+    // The projected quad's vertices cannot be clamped in the parent clip's axes.
+    float pad = (draw.flags & FRACTIONAL_CLIP) != 0u ? 0.5f : 0.0f;
+    if (any(world < draw.clip.xy - pad) || any(world >= draw.clip.xy + draw.clip.zw + pad)) {
+        return float4(0.0f);
+    }
+    float alpha = images[draw.payload].fill.a * clip_coverage(world, draw, clips, spatials);
+    if (alpha <= 0.0f) {
+        return float4(0.0f);
+    }
+    float2 uv = v.texel / float2(layer.get_width(), layer.get_height());
+    return layer.sample(image_sampler, uv, level(0.0f)) * alpha;
+}
+
+fragment float4 external_fragment(
+    DrawVertex v [[stage_in]], constant Globals& globals [[buffer(0)]],
+    device const ImageInst* images [[buffer(2)]], device const ClipNode* clips [[buffer(5)]],
+    device const DrawInst* draws [[buffer(6)]], device const float4* spatials [[buffer(8)]],
+    texture2d<float> image_texture [[texture(4)]], sampler image_sampler [[sampler(3)]]
+) {
+    float2 world = v.position.xy + globals.origin;
+    DrawInst draw = draws[v.instance];
+    float2 p = world - draw_offset(draw, spatials);
+    ImageInst image = images[draw.payload];
+    float edge = coverage(sd_round_rect(p, image.rect, float4(0.0f)));
+    float inside = coverage(sd_round_rect(p, image.image_bounds, image.radius));
+    float alpha = edge * inside * image.fill.a * clip_coverage(world, draw, clips, spatials);
+    if (alpha <= 0.0f) {
+        return float4(0.0f);
+    }
+    return image_texture.sample(image_sampler, quad_uv(p, image.rect), level(0.0f)) * alpha;
+}
+
 fragment float4 canvas_fragment(
     DrawVertex v [[stage_in]], constant Globals& globals [[buffer(0)]],
     device const ImageInst* images [[buffer(2)]], device const ClipNode* clips [[buffer(5)]],

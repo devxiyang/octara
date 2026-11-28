@@ -1,7 +1,7 @@
 //! Frame-local CPU uploads into reusable GPU storage buffers.
 
 use super::atlas::{RecordError, SceneTextures};
-use super::pipeline::PipelineKind;
+use super::pipeline::{LayerProjection, PipelineKind};
 use crate::plan::GlyphInst;
 use crate::plan::instances::Globals;
 use crate::plan::instances::payload_bytes;
@@ -113,18 +113,11 @@ impl FrameBuffers {
         bounds: &[PassBounds],
         window: [u32; 2],
         layer_views: &[wgpu::TextureView],
-    ) -> Vec<u8> {
+        layer_projections: impl IntoIterator<Item = Option<LayerProjection>>,
+    ) -> (Vec<u8>, Vec<Option<u64>>) {
         // One aligned, distinct projection for each target in the submission.
         let uniform_size = size_of::<Globals>();
         let bytes_len = layer_views.len() * self.globals_stride + uniform_size;
-        if self.globals.size() < bytes_len as u64 {
-            self.globals = buffer(
-                device,
-                "octara globals",
-                bytes_len.next_power_of_two() as u64,
-                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            );
-        }
         let mut uniforms = vec![0; bytes_len];
         let sizes = std::iter::once(window).chain(layer_views.iter().map(|view| [view.texture().width(), view.texture().height()]));
         for (index, (bounds, extent)) in bounds.iter().zip(sizes).enumerate() {
@@ -132,7 +125,26 @@ impl FrameBuffers {
             let at = index * self.globals_stride;
             uniforms[at..at + uniform_size].copy_from_slice(bytemuck::bytes_of(&globals));
         }
-        uniforms
+        let layer_offsets = layer_projections
+            .into_iter()
+            .map(|projection| {
+                projection.map(|projection| {
+                    let at = uniforms.len().next_multiple_of(self.globals_stride);
+                    uniforms.resize(at, 0);
+                    uniforms.extend_from_slice(bytemuck::bytes_of(&projection));
+                    at as u64
+                })
+            })
+            .collect();
+        if self.globals.size() < uniforms.len() as u64 {
+            self.globals = buffer(
+                device,
+                "octara globals",
+                uniforms.len().next_power_of_two() as u64,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            );
+        }
+        (uniforms, layer_offsets)
     }
 
     pub(super) fn projection_offset(&self, pass: usize) -> u32 {
@@ -147,10 +159,33 @@ impl FrameBuffers {
         atlas: Option<&wgpu::TextureView>,
         layer: Option<&wgpu::TextureView>,
     ) -> wgpu::BindGroup {
+        self.bind_with_projection(device, layout, kind, atlas, layer, None)
+    }
+
+    pub(super) fn bind_projected(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        atlas: &wgpu::TextureView,
+        layer: &wgpu::TextureView,
+        offset: u64,
+    ) -> wgpu::BindGroup {
+        self.bind_with_projection(device, layout, PipelineKind::ProjectedLayer, Some(atlas), Some(layer), Some(offset))
+    }
+
+    fn bind_with_projection(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        kind: PipelineKind,
+        atlas: Option<&wgpu::TextureView>,
+        layer: Option<&wgpu::TextureView>,
+        offset: Option<u64>,
+    ) -> wgpu::BindGroup {
         let payload = match kind {
             PipelineKind::Quad => &self.quads,
             PipelineKind::Shadow => &self.shadows,
-            PipelineKind::Image => &self.images,
+            PipelineKind::Image | PipelineKind::ProjectedLayer => &self.images,
             PipelineKind::Glyph => &self.glyphs,
             PipelineKind::Material => &self.materials,
         };
@@ -169,7 +204,7 @@ impl FrameBuffers {
             wgpu::BindGroupEntry { binding: 6, resource: draws.0.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 8, resource: self.spatials.0.as_entire_binding() },
         ];
-        if matches!(kind, PipelineKind::Quad | PipelineKind::Image) {
+        if kind == PipelineKind::Quad || kind.is_image() {
             entries.push(wgpu::BindGroupEntry { binding: 7, resource: self.gradients.0.as_entire_binding() });
         }
         if kind == PipelineKind::Glyph {
@@ -183,6 +218,16 @@ impl FrameBuffers {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(layer) },
             ]);
+        }
+        if let Some(offset) = offset {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 9,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &self.globals,
+                    offset,
+                    size: wgpu::BufferSize::new(size_of::<LayerProjection>() as u64),
+                }),
+            });
         }
         device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("octara"), layout, entries: &entries })
     }

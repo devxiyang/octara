@@ -5,7 +5,7 @@ use octara_model::geometry::{Edges, LayoutBox, Rect, Size, Vec2};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlElement;
 
-const STRIDE: usize = 18;
+const STRIDE: usize = 20;
 
 #[wasm_bindgen(module = "/src/measure.js")]
 extern "C" {
@@ -43,6 +43,7 @@ pub(crate) struct Geometry {
     pub scroll: Vec2,
     pub padding: Edges,
     pub border: Edges,
+    pub box_size: Size,
 }
 
 impl Geometry {
@@ -82,6 +83,7 @@ impl MeasureBuffer {
             scroll: Vec2::new(f[8], f[9]),
             padding: [f[10], f[11], f[12], f[13]].into(),
             border: [f[14], f[15], f[16], f[17]].into(),
+            box_size: Size::new(f[18], f[19]),
         }))
     }
 }

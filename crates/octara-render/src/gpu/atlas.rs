@@ -20,6 +20,7 @@ pub enum RecordError {
     TextureBudget { bytes: u64, limit: u64 },
     TextureAllocation(String),
     InstanceBufferSize { bytes: u64, limit: u64 },
+    ExternalTexture(&'static str),
     SurfaceRenderer(String),
 }
 
@@ -32,6 +33,7 @@ impl std::fmt::Display for RecordError {
             Self::InstanceBufferSize { bytes, limit } => {
                 write!(f, "render instances need {bytes} bytes, exceeding the GPU storage buffer limit of {limit}")
             }
+            Self::ExternalTexture(message) => write!(f, "cannot use external texture: {message}"),
             Self::SurfaceRenderer(message) => write!(f, "cannot record surface: {message}"),
         }
     }

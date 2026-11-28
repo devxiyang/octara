@@ -3,7 +3,7 @@
 use super::atlas::{SceneTextures, Tile};
 use super::custom::canvas_mode;
 use super::outputs::RegionImage;
-use super::pipeline::{PipelineKind, color_texture, depth_texture};
+use super::pipeline::{LayerProjection, PipelineKind, color_texture, depth_texture};
 use super::recording::FrameRecording;
 use super::resolve::AttachmentInfo;
 use super::upload::FrameData;
@@ -68,6 +68,11 @@ pub(super) struct TransitionComposite {
     pub(super) bounds: PassBounds,
 }
 
+pub(super) struct ExternalBinding {
+    pub(super) view: wgpu::TextureView,
+    pub(super) bind: wgpu::BindGroup,
+}
+
 /// Prepared resources for the ordered frame plan.
 pub(super) struct PreparedFrame {
     pub(super) plan: EncodedPlan,
@@ -83,7 +88,9 @@ pub(super) struct PreparedFrame {
     pub(super) image_binds: FxHashMap<ArrayId, wgpu::BindGroup>,
     pub(super) glyph_binds: FxHashMap<ArrayId, wgpu::BindGroup>,
     pub(super) layer_binds: Vec<wgpu::BindGroup>,
+    pub(super) layer_projections: Vec<Option<u64>>,
     pub(super) canvas_binds: Vec<wgpu::BindGroup>,
+    pub(super) external_binds: Vec<Option<ExternalBinding>>,
     pub(super) transitions: FxHashMap<usize, PlannedTransition>,
 }
 
@@ -190,7 +197,8 @@ impl WgpuRenderer {
         spatials: Vec<[f32; 4]>,
     ) -> Result<(PreparedFrame, FrameData), RecordError> {
         let target = output.requirements;
-        let FramePlan { mut passes, requests, clips, resources, bounds, resolve_output, backdrop_inputs: backdrop_reads } = plan;
+        let FramePlan { mut passes, requests, clips, mut resources, spatial, bounds, resolve_output, backdrop_inputs: backdrop_reads } =
+            plan;
 
         let PaintRequests { canvases, backdrops, skipped_transitions, receipts } = requests;
         recording.receipts = receipts;
@@ -199,13 +207,14 @@ impl WgpuRenderer {
                 changes.transitions.record(mount, revision, None);
             }
         }
+        let external_textures = std::mem::take(&mut resources.external_textures);
         self.prepare_resources(&mut passes, resources, textures, output.format, &mut recording.receipts).await?;
         let canvas_views = self.prepare_canvases(&mut passes, canvases, input.scale, recording).await;
         let window = output.requirements.extent;
         let mut transitions = FxHashMap::default();
         let has_transitions = passes.iter().any(|pass| pass.transition.is_some());
         let bounds = if has_transitions {
-            bound_passes(&mut passes, window, |index, request, bounds, visible| {
+            bound_passes(&mut passes, &spatial, window, |index, request, bounds, visible| {
                 let mut composite = None;
                 if let Some(receipt) = request.receipt {
                     match self.plan_transition(&request.paint, bounds, visible, input.scale, recording) {
@@ -263,8 +272,12 @@ impl WgpuRenderer {
         let plan = EncodedPlan { targets, batches, backdrops, resolve_output };
         let fragment_clipping = instances.needs_fragment_clips();
         let layer_count = passes.len() - 1;
+        let projected = passes.iter().any(|pass| pass.projection.is_some());
         for format in std::iter::once(output.format).chain((layer_count > 0).then_some(WORKING_FORMAT)) {
             self.pipelines.prepare(&self.device, format, fragment_clipping);
+            if projected {
+                self.pipelines.prepare_projected(&self.device, format, fragment_clipping);
+            }
         }
         self.layers.resize_with(layer_count, || None);
         let mut layer_views = Vec::with_capacity(layer_count);
@@ -288,7 +301,10 @@ impl WgpuRenderer {
             };
             layer_views.push(texture.create_view(&Default::default()));
         }
-        let uniforms = self.buffers.prepare_projections(&self.device, &bounds, window, &layer_views);
+        let projections = passes[1..].iter().zip(&bounds[1..]).map(|(pass, bounds)| {
+            pass.projection.map(|index| LayerProjection { matrix: *spatial.projection(index), source: bounds.rect() })
+        });
+        let (uniforms, layer_projections) = self.buffers.prepare_projections(&self.device, &bounds, window, &layer_views, projections);
         let data = FrameData { instances, uniforms, clips: clips.into_nodes(), spatials };
         self.buffers.prepare(&self.device, &data)?;
         let extents: Vec<_> =
@@ -303,7 +319,6 @@ impl WgpuRenderer {
             .no_layer
             .create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
         let bind = |kind, atlas, layer| self.buffers.bind(&self.device, self.pipelines.layout(kind), kind, atlas, layer);
-        let bind_with = |view| bind(PipelineKind::Image, Some(&empty_array), Some(view));
         let mut image_binds = FxHashMap::default();
         let mut glyph_binds = FxHashMap::default();
         for batch in &plan.batches {
@@ -317,8 +332,29 @@ impl WgpuRenderer {
                 _ => {}
             }
         }
-        let layer_binds = layer_views.iter().map(bind_with).collect();
-        let canvas_binds = canvas_views.iter().map(bind_with).collect();
+        let layer_binds =
+            layer_views.iter().zip(&layer_projections).map(|(view, &offset)| self.bind_layer(&empty_array, view, offset)).collect();
+        let canvas_binds = canvas_views.iter().map(|view| self.bind_composite(&empty_array, view)).collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        let external_binds = {
+            let mut binds = Vec::with_capacity(external_textures.len());
+            let owner = (!external_textures.is_empty()).then(|| super::external::device_address(&self.device)).flatten();
+            for external in &external_textures {
+                let Some(view) = owner.and_then(|owner| super::external::view(owner, external)) else {
+                    binds.push(None);
+                    continue;
+                };
+                // Bind group validation also checks device ownership and texture lifetime.
+                let binding = super::custom::checked_async(&self.device, || self.bind_composite(&empty_array, view))
+                    .await
+                    .ok()
+                    .map(|bind| ExternalBinding { view: view.clone(), bind });
+                binds.push(binding);
+            }
+            binds
+        };
+        #[cfg(target_arch = "wasm32")]
+        let external_binds = external_textures.into_iter().map(|_| None).collect();
         let quad_bind = bind(PipelineKind::Quad, None, None);
         let shadow_bind = bind(PipelineKind::Shadow, None, None);
         let material_bind = bind(PipelineKind::Material, None, None);
@@ -338,7 +374,9 @@ impl WgpuRenderer {
             image_binds,
             glyph_binds,
             layer_binds,
+            layer_projections,
             canvas_binds,
+            external_binds,
             transitions,
         };
         Ok((frame, data))

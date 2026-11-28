@@ -2,10 +2,13 @@
 
 use crate::{LayoutKernel, TextEngine, paint_order};
 use octara_model::geometry::{Point, Rect};
+use octara_model::paint::{DisplayList, Item};
+use octara_model::style::PlaneInverse;
 use octara_tree::{DirtyBitmap, NodeFlags, NodeId, NodeKind, Tree, TreeDelta};
 use rustc_hash::FxHashMap;
 use slotmap::SecondaryMap;
-use std::cell::RefCell;
+use smallvec::SmallVec;
+use std::cell::{OnceCell, RefCell};
 use std::sync::Arc;
 
 const LINK: u16 = 1;
@@ -400,8 +403,16 @@ impl SpatialIndex {
         }
     }
 
-    fn hit(&self, topology: &Topology, tree: &Tree, layout: &LayoutKernel, text: &TextEngine, pos: Point) -> Option<NodeId> {
-        let mut pending = smallvec::SmallVec::<[(&Grid, Point); 4]>::new();
+    fn hit(
+        &self,
+        topology: &Topology,
+        tree: &Tree,
+        layout: &LayoutKernel,
+        text: &TextEngine,
+        pos: Point,
+        projected: Option<&ProjectedLayers>,
+    ) -> Option<u32> {
+        let mut pending = SmallVec::<[(&Grid, Point); 4]>::new();
         pending.push((&self.root, pos));
         let overlay = topology.indices.get(tree.overlay_root()).copied();
         let mut top = None;
@@ -409,6 +420,7 @@ impl SpatialIndex {
             for &index in grid.at(local) {
                 if top.is_none_or(|top| top < index)
                     && self.bounds[index as usize].contains(local)
+                    && projected.is_none_or(|layers| layers.containing(index).is_none())
                     && exact_hit(
                         tree,
                         layout,
@@ -436,7 +448,7 @@ impl SpatialIndex {
                 }
             }
         }
-        top.map(|index| topology.nodes[index as usize].node)
+        top
     }
 }
 
@@ -450,14 +462,8 @@ fn exact_hit(tree: &Tree, layout: &LayoutKernel, text: &TextEngine, entry: FlatN
     {
         return false;
     }
-    let radii = |node| tree.style(node).map_or([0.0; 4], |style| style.visual.radius);
-    let hit = if entry.flags & LINK != 0 {
-        text.link_contains(node, layout, pos)
-    } else {
-        layout.bounds(node).is_some_and(|rect| rect.contains_rounded(pos, radii(node)))
-    };
-    let rounded_clip = |node| layout.rounded_child_clip(node).is_none_or(|clip| clip.contains_rounded(pos, radii(node)));
-    hit
+    let rounded_clip = |node| layout.rounded_child_clip(node).is_none_or(|clip| clip.contains_rounded(pos, radii(tree, node)));
+    contains_node(tree, layout, text, entry, pos)
         && std::iter::successors(layout.nearest_rounded_clip(node), |&node| layout.nearest_rounded_clip(node)).all(rounded_clip)
         // Overlay layout starts a new clip chain. Hit testing also respects the two physical roots.
         && (!overlay
@@ -466,16 +472,219 @@ fn exact_hit(tree: &Tree, layout: &LayoutKernel, text: &TextEngine, entry: FlatN
                 .all(|node| layout.child_clip(node).is_none_or(|clip| clip.contains(pos)) && rounded_clip(node)))
 }
 
+fn radii(tree: &Tree, node: NodeId) -> [f32; 4] {
+    tree.style(node).map_or([0.0; 4], |style| style.visual.radius)
+}
+
+fn contains_node(tree: &Tree, layout: &LayoutKernel, text: &TextEngine, entry: FlatNode, pos: Point) -> bool {
+    if entry.flags & LINK != 0 {
+        text.link_contains(entry.node, layout, pos)
+    } else {
+        layout.bounds(entry.node).is_some_and(|rect| rect.contains_rounded(pos, radii(tree, entry.node)))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PlaneClip {
+    rect: Rect,
+    axes: [bool; 2],
+    radius: [f32; 4],
+}
+
+impl PlaneClip {
+    fn contains(self, pos: Point) -> bool {
+        match self.axes {
+            [true, true] => self.rect.contains_rounded(pos, self.radius),
+            [true, false] => self.rect.x <= pos.x && pos.x < self.rect.right(),
+            [false, true] => self.rect.y <= pos.y && pos.y < self.rect.bottom(),
+            [false, false] => true,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProjectedLayer {
+    start: u32,
+    end: u32,
+    parent: Option<usize>,
+    inverse: Option<PlaneInverse>,
+    clips: SmallVec<[PlaneClip; 2]>,
+}
+
+#[derive(Clone)]
+struct ProjectedLayers {
+    layers: Vec<ProjectedLayer>,
+    scale: f32,
+}
+
+impl ProjectedLayers {
+    fn collect(topology: &Topology, draw: &DisplayList, scale: f32) -> Self {
+        let mut layers = Vec::new();
+        let mut clips = SmallVec::<[PlaneClip; 8]>::new();
+        let mut scopes = SmallVec::<[Option<usize>; 8]>::new();
+        let mut clip_start = 0;
+        for placed in draw.placed_items_unculled_at(scale) {
+            let shifted = |rect: Rect| Rect::new(rect.x + placed.offset.x, rect.y + placed.offset.y, rect.w, rect.h);
+            match *placed.item {
+                Item::PushClip { rect, radius, .. } => clips.push(PlaneClip { rect: shifted(rect), axes: [true; 2], radius }),
+                Item::PushAxisClip { rect, horizontal, .. } => {
+                    clips.push(PlaneClip { rect: shifted(rect), axes: [horizontal, !horizontal], radius: [0.0; 4] });
+                }
+                Item::PopClip => {
+                    clips.pop();
+                }
+                Item::PushLayer { .. } | Item::PushTransition(_) => scopes.push(None),
+                Item::PushTransform { source, rect, transform } => {
+                    if let Some(&start) = topology.indices.get(source) {
+                        layers.push(ProjectedLayer {
+                            start,
+                            end: topology.nodes[start as usize].subtree_end,
+                            parent: None,
+                            inverse: PlaneInverse::new(&transform.device_matrix(shifted(rect), 1.0)),
+                            clips: SmallVec::from_slice(&clips[clip_start..]),
+                        });
+                    }
+                    // The renderer applies inherited clips to the composite in the parent plane.
+                    scopes.push(Some(std::mem::replace(&mut clip_start, clips.len())));
+                }
+                Item::PopLayer => {
+                    if let Some(Some(start)) = scopes.pop() {
+                        clip_start = start;
+                    }
+                }
+                _ => {}
+            }
+        }
+        layers.sort_by_key(|layer| layer.start);
+        layers.dedup_by_key(|layer| layer.start);
+        let mut parent = None::<usize>;
+        for index in 0..layers.len() {
+            while let Some(outer) = parent.filter(|&outer| layers[outer].end <= layers[index].start) {
+                parent = layers[outer].parent;
+            }
+            layers[index].parent = parent;
+            parent = Some(index);
+        }
+        Self { layers, scale }
+    }
+
+    fn containing(&self, index: u32) -> Option<usize> {
+        let mut at = self.layers.partition_point(|layer| layer.start <= index).checked_sub(1);
+        while let Some(layer) = at {
+            if index < self.layers[layer].end {
+                return at;
+            }
+            at = self.layers[layer].parent;
+        }
+        None
+    }
+
+    fn source_point(&self, layer: usize, pos: Point, clipped: bool) -> Option<Point> {
+        let layer = &self.layers[layer];
+        // Each layer flattens onto its parent. Invert one source plane at a time.
+        let pos = if let Some(parent) = layer.parent { self.source_point(parent, pos, clipped)? } else { pos };
+        if clipped && !layer.clips.iter().all(|clip| clip.contains(pos)) {
+            return None;
+        }
+        layer.inverse?.source_point(pos)
+    }
+
+    fn hit(&self, topology: &Topology, tree: &Tree, layout: &LayoutKernel, text: &TextEngine, pos: Point, top: Option<u32>) -> Option<u32> {
+        if !layout.viewport_bounds().contains(pos) {
+            return top;
+        }
+        let mut points = SmallVec::<[Option<Point>; 8]>::new();
+        for layer in &self.layers {
+            let point =
+                layer.parent.map_or(Some(pos), |parent| points[parent]).filter(|&pos| layer.clips.iter().all(|clip| clip.contains(pos)));
+            points.push(point.and_then(|pos| layer.inverse?.source_point(pos)));
+        }
+        let first = top.map_or(0, |top| top + 1);
+        for (root_index, root) in self.layers.iter().enumerate().rev().filter(|(_, layer)| layer.parent.is_none()) {
+            if points[root_index].is_none() {
+                continue;
+            }
+            let mut end = root.end;
+            while end > root.start.max(first) {
+                end -= 1;
+                let index = end;
+                let layer = self.containing(index).expect("projected subtree");
+                let Some(pos) = points[layer] else {
+                    end = self.layers[layer].start;
+                    continue;
+                };
+                let entry = topology.nodes[index as usize];
+                if entry.flags & OVERLAY_ROOT == 0
+                    && tree.node(entry.node).is_some_and(|core| !core.flags.contains(NodeFlags::POINTER_EVENTS_NONE))
+                    && contains_node(tree, layout, text, entry, self.layout_point(layout, entry.node, pos))
+                    && tree.is_shown(entry.node)
+                    && !tree.is_inert(entry.node)
+                    && self.source_clips_contain(topology, tree, layout, layer, entry.node, pos)
+                {
+                    return Some(index);
+                }
+            }
+        }
+        top
+    }
+
+    fn source_clips_contain(
+        &self,
+        topology: &Topology,
+        tree: &Tree,
+        layout: &LayoutKernel,
+        layer: usize,
+        node: NodeId,
+        pos: Point,
+    ) -> bool {
+        let start = self.layers[layer].start;
+        let inside_layer = |node| topology.indices.get(node).is_some_and(|&index| topology.is_within(index, start));
+        let contains = |node| self.source_child_clip_contains(tree, layout, node, pos);
+        std::iter::successors(layout.clip_ancestor(node), |&node| layout.clip_ancestor(node))
+            .take_while(|&node| inside_layer(node))
+            .all(contains)
+            // Overlay layout restarts the clip chain, but paint wraps it in the physical root clips.
+            && [tree.overlay_root(), tree.root()]
+                .into_iter()
+                .all(|root| root == node || !inside_layer(root) || !tree.is_within(node, root) || contains(root))
+    }
+
+    fn source_child_clip_contains(&self, tree: &Tree, layout: &LayoutKernel, node: NodeId, pos: Point) -> bool {
+        let axes = layout.clip_axes(node);
+        axes == [false; 2]
+            || layout
+                .world_client(node)
+                .is_none_or(|rect| PlaneClip { rect, axes, radius: radii(tree, node) }.contains(self.layout_point(layout, node, pos)))
+    }
+
+    fn layout_point(&self, layout: &LayoutKernel, node: NodeId, pos: Point) -> Point {
+        // Draw placement pixel-aligns cumulative vertical scroll. Layout queries use its unsnapped value.
+        let scroll = layout.scroll_translation(node).y;
+        let snapped = (scroll * self.scale).round() / self.scale;
+        Point::new(pos.x, pos.y + (scroll - snapped))
+    }
+}
+
+#[derive(Clone)]
+struct ProjectedFrame {
+    draw: Arc<DisplayList>,
+    scale: f32,
+    layers: OnceCell<ProjectedLayers>,
+}
+
 #[derive(Clone, Default)]
 struct FlatFrame {
     topology: Arc<Topology>,
     spatial: RefCell<SpatialIndex>,
+    projected: Option<ProjectedFrame>,
 }
 
 #[derive(Default)]
 pub(crate) struct FlatTree {
     current: FlatFrame,
     staged_topology: Option<Arc<Topology>>,
+    // A staged draw can remove all projected layers.
+    staged_projected: Option<Option<ProjectedFrame>>,
 }
 
 impl FlatTree {
@@ -490,9 +699,24 @@ impl FlatTree {
         }
     }
 
+    pub(crate) fn project_draw(&mut self, draw: Option<(&Arc<DisplayList>, f32)>) {
+        if self.staged_topology.is_none()
+            && draw
+                .zip(self.current.projected.as_ref())
+                .is_some_and(|((draw, scale), current)| scale == current.scale && Arc::ptr_eq(draw, &current.draw))
+        {
+            self.staged_projected = None;
+            return;
+        }
+        self.staged_projected = Some(draw.map(|(draw, scale)| ProjectedFrame { draw: draw.clone(), scale, layers: OnceCell::new() }));
+    }
+
     pub(crate) fn commit(&mut self) {
         if let Some(topology) = self.staged_topology.take() {
             self.current.topology = topology;
+        }
+        if let Some(projected) = self.staged_projected.take() {
+            self.current.projected = projected;
         }
         let spatial = self.current.spatial.get_mut();
         let matches = spatial.matches(&self.current.topology);
@@ -510,6 +734,7 @@ impl FlatTree {
 
     pub(crate) fn rollback(&mut self) {
         self.staged_topology = None;
+        self.staged_projected = None;
         let spatial = self.current.spatial.get_mut();
         if spatial.matches(&self.current.topology) {
             spatial.pending_patch.union_with(&spatial.staged_materialized);
@@ -524,7 +749,41 @@ impl FlatTree {
 
     /// Snapshot the index so oracle hits can materialize it independently.
     pub(crate) fn fork_for_layout_check(&self) -> Self {
-        Self { current: self.current.clone(), staged_topology: self.staged_topology.clone() }
+        Self {
+            current: self.current.clone(),
+            staged_topology: self.staged_topology.clone(),
+            staged_projected: self.staged_projected.clone(),
+        }
+    }
+
+    fn projected_layers(&self, topology: &Topology) -> Option<&ProjectedLayers> {
+        let frame = self.staged_projected.as_ref().unwrap_or(&self.current.projected).as_ref()?;
+        let layers = frame.layers.get_or_init(|| ProjectedLayers::collect(topology, &frame.draw, frame.scale));
+        (!layers.layers.is_empty()).then_some(layers)
+    }
+
+    pub(crate) fn source_point(&self, layout: &LayoutKernel, node: NodeId, pos: Point) -> Option<Point> {
+        match self.layer_for(node) {
+            Some((_, layers, layer)) => Some(layers.layout_point(layout, node, layers.source_point(layer, pos, false)?)),
+            None => Some(pos),
+        }
+    }
+
+    pub(crate) fn scrollbar_point(&self, tree: &Tree, layout: &LayoutKernel, node: NodeId, pos: Point) -> Option<Point> {
+        let Some((topology, layers, layer)) = self.layer_for(node) else {
+            return layout.child_clip(node).is_none_or(|clip| clip.contains(pos)).then_some(pos);
+        };
+        let pos = layers.source_point(layer, pos, true)?;
+        (layers.source_clips_contain(topology, tree, layout, layer, node, pos)
+            && layers.source_child_clip_contains(tree, layout, node, pos))
+        .then(|| layers.layout_point(layout, node, pos))
+    }
+
+    fn layer_for(&self, node: NodeId) -> Option<(&Topology, &ProjectedLayers, usize)> {
+        let topology = self.staged_topology.as_ref().unwrap_or(&self.current.topology);
+        let layers = self.projected_layers(topology)?;
+        let layer = layers.containing(*topology.indices.get(node)?)?;
+        Some((topology, layers, layer))
     }
 
     pub(crate) fn hit(&self, tree: &Tree, layout: &LayoutKernel, text: &TextEngine, pos: Point) -> Option<NodeId> {
@@ -534,7 +793,10 @@ impl FlatTree {
         }
         let mut spatial = self.current.spatial.borrow_mut();
         spatial.materialize(topology, layout, self.staged_topology.is_some());
-        spatial.hit(topology, tree, layout, text, pos)
+        let projected = self.projected_layers(topology);
+        let top = spatial.hit(topology, tree, layout, text, pos, projected);
+        let top = projected.map_or(top, |layers| layers.hit(topology, tree, layout, text, pos, top));
+        top.map(|index| topology.nodes[index as usize].node)
     }
 }
 

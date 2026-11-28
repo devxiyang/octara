@@ -3,6 +3,7 @@
 use octara_model::geometry::{Size, Vec2};
 use octara_model::identity::NodeId;
 use octara_model::paint::{DisplayList, Item, Part, ScrollPlacements};
+use octara_model::style::Mat4;
 use octara_model::theme::Color;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -13,16 +14,22 @@ pub struct SpatialWrite {
     pub offset: [f32; 4],
 }
 
-/// Dense translation rows for stable scroll and motion geometry.
+/// Dense translation rows for retained 2D scenes and indexed projective layer matrices.
+#[derive(Default)]
 pub struct SpatialTable {
+    retained: Option<RetainedTranslations>,
+    offsets: Vec<[f32; 4]>,
+    projections: Vec<Mat4>,
+}
+
+struct RetainedTranslations {
     geometry: Arc<[Part]>,
     scrolls: ScrollPlacements,
     size: Size,
     background: Color,
     scale: f32,
     ports: Vec<ScrollPort>,
-    pub(crate) slots: FxHashMap<u32, u32>,
-    offsets: Vec<[f32; 4]>,
+    slots: FxHashMap<u32, u32>,
 }
 
 struct ScrollPort {
@@ -127,7 +134,7 @@ impl SpatialTable {
             return None;
         }
         let offsets = spatial_offsets(&ports, slots.len(), scale, scrolls, None)?;
-        Some(Self {
+        let retained = RetainedTranslations {
             geometry: geometry.clone(),
             scrolls: scrolls.clone(),
             size: list.size,
@@ -135,8 +142,23 @@ impl SpatialTable {
             scale,
             ports,
             slots,
-            offsets,
-        })
+        };
+        Some(Self { retained: Some(retained), offsets, projections: Vec::new() })
+    }
+
+    pub(crate) fn row(&self, id: u32) -> Option<u32> {
+        self.retained.as_ref()?.slots.get(&id).copied()
+    }
+
+    pub(crate) fn push_projection(&mut self, matrix: Mat4) -> usize {
+        let index = self.projections.len();
+        self.projections.push(matrix);
+        index
+    }
+
+    /// Matrix for a projected pass. Ordinary translations do not occupy this table.
+    pub fn projection(&self, index: usize) -> &Mat4 {
+        &self.projections[index]
     }
 
     /// Current shader rows in device pixels. Row zero holds the identity offset.
@@ -148,20 +170,25 @@ impl SpatialTable {
     /// Returns `None` on geometry or raster phase changes that require replanning.
     pub fn update(&mut self, list: &DisplayList, scale: f32) -> Option<Vec<SpatialWrite>> {
         let (scrolls, geometry) = scroll_frame(list)?;
-        if !Arc::ptr_eq(geometry, &self.geometry) || self.size != list.size || self.background != list.background || self.scale != scale {
+        let retained = self.retained.as_mut()?;
+        if !Arc::ptr_eq(geometry, &retained.geometry)
+            || retained.size != list.size
+            || retained.background != list.background
+            || retained.scale != scale
+        {
             return None;
         }
-        if scrolls.same_snapshot(&self.scrolls) {
+        if scrolls.same_snapshot(&retained.scrolls) {
             return Some(Vec::new());
         }
-        let offsets = spatial_offsets(&self.ports, self.offsets.len(), self.scale, scrolls, Some(&self.scrolls))?;
+        let offsets = spatial_offsets(&retained.ports, self.offsets.len(), retained.scale, scrolls, Some(&retained.scrolls))?;
         let writes = offsets
             .iter()
             .zip(&self.offsets)
             .enumerate()
             .filter_map(|(row, (&offset, &old))| (offset != old).then_some(SpatialWrite { row, offset }))
             .collect();
-        self.scrolls = scrolls.clone();
+        retained.scrolls = scrolls.clone();
         self.offsets = offsets;
         Some(writes)
     }

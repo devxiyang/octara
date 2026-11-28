@@ -12,13 +12,13 @@ use crate::motion::{MotionOptions, NodeMotion, TargetMotion, next_frame};
 use crate::projected::DenseProjected;
 use crate::text::{PaintKey, TextEngine};
 use octara_model::geometry::{LayoutBox, Point, Rect, Size, Vec2, WindowViewport};
-use octara_model::image::MediaAsset;
+use octara_model::image::{ExternalTextureHandle, MediaAsset, ObjectFit};
 use octara_model::input::HostReply;
 use octara_model::motion::{PropClass, TextRevealTrack, Track};
 use octara_model::native::NativeSlot;
 use octara_model::paint::{
-    CanvasOp, CustomPaint, DisplayList, Image, ImagePaint, Item, NodeIcon, PaintInput, PaintMount, PaintProgram, PathPaint, Quad, Sample,
-    ScrollPlacement, ScrollPlacements, Shadow, Transform, TransitionPaint,
+    CanvasOp, CustomPaint, DisplayList, ExternalTexturePaint, Image, ImagePaint, Item, NodeIcon, PaintInput, PaintMount, PaintProgram,
+    PathPaint, Quad, Sample, ScrollPlacement, ScrollPlacements, Shadow, Transform, TransitionPaint,
 };
 use octara_model::style::{Display, Ring, Visual};
 use octara_model::text::{InlineAttachment, InlineContent};
@@ -217,6 +217,7 @@ pub(crate) struct PaintCompiler {
 pub(crate) struct PaintFrame {
     pub draw: Arc<DisplayList>,
     pub scene: Option<Arc<PaintScene>>,
+    pub has_projected_layers: bool,
     pub replies: Vec<HostReply>,
     pub next_deadline: Option<Duration>,
 }
@@ -451,7 +452,13 @@ impl PaintCompiler {
         compile.branches.clear();
         compile.owner.local_dirty = compile.local;
         compile.owner.branch_dirty = compile.branches;
-        PaintFrame { draw, scene: (moves || blink.is_some()).then_some(scene), replies, next_deadline }
+        PaintFrame {
+            draw,
+            has_projected_layers: scene.has_projected_layers(),
+            scene: (moves || blink.is_some()).then_some(scene),
+            replies,
+            next_deadline,
+        }
     }
 
     fn hide_node(&mut self, node: NodeId) {
@@ -875,6 +882,12 @@ impl Compile<'_> {
             ],
         );
 
+        let inner = inset(rect, [layout.border.top, layout.border.right, layout.border.bottom, layout.border.left]);
+        if let Some(slot) = self.tree.media_source(node)
+            && let Some(MediaAsset::External(texture)) = &slot.asset
+        {
+            out.extend(fit_external(node, texture, slot.fit, inner, radius(visual, inner)));
+        }
         let image_fit = self.tree.image(node).map(|slot| (slot.fit, None)).or_else(|| {
             let slot = self.tree.media_source(node)?;
             matches!(slot.asset, Some(MediaAsset::Pixels(_))).then(|| (slot.fit, slot.natural_size()))
@@ -882,7 +895,6 @@ impl Compile<'_> {
         if let Some((fit, natural_size)) = image_fit {
             let sample = images.next().expect("mounted image sample");
             let (width, height) = natural_size.unwrap_or((sample.frame().width, sample.frame().height));
-            let inner = inset(rect, [layout.border.top, layout.border.right, layout.border.bottom, layout.border.left]);
             let fit = fit.place(Size::new(width as f32, height as f32), inner);
             if !fit.is_empty() {
                 out.push(Item::Image(ImagePaint {
@@ -948,6 +960,13 @@ impl Compile<'_> {
                 match &attachment.content {
                     InlineContent::Spacer { .. } | InlineContent::Pill(_) => {}
                     InlineContent::Image { fit, radius, .. } | InlineContent::ImageSource { fit, radius, .. } => {
+                        let radii = [radius.max(0.0); 4];
+                        if let Some(MediaAsset::External(texture)) =
+                            self.tree.inline_media_source(node, index).and_then(|slot| slot.asset.as_ref())
+                        {
+                            out.extend(fit_external(node, texture, *fit, rect, radii));
+                            continue;
+                        }
                         let Some(image) = samples.next() else { continue };
                         let size = Size::new(image.frame().width as f32, image.frame().height as f32);
                         let placed = fit.place(size, rect);
@@ -957,7 +976,7 @@ impl Compile<'_> {
                                 image,
                                 rect: placed,
                                 bounds: rect,
-                                radius: [radius.max(0.0); 4],
+                                radius: radii,
                                 opacity: 1.0,
                             }));
                         }
@@ -1041,13 +1060,22 @@ impl Compile<'_> {
     }
 }
 
+fn fit_external(source: NodeId, texture: &ExternalTextureHandle, fit: ObjectFit, bounds: Rect, radius: [f32; 4]) -> Option<Item> {
+    let (width, height) = texture.size();
+    let rect = fit.place(Size::new(width as f32, height as f32), bounds);
+    if rect.is_empty() {
+        return None;
+    }
+    Some(Item::ExternalTexture(ExternalTexturePaint { source, texture: texture.clone(), rect, bounds, radius, opacity: 1.0 }))
+}
+
 fn node_images(tree: &Tree, node: NodeId) -> impl Iterator<Item = &Image> {
     tree.image(node)
         .map(|slot| &slot.image)
         .into_iter()
         .chain(tree.media_source(node).and_then(|slot| match slot.asset.as_ref()? {
             MediaAsset::Pixels(image) => Some(image),
-            MediaAsset::BrowserUri(_) => None,
+            MediaAsset::BrowserUri(_) | MediaAsset::External(_) => None,
         }))
         .chain(canvas_images(tree.canvas(node).unwrap_or_default()))
         .chain(
@@ -1075,7 +1103,7 @@ fn attachment_images<'a>(tree: &'a Tree, node: NodeId, index: usize, attachment:
         InlineContent::ImageSource { .. } => {
             let image = tree.inline_media_source(node, index).and_then(|slot| match slot.asset.as_ref()? {
                 MediaAsset::Pixels(image) => Some(image),
-                MediaAsset::BrowserUri(_) => None,
+                MediaAsset::BrowserUri(_) | MediaAsset::External(_) => None,
             });
             (image, &[][..])
         }

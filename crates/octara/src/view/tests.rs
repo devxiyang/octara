@@ -47,6 +47,8 @@ fn style_patch_value_traits_and_combined_writes() {
     assert_eq!(VirtualOptions::default(), VirtualOptions { estimated_row_height: 32.0, overscan: 4, maintain_scroll_anchor: false });
     assert_eq!(StylePatch::default().border(1), StylePatch::default().border_t(1).border_r(1).border_b(1).border_l(1));
     assert_eq!(StylePatch::default().border_x(2).border_y(3), StylePatch::default().border_l(2).border_r(2).border_t(3).border_b(3));
+    let transform = Transform3D::default().perspective(400.0).rotate_y(20.0);
+    assert_eq!(StylePatch::default().transform_3d(transform), StylePatch::default().style(StyleProp::Transform3D(Some(transform))));
 }
 
 impl HostEngine for Headless {

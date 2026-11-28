@@ -363,6 +363,9 @@ unsafe impl OsWindow for MacWindow {
         };
         self.window.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
         self.set_vibrancy(material);
+        if self.chrome.relayout_after_presentation(&self.container) {
+            self.sender.send_event(PlatformEvent::RefreshViewport { window: self.id });
+        }
     }
 
     fn window_is_vibrant(&self) -> bool {

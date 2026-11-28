@@ -33,7 +33,7 @@ impl DamageRect {
     /// Pixel bounds as `[x, y, width, height]`.
     pub fn pixels_rect(self) -> [u32; 4] {
         let PassBounds { origin: [x, y], size: [w, h] } = self.0;
-        [x, y, w, h]
+        [x as u32, y as u32, w, h]
     }
 
     pub fn rect(self) -> Rect {

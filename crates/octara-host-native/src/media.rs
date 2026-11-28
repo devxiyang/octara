@@ -55,8 +55,10 @@ impl NativeMediaLoader {
 
 impl MediaLoader for NativeMediaLoader {
     fn load(&self, request: MediaRequest, progress: MediaProgress) -> MediaFuture {
-        if let ImageSource::Pixels(image) = request.source {
-            return Box::pin(std::future::ready(Ok(LoadedMedia::pixels(image))));
+        match request.source {
+            ImageSource::Pixels(image) => return Box::pin(std::future::ready(Ok(LoadedMedia::pixels(image)))),
+            ImageSource::External(texture) => return Box::pin(std::future::ready(Ok(LoadedMedia::external(texture)))),
+            _ => {}
         }
         let transport = self.transport.clone();
         self.run(move |pool, cancel| {
@@ -68,7 +70,7 @@ impl MediaLoader for NativeMediaLoader {
                 ImageSource::Resolved { uri, headers, .. } => {
                     transfer(uri, headers, &request, &progress, transport.as_ref(), pool, cancel)?
                 }
-                ImageSource::Pixels(_) => unreachable!(),
+                ImageSource::Pixels(_) | ImageSource::External(_) => unreachable!(),
             };
             check_request_cancel(&request.cancel, cancel)?;
             if bytes.len() > MAX_TRANSFER {

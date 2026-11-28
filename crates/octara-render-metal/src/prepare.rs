@@ -1,6 +1,7 @@
 //! Frame-plan resource resolution and immutable shader instance buffers.
 
 use super::atlas::{Atlases, PreparedSamples, SampleBinding};
+use super::external;
 use super::pipeline::Pipelines;
 use super::target::WORKING_FORMAT;
 use super::transition::TransitionPlan;
@@ -9,6 +10,8 @@ use objc2_metal::*;
 use octara_model::{
     capture::{PaintOutcome, PaintReceipt},
     geometry::Rect,
+    image::ExternalTextureHandle,
+    style::Mat4,
 };
 use octara_render::plan::{
     ClipNode, Draw, DrawSample, DrawSegment, FramePlan, GlyphInst, Instances, Paint, Pass, PassBounds, PlannedBatch, ResourcePlan, Shape,
@@ -21,6 +24,7 @@ pub(crate) struct PreparedFrame {
     pub(crate) passes: Vec<PreparedPass>,
     pub(crate) batches: Vec<PlannedBatch>,
     pub(crate) buffers: DrawBuffers,
+    pub(crate) external: Vec<Option<ExternalTextureHandle>>,
     pub(crate) receipts: Vec<PaintReceipt>,
     pub(crate) skipped_transitions: Vec<(std::sync::Weak<()>, u64)>,
     pub(crate) atlas_bytes: u64,
@@ -32,7 +36,8 @@ pub(crate) struct PreparedPass {
     pub(crate) bounds: PassBounds,
     pub(crate) segments: Vec<DrawSegment>,
     pub(crate) depth: MTLPixelFormat,
-    pub(crate) projection: Option<Buffer>,
+    pub(crate) globals: Option<Buffer>,
+    pub(crate) transform: Option<Mat4>,
     pub(crate) transition: Option<TransitionPlan>,
 }
 
@@ -59,10 +64,14 @@ impl PreparedFrame {
         pipelines: &mut Pipelines,
         transitions: Vec<Option<TransitionPlan>>,
     ) -> Result<(Self, u64, u64), String> {
-        let FramePlan { mut passes, mut requests, clips, resources, bounds, resolve_output, .. } = plan;
+        let FramePlan { mut passes, mut requests, clips, mut resources, spatial, bounds, resolve_output, .. } = plan;
         let PreparedSamples { samples, atlas_bytes, upload_bytes } = atlases.prepare(device, command, &resources)?;
+        let external = std::mem::take(&mut resources.external_textures)
+            .into_iter()
+            .map(|handle| external::compatible(&handle, device).then_some(handle))
+            .collect::<Vec<_>>();
         for pass in &mut passes {
-            resolve(pass, &resources, &samples, &requests);
+            resolve(pass, &resources, &samples, &external, &requests);
         }
         let mut instances = Instances::default();
         let mut batches = Vec::new();
@@ -93,7 +102,7 @@ impl PreparedFrame {
                 }
                 let [x, y, w, h] = bounds.rect();
                 let segments = schedule_pass(pass, Rect::new(x, y, w, h), &clips, &mut instances, &mut batches);
-                let projection = if segments.iter().any(|segment| !segment.cores.is_empty() || !segment.blended.is_empty()) {
+                let globals = if segments.iter().any(|segment| !segment.cores.is_empty() || !segment.blended.is_empty()) {
                     let globals = [w, h, x, y];
                     let bytes = bytemuck::bytes_of(&globals);
                     instance_bytes += bytes.len() as u64;
@@ -101,10 +110,12 @@ impl PreparedFrame {
                 } else {
                     None
                 };
-                Ok(PreparedPass { bounds, segments, depth, projection, transition: transitions.next().flatten() })
+                let transform = pass.projection.map(|index| *spatial.projection(index));
+                Ok(PreparedPass { bounds, segments, depth, globals, transform, transition: transitions.next().flatten() })
             })
             .collect::<Result<Vec<_>, String>>()?;
         let supports_damage = passes.len() == 1
+            && external.is_empty()
             && requests.receipts.is_empty()
             && batches.iter().all(|batch| matches!(batch.draw, Draw::Quad | Draw::Shadow | Draw::Image(_) | Draw::Glyph(_)));
         let buffers = DrawBuffers::new(device, &instances, &clips.into_nodes(), &mut instance_bytes)?;
@@ -113,6 +124,7 @@ impl PreparedFrame {
                 passes,
                 batches,
                 buffers,
+                external,
                 receipts: requests.receipts,
                 skipped_transitions: requests.skipped_transitions,
                 atlas_bytes,
@@ -137,7 +149,13 @@ fn depth_format(device: &ProtocolObject<dyn MTLDevice>, pass: &Pass) -> MTLPixel
     }
 }
 
-fn resolve(pass: &mut Pass, resources: &ResourcePlan, samples: &[SampleBinding], requests: &octara_render::plan::PaintRequests) {
+fn resolve(
+    pass: &mut Pass,
+    resources: &ResourcePlan,
+    samples: &[SampleBinding],
+    external: &[Option<ExternalTextureHandle>],
+    requests: &octara_render::plan::PaintRequests,
+) {
     let batches = std::mem::take(&mut pass.batches);
     let paints = std::mem::take(&mut pass.paints);
     for batch in batches {
@@ -171,6 +189,7 @@ fn resolve(pass: &mut Pass, resources: &ResourcePlan, samples: &[SampleBinding],
                 },
                 Draw::Canvas(index) => pass.push(requests.canvases[index].fallback, Draw::Quad),
                 Draw::Backdrop(index) => pass.push(requests.backdrops[index].fallback, Draw::Quad),
+                Draw::External(index) if external[index].is_none() => {}
                 draw => pass.push(paint, draw),
             }
         }

@@ -1,7 +1,8 @@
-//! RGBA8 image sources and their immutable samples.
+//! Image sources, immutable pixel samples, and external render resources.
 
 use crate::CacheLine;
 use crate::geometry::{Rect, Size};
+use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,10 +17,74 @@ pub enum CachePolicy {
     NoCache,
 }
 
+/// The renderer or host that can consume an external texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExternalTextureKind {
+    Metal,
+    Wgpu,
+    WebCanvas,
+}
+
+/// Keeps a backend-owned image alive until its consumers release it.
+///
+/// Use the backend's import function to validate the resource. Native producers
+/// must submit writes before the compositor samples the texture and keep it
+/// available until that frame finishes. Sampled color is premultiplied linear
+/// RGBA after any hardware format conversion. To publish a new resource
+/// generation, author a new handle and update the image source.
+#[derive(Clone)]
+pub struct ExternalTextureHandle(Arc<ExternalTexture>);
+
+struct ExternalTexture {
+    kind: ExternalTextureKind,
+    size: (u32, u32),
+    payload: Box<dyn Any + Send + Sync>,
+}
+
+impl ExternalTextureHandle {
+    /// Retains a host-specific payload with its dimensions in pixels.
+    pub fn new(kind: ExternalTextureKind, size: (u32, u32), payload: impl Any + Send + Sync) -> Self {
+        Self(Arc::new(ExternalTexture { kind, size, payload: Box::new(payload) }))
+    }
+
+    pub fn kind(&self) -> ExternalTextureKind {
+        self.0.kind
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.0.size
+    }
+
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.payload.downcast_ref()
+    }
+}
+
+impl PartialEq for ExternalTextureHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ExternalTextureHandle {}
+
+impl Hash for ExternalTextureHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl std::fmt::Debug for ExternalTextureHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExternalTextureHandle").field("kind", &self.kind()).field("size", &self.size()).finish_non_exhaustive()
+    }
+}
+
 /// Authored media. Encoded bytes and URIs are decoded by the host on demand.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ImageSource {
     Pixels(Image),
+    External(ExternalTextureHandle),
     Uri(Arc<str>),
     /// An application-authorized file on the native host.
     File(Arc<Path>),
@@ -37,6 +102,7 @@ pub enum ImageSource {
 impl ImageSource {
     pub fn cache_policy(&self) -> CachePolicy {
         match self {
+            Self::External(_) => CachePolicy::NoCache,
             Self::Resolved { headers, cache: CachePolicy::Standard, .. } if !headers.is_empty() => CachePolicy::MemoryOnly,
             Self::Resolved { cache, .. } => *cache,
             _ => CachePolicy::Standard,
@@ -57,6 +123,7 @@ impl std::fmt::Debug for ImageSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Pixels(image) => f.debug_tuple("Pixels").field(image).finish(),
+            Self::External(texture) => f.debug_tuple("External").field(texture).finish(),
             Self::Uri(_) => f.write_str("Uri(..)"),
             Self::File(_) => f.write_str("File(..)"),
             Self::Encoded { bytes, .. } => f.debug_struct("Encoded").field("len", &bytes.len()).finish_non_exhaustive(),
@@ -92,6 +159,7 @@ impl ImageState {
 #[derive(Clone, PartialEq, Eq)]
 pub enum MediaAsset {
     Pixels(Image),
+    External(ExternalTextureHandle),
     BrowserUri(Arc<str>),
 }
 
@@ -99,6 +167,7 @@ impl std::fmt::Debug for MediaAsset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Pixels(image) => f.debug_tuple("Pixels").field(image).finish(),
+            Self::External(texture) => f.debug_tuple("External").field(texture).finish(),
             Self::BrowserUri(_) => f.write_str("BrowserUri(..)"),
         }
     }

@@ -219,6 +219,22 @@ pub(crate) fn style(tree: &Tree, node: NodeId, v: Visual, viewport: WindowViewpo
         }
     }
     css.push(';');
+    if let Some(transform) = v.transform {
+        css.push_str("transform:");
+        if let Some(distance) = transform.perspective.filter(|distance| distance.is_finite() && *distance >= 0.0) {
+            let _ = write!(css, "perspective({}px) ", distance.max(1.0));
+        }
+        css.push_str("matrix3d(");
+        let local = octara_model::style::Transform3D { perspective: None, ..transform };
+        for (index, value) in local.matrix().into_iter().flatten().enumerate() {
+            if index != 0 {
+                css.push(',');
+            }
+            let _ = write!(css, "{value}");
+        }
+        let origin = transform.origin;
+        let _ = write!(css, ");transform-origin:{} {} {}px;", length(origin.x), length(origin.y), origin.z);
+    }
     if let Some(gradient) = v.gradient {
         let _ = write!(
             css,

@@ -777,10 +777,7 @@ impl AppRuntime {
         }
         let window = &self.windows[&id];
         if let Some(handler) = intent.resolve(&window.tree) {
-            let local_pos = position.and_then(|pos| {
-                let bounds = window.engine.interaction_bounds(intent.target.node()?)?;
-                Some(Point::new(pos.x - bounds.x, pos.y - bounds.y))
-            });
+            let local_pos = position.and_then(|pos| window.engine.interaction_local_point(intent.target.node()?, pos));
             return self.invoke(
                 id,
                 handler,
@@ -800,10 +797,7 @@ impl AppRuntime {
                     .find(|&node| window.tree.handler(node, HandlerKind::SecondaryPress).is_some() && window.tree.is_interactive(node));
                 if let Some(receiver) = receiver {
                     let target = window.tree.guard(receiver);
-                    let local_pos = position.and_then(|pos| {
-                        let bounds = window.engine.interaction_bounds(receiver)?;
-                        Some(Point::new(pos.x - bounds.x, pos.y - bounds.y))
-                    });
+                    let local_pos = position.and_then(|pos| window.engine.interaction_local_point(receiver, pos));
                     return self.invoke_node(
                         id,
                         receiver,

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Octara web compositor regression</title>
+<style>
+    body { margin: 0; background: white; }
+    #surface { position: relative; width: 420px; height: 290px; }
+</style>
+<body data-result="waiting">
+<div id="surface"></div>
+<output>Running the web compositor regression…</output>
+<script type="module">
+    import init, { mount_compositor, run_canvas_rollback } from "./web_compositor.js";
+
+    const output = document.querySelector("output");
+    try {
+        await init();
+        const surface = document.querySelector("#surface");
+        run_canvas_rollback(surface, !document.hidden && !matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+        const canvas = document.createElement("canvas");
+        canvas.width = 180;
+        canvas.height = 120;
+        canvas.setAttribute("style", "display: inline;");
+        const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true });
+        if (!gl) throw new Error("The fixture needs WebGL 2");
+        function redraw(green = false) {
+            gl.disable(gl.SCISSOR_TEST);
+            gl.clearColor(green ? 0 : 1, green ? 1 : 0, 0, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.enable(gl.SCISSOR_TEST);
+            gl.scissor(90, 0, 90, 120);
+            gl.clearColor(0, 0, 1, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+        redraw();
+        for (const name of ["getContext", "toBlob", "toDataURL", "transferControlToOffscreen"]) {
+            canvas[name] = () => { throw new Error("Octara called " + name + " on the producer canvas"); };
+        }
+        const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+        CanvasRenderingContext2D.prototype.drawImage = function(source, ...args) {
+            if (source === canvas) throw new Error("Octara copied the producer canvas");
+            return drawImage.call(this, source, ...args);
+        };
+        const createImageBitmap = window.createImageBitmap;
+        window.createImageBitmap = function(source, ...args) {
+            if (source === canvas) throw new Error("Octara copied the producer canvas");
+            return createImageBitmap.call(this, source, ...args);
+        };
+
+        const view = id => surface.querySelector(`[data-octara-id="${id}"]`);
+        const fixture = mount_compositor(surface, canvas);
+        function checkTransform(angle) {
+            fixture.rotate_card(angle);
+            const card = view("card");
+            const reference = document.createElement("div");
+            reference.style.cssText = card.style.cssText;
+            reference.style.transform = `perspective(420px) translate3d(10px, 6px, 12px) rotateX(-18deg) rotateY(${angle}deg)`;
+            reference.style.transformOrigin = "30px 25% 4px";
+            card.parentNode.append(reference);
+            const actual = card.getBoundingClientRect();
+            const expected = reference.getBoundingClientRect();
+            reference.remove();
+            if (!card.style.transform.startsWith("perspective(420px) matrix3d(") || card.style.transformOrigin !== "30px 25% 4px") {
+                throw new Error("The transform and origin did not reach CSS");
+            }
+            for (const part of ["x", "y", "width", "height"]) {
+                if (Math.abs(actual[part] - expected[part]) > 0.02) {
+                    throw new Error(`CSS reference differs at ${part}: ${actual[part]} vs ${expected[part]}`);
+                }
+            }
+            const local = view("local-canvas").querySelector("canvas");
+            if (local.style.width !== "80px" || local.style.height !== "40px") {
+                throw new Error("The local canvas was sized from its transformed bounds");
+            }
+            if (view("external").querySelector("canvas") !== canvas || canvas.width !== 180 || canvas.height !== 120) {
+                throw new Error("The producer canvas or its backing store changed during the transform");
+            }
+        }
+        checkTransform(42);
+        checkTransform(137);
+        fixture.rotate_card();
+        window.compositor = { canvas, fixture, redraw, view };
+        document.body.dataset.result = "ready";
+        output.value = "The web compositor fixture is ready.";
+    } catch (error) {
+        document.body.dataset.result = "failed";
+        output.value = document.body.dataset.panic ?? String(error);
+        throw error;
+    }
+</script>

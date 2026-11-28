@@ -83,9 +83,9 @@ Each `DomEngine::project(&Tree, &TreeDelta, viewport, now)` round patches struct
 ## 4. Shared-Memory JS Batched Geometry Bridge (`measure.js`)
 
 ### 4.1 Eliminating `10 * N` Wasm↔JS Crossings
-Instead of calling several `web_sys` getters per node from Rust, `measure.rs` passes a JS `Array` of DOM elements and a `Float32Array` with `18 * count` floats across the boundary in a batch.
+Instead of calling several `web_sys` getters per node from Rust, `measure.rs` passes a JS `Array` of DOM elements and a `Float32Array` with `20 * count` floats across the boundary in a batch.
 
-#### Flat ABI Layout per Node (`STRIDE = 18` floats = 72 bytes)
+#### Flat ABI Layout per Node (`STRIDE = 20` floats = 80 bytes)
 
 | Float Offset | Field | Source |
 | --- | --- | --- |
@@ -95,13 +95,14 @@ Instead of calling several `web_sys` getters per node from Rust, `measure.rs` pa
 | `8..10` | `scroll: [l, t]` | `el.scrollLeft`, `el.scrollTop` |
 | `10..14` | `padding: [t, r, b, l]` | parsed `px` from cached `getComputedStyle(el)` |
 | `14..18` | `border: [t, r, b, l]` | parsed `px` from cached `getComputedStyle(el)` |
+| `18..20` | `box_size: [w, h]` | Used border-box dimensions before the CSS transform |
 
 ```js
 // Geometry bridge in measure.js
 export function octara_measure_batch(surface, elements, out) {
   const origin = surface.getBoundingClientRect();
   const ox = origin.x, oy = origin.y;
-  for (let i = 0, o = 0; i < elements.length; i++, o += 18) {
+  for (let i = 0, o = 0; i < elements.length; i++, o += 20) {
     const el = elements[i];
     const r = el.getBoundingClientRect();
     const hasBox = r.width !== 0 || r.height !== 0 || r.x !== 0 || r.y !== 0 || el.getClientRects().length !== 0;
@@ -123,6 +124,8 @@ export function octara_measure_batch(surface, elements, out) {
     out[o + 15] = parseFloat(cs.borderRightWidth) || 0;
     out[o + 16] = parseFloat(cs.borderBottomWidth) || 0;
     out[o + 17] = parseFloat(cs.borderLeftWidth) || 0;
+    out[o + 18] = hasBox ? (parseFloat(cs.width) || el.offsetWidth) : 0;
+    out[o + 19] = hasBox ? (parseFloat(cs.height) || el.offsetHeight) : 0;
   }
 }
 ```
@@ -154,6 +157,8 @@ Delete `Picture::encode_png()` + `base64` from `octara-host-web` completely:
   - Zero Base64 encoding & 33% string bloat;
   - Zero `png` and `base64` crate dependencies in Wasm!
 - **Alternative for static asset URLs**: If an `Image` carries a browser URL source in the future, project directly to `<img src="...">`.
+
+Register a producer canvas with `WebCanvas::register` and pass its handle through `ImageSource::External`. The host mounts the original canvas in one media slot in its owning document. CSS applies fit and rounded clipping within the slot, and the slot participates in ordinary DOM stacking. Keep the registration alive while the handle is in use. The producer may draw independently of Octara frames.
 
 ---
 

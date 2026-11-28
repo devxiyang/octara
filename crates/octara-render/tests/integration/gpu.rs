@@ -27,6 +27,199 @@ fn gpu_or_skip() -> Option<WgpuRenderer> {
     gpu
 }
 
+#[test]
+fn gpu_projected_layers_match_the_reference_with_nested_clips_and_hud() {
+    use octara_model::style::Transform3D;
+
+    let Some(mut gpu) = gpu_or_skip() else { return };
+    eprintln!("Projective parity on {:?}", gpu.device().adapter_info());
+    let source = NodeId::default();
+    let card = Rect::new(14.0, 12.0, 48.0, 36.0);
+    let transform = Transform3D::default().perspective(92.0).rotate_x(28.0).rotate_y(-39.0).translate(12.0, 3.0, 10.0);
+    let scene = list(
+        (100.0, 70.0),
+        Color::TRANSPARENT,
+        [
+            Item::Quad(quad(Rect::new(0.0, 0.0, 85.0, 62.0), 0.0, rgb(0x203040))),
+            Item::PushClip { source, rect: Rect::new(27.25, 10.5, 41.0, 46.0), radius: [5.0; 4] },
+            Item::PushTransform { source, rect: card, transform },
+            Item::PushClip { source, rect: card, radius: [9.0; 4] },
+            Item::Quad(quad(card, 0.0, rgb(0x1976d2))),
+            Item::Quad(quad(Rect::new(18.0, 15.0, 20.0, 14.0), 2.0, rgb(0xffce11))),
+            Item::Quad(quad(Rect::new(48.0, 30.0, 10.0, 15.0), 3.0, rgb(0xdd3232))),
+            Item::PopClip,
+            Item::PopLayer,
+            Item::PopClip,
+            Item::Quad(quad(Rect::new(36.0, 26.0, 22.0, 10.0), 2.0, rgb(0x19bd71))),
+            Item::Quad(quad(Rect::new(49.0, 33.0, 19.0, 14.0), 3.0, Color::WHITE.with_alpha(0.35))),
+        ],
+    );
+    let mut cpu = CpuRenderer::new();
+    for scale in [1.0, 2.0] {
+        let actual = gpu.render(&scene, scale);
+        let factor = scale as u32;
+        assert_eq!(actual.pixel(44 * factor, 29 * factor), Some([25, 189, 113, 255]));
+        assert_ne!(actual.pixel(47 * factor, 21 * factor), Some([32, 48, 64, 255]));
+        compare("projected layer with outer clip and HUD", &cpu.render(&scene, scale), &actual);
+    }
+}
+
+#[test]
+fn gpu_clips_a_projected_layer_crossing_the_camera_plane() {
+    use octara_model::style::Transform3D;
+
+    let Some(mut gpu) = gpu_or_skip() else { return };
+    let source = NodeId::default();
+    let card = Rect::new(28.0, 16.0, 40.0, 34.0);
+    let transform = Transform3D::default().perspective(14.0).rotate_y(55.0);
+    let scene = list(
+        (96.0, 72.0),
+        Color::TRANSPARENT,
+        [
+            Item::PushClip { source, rect: Rect::new(5.0, 8.0, 78.0, 54.0), radius: [0.0; 4] },
+            Item::PushTransform { source, rect: card, transform },
+            Item::Quad(quad(card, 4.0, rgb(0xffce11))),
+            Item::Quad(quad(Rect::new(48.0, 18.0, 18.0, 30.0), 2.0, rgb(0xe6a92f))),
+            Item::PopLayer,
+            Item::PopClip,
+        ],
+    );
+    let actual = gpu.render(&scene, 1.0);
+    assert_eq!(actual.pixel(4, 33), Some([0; 4]));
+    assert_eq!(actual.pixel(20, 33), Some([255, 206, 17, 255]));
+    assert_eq!(actual.pixel(75, 33), Some([0; 4]));
+    compare("projected layer crossing the camera plane", &CpuRenderer::new().render(&scene, 1.0), &actual);
+}
+
+#[test]
+fn gpu_projects_source_pixels_outside_the_window() {
+    use octara_model::style::Transform3D;
+
+    let Some(mut gpu) = gpu_or_skip() else { return };
+    let rect = Rect::new(-24.0, 4.0, 18.0, 18.0);
+    let transform = Transform3D::default().perspective(44.0).rotate_y(29.0).translate(32.0, 1.0, 0.0);
+    let scene = list(
+        (52.0, 32.0),
+        Color::TRANSPARENT,
+        [Item::PushTransform { source: NodeId::default(), rect, transform }, Item::Quad(quad(rect, 3.0, rgb(0x2c83c8))), Item::PopLayer],
+    );
+    let actual = gpu.render(&scene, 1.0);
+    assert_eq!(actual.pixel(16, 14), Some([44, 131, 200, 255]));
+    compare("projected layer with negative source origin", &CpuRenderer::new().render(&scene, 1.0), &actual);
+}
+
+#[test]
+fn gpu_samples_a_live_external_texture_through_rounded_corners_and_projection() {
+    use octara_model::paint::ExternalTexturePaint;
+    use octara_model::style::Transform3D;
+    use octara_render::gpu::external_texture;
+    use std::sync::Arc;
+
+    let Some(mut gpu) = gpu_or_skip() else { return };
+    let texture = Arc::new(gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("GPU-only external texture"),
+        size: wgpu::Extent3d { width: 32, height: 24, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    }));
+    let texture_view = texture.create_view(&Default::default());
+    // The texture was allocated on this renderer's device above.
+    let handle = unsafe { external_texture(gpu.device(), texture) }.unwrap();
+    let update = |gpu: &WgpuRenderer, color| {
+        let mut encoder = gpu.device().create_command_encoder(&Default::default());
+        drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &texture_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(color), store: wgpu::StoreOp::Store },
+            })],
+            ..Default::default()
+        }));
+        gpu.queue().submit([encoder.finish()]);
+    };
+    let source = NodeId::default();
+    let rect = Rect::new(10.0, 10.0, 32.0, 24.0);
+    let ext = Item::ExternalTexture(ExternalTexturePaint { source, texture: handle, rect, bounds: rect, radius: [9.0; 4], opacity: 0.5 });
+    let flat = list((80.0, 52.0), Color::TRANSPARENT, [ext.clone()]);
+    update(&gpu, wgpu::Color::GREEN);
+    let first = gpu.render(&flat, 1.0);
+    assert_eq!(first.pixel(10, 10), Some([0; 4]));
+    assert_eq!(first.pixel(26, 21), Some([0, 255, 0, 128]));
+
+    let tilt = Transform3D::default().perspective(58.0).rotate_y(52.0).translate(20.0, 0.0, 4.0);
+    let hud = Item::Quad(quad(Rect::new(43.0, 17.0, 9.0, 8.0), 0.0, rgb(0xfb34c8)));
+    let scene = |image| {
+        list((80.0, 52.0), Color::TRANSPARENT, [Item::PushTransform { source, rect, transform: tilt }, image, Item::PopLayer, hud.clone()])
+    };
+    let display = scene(ext);
+    let first_projected = gpu.render(&display, 1.0);
+    assert_eq!(first_projected.pixel(46, 20), Some([251, 52, 200, 255]));
+    assert_eq!(first_projected.pixel(42, 22), Some([0, 255, 0, 128]));
+    assert_eq!(first_projected.pixel(24, 22), Some([0; 4]));
+    update(&gpu, wgpu::Color::BLUE);
+    let next = gpu.render(&display, 1.0);
+    assert_eq!(next.pixel(42, 22), Some([0, 0, 255, 128]));
+    assert_eq!(next.pixel(46, 20), first_projected.pixel(46, 20));
+    let blue = scene(Item::Quad(quad(rect, 9.0, rgb(0x0000ff).with_alpha(0.5))));
+    compare("projected external texture with HUD", &CpuRenderer::new().render(&blue, 1.0), &next);
+}
+
+#[test]
+fn gpu_external_texture_rejects_incompatible_usage_format_and_device() {
+    use octara_model::paint::ExternalTexturePaint;
+    use octara_render::gpu::{RecordError, external_texture};
+    use std::sync::Arc;
+
+    let Some(mut gpu) = gpu_or_skip() else { return };
+    let Some(foreign) = gpu_or_skip() else { return };
+    let descriptor = wgpu::TextureDescriptor {
+        label: Some("external texture validation"),
+        size: wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    };
+    for invalid in [
+        wgpu::TextureDescriptor { usage: wgpu::TextureUsages::RENDER_ATTACHMENT, ..descriptor },
+        wgpu::TextureDescriptor { format: wgpu::TextureFormat::Rgba8Uint, ..descriptor },
+    ] {
+        let texture = Arc::new(gpu.device().create_texture(&invalid));
+        // Both inputs refer to this renderer's device.
+        assert!(matches!(unsafe { external_texture(gpu.device(), texture) }, Err(RecordError::ExternalTexture(_))));
+    }
+    let texture = Arc::new(foreign.device().create_texture(&descriptor));
+    // Import on the producer's device, which is a separate wgpu instance.
+    let texture = unsafe { external_texture(foreign.device(), texture) }.unwrap();
+    foreign.device().destroy();
+    let rect = Rect::new(2.0, 2.0, 8.0, 8.0);
+    let scene = list(
+        (16.0, 16.0),
+        Color::WHITE,
+        [
+            Item::ExternalTexture(ExternalTexturePaint {
+                source: NodeId::default(),
+                texture,
+                rect,
+                bounds: rect,
+                radius: [0.0; 4],
+                opacity: 1.0,
+            }),
+            Item::Quad(quad(Rect::new(6.0, 6.0, 8.0, 8.0), 0.0, Color::BLACK)),
+        ],
+    );
+    let image = gpu.render(&scene, 1.0);
+    assert_eq!(image.pixel(4, 4), Some([255; 4]));
+    assert_eq!(image.pixel(9, 9), Some([0, 0, 0, 255]));
+}
+
 const IMAGE_COLORS: [[u8; 4]; 5] = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 192, 0, 255], [192, 0, 255, 255]];
 
 fn solid_image(width: u32, height: u32, rgba: [u8; 4]) -> Sample {

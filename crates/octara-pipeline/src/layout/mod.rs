@@ -1149,6 +1149,10 @@ impl LayoutKernel {
         self.projected_frame(node).map(|frame| frame.layout)
     }
 
+    pub(crate) fn viewport_bounds(&self) -> Rect {
+        self.window
+    }
+
     pub(crate) fn bounds(&self, node: NodeId) -> Option<Rect> {
         Some(translated(self.projected_frame(node)?.bounds, self.scroll_translation(node)))
     }
@@ -1164,7 +1168,7 @@ impl LayoutKernel {
         self.world_client(node)
     }
 
-    fn world_client(&self, node: NodeId) -> Option<Rect> {
+    pub(crate) fn world_client(&self, node: NodeId) -> Option<Rect> {
         let local = self.local_client(node)?;
         let bounds = self.bounds(node)?;
         Some(translated(local, Vec2::new(bounds.x, bounds.y)))

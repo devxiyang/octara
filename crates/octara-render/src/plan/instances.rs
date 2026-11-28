@@ -247,6 +247,18 @@ impl Instances {
                     },
                 )
             }
+            Shape::Image { bounds, opacity, region: None } => append(
+                &mut self.images,
+                ImageInst {
+                    rect,
+                    image_bounds: bounds,
+                    radius,
+                    uv: [0.0, 0.0, 1.0, 1.0],
+                    fill: [0.0, 0.0, 0.0, opacity],
+                    kind: 4,
+                    ..ImageInst::zeroed()
+                },
+            ),
             Shape::Path { color, gradient, bounds, region: Some(region) } => {
                 let (uv, layer, max_lod) = region_fields(region);
                 let gradient = gradient.map_or(0, |g| self.gradient(color, Some(g), Color::TRANSPARENT, [0.0; 4]));

@@ -30,8 +30,8 @@ pub use blocking::block_on;
 pub use gpu::{RecordedFrame, SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory, WgpuRenderer};
 #[cfg(feature = "plan")]
 pub use plan::{
-    CpuRenderer, DamageRect, FramePlan, FrameProfile, GlyphCache, GlyphInst, ImageInst, ImageMips, OutputColor, PlannedBatch, QuadInst,
-    ShadowInst, SpatialTable, plan_frame, plan_frame_cached, plan_frame_spatial,
+    CpuRenderer, DamageRect, ExternalTextureHandle, ExternalTextureKind, FramePlan, FrameProfile, GlyphCache, GlyphInst, ImageInst,
+    ImageMips, OutputColor, PlannedBatch, QuadInst, ShadowInst, SpatialTable, plan_frame, plan_frame_cached, plan_frame_spatial,
 };
 #[cfg(feature = "wgpu")]
 pub use wgpu;

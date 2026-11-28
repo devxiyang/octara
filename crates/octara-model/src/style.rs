@@ -11,6 +11,9 @@ use crate::theme::{
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 
+mod transform;
+pub use transform::{Mat4, PlaneInverse, Transform3D, TransformOrigin};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Display {
     None,
@@ -583,6 +586,7 @@ pub enum StyleProp {
     TextAlign(TextAlign),
     MaxLines(Option<u16>),
     Opacity(f32),
+    Transform3D(Option<Transform3D>),
     Shadow(Shadows),
     /// Whether this node can be the direct hit target. Descendants can still be hit.
     PointerEvents(bool),
@@ -639,6 +643,7 @@ pub struct Visual {
     pub align: TextAlign,
     pub max_lines: Option<u16>,
     pub opacity: f32,
+    pub transform: Option<Transform3D>,
     pub shadow: Shadows,
     pub pointer_events: Option<bool>,
     pub scrollbar: ScrollbarVisibility,

@@ -76,6 +76,12 @@ pub trait HostEngine {
         None
     }
 
+    /// Map a viewport pointer into the node's local border-box coordinates.
+    fn interaction_local_point(&self, node: NodeId, pos: Point) -> Option<Point> {
+        let bounds = self.interaction_bounds(node)?;
+        Some(Point::new(pos.x - bounds.x, pos.y - bounds.y))
+    }
+
     /// Viewport bounds of an inline attachment in a laid-out text node.
     fn inline_attachment_bounds(&self, _node: NodeId, _index: usize) -> Option<Rect> {
         None

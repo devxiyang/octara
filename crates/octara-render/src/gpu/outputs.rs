@@ -275,12 +275,12 @@ impl PresentationHistory {
 #[derive(Clone)]
 pub(super) struct RegionImage {
     pub(super) view: wgpu::TextureView,
-    pub(super) origin: [u32; 2],
+    pub(super) origin: [i32; 2],
     pub(super) scale: f32,
 }
 
 impl RegionImage {
-    pub(super) fn new(view: &wgpu::TextureView, origin: [u32; 2], scale: f32) -> Self {
+    pub(super) fn new(view: &wgpu::TextureView, origin: [i32; 2], scale: f32) -> Self {
         let view = view
             .texture()
             .create_view(&wgpu::TextureViewDescriptor { usage: Some(wgpu::TextureUsages::TEXTURE_BINDING), ..Default::default() });

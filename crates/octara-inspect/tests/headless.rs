@@ -72,6 +72,49 @@ fn target(driver: &HeadlessDriver, id: WindowId, test_id: &str) -> TargetRef {
 }
 
 #[test]
+fn authored_external_texture_updates_the_retained_image_without_loading_pixels() {
+    use octara_model::paint::Item;
+    let mut driver = driver();
+    let first = ExternalTextureHandle::new(ExternalTextureKind::Metal, (40, 20), ());
+    let texture = driver.app_mut().build(|b| b.signal(first.clone())).unwrap();
+    let window = driver
+        .app_mut()
+        .open_window(options(), move |_| {
+            image_source(move |r: &mut ReadCx<'_>| ImageSource::External(r.get(texture)))
+                .w(100)
+                .h(80)
+                .object_fit(ObjectFit::Contain)
+                .test_id("external")
+        })
+        .unwrap();
+    let sample = |driver: &HeadlessDriver| {
+        let runtime = driver.app().runtime().window(window).unwrap();
+        let [node] = runtime.tree().test_ids("external") else { panic!("expected the external image node") };
+        let slot = runtime.tree().media_source(*node).unwrap();
+        let list = runtime.last_commit().unwrap().draw.as_deref().unwrap();
+        let mut draws = list.items().into_iter().filter_map(|item| match item {
+            Item::ExternalTexture(draw) => Some(draw),
+            Item::Image(_) => panic!("external image became a CPU image"),
+            _ => None,
+        });
+        let draw = draws.next().expect("external image reaches the scene");
+        assert_eq!(draw.source, *node);
+        assert!(draws.next().is_none());
+        (slot.state.clone(), draw)
+    };
+    driver.advance_to(std::time::Duration::from_millis(1)).unwrap();
+    let (state, initial) = sample(&driver);
+    assert_eq!(state, ImageState::Ready { natural_size: (40, 20) });
+    assert_eq!(initial.texture, first);
+    assert_eq!(initial.rect, Rect::new(0.0, 15.0, 100.0, 50.0));
+
+    let next = ExternalTextureHandle::new(ExternalTextureKind::Metal, (40, 20), ());
+    driver.app_mut().update(|w| w.set(texture, next.clone())).unwrap();
+    driver.advance_to(std::time::Duration::from_millis(2)).unwrap();
+    assert_eq!(sample(&driver).1.texture, next);
+}
+
+#[test]
 fn locale_and_text_scale_reach_logical_portals_and_update_native_layout() {
     let mut driver = driver();
     let window = driver

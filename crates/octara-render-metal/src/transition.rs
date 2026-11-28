@@ -131,7 +131,7 @@ impl History {
         let mut used_region_bytes = 0;
         let mut pin_count = self.pins.len();
         let mut pin_bytes = self.pins.iter().map(|pin| region_bytes(pin.image.bounds)).sum::<u64>();
-        frame.bounds = bound_passes(&mut frame.passes, extent, |index, request, current, visible| {
+        frame.bounds = bound_passes(&mut frame.passes, &frame.spatial, extent, |index, request, current, visible| {
             let paint = &request.paint;
             let supported = paint.program.downcast_ref::<CanvasProgram>().and_then(CanvasProgram::payload::<CrossfadeProgram>).is_some();
             let previous =

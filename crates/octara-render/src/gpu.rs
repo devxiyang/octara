@@ -11,6 +11,8 @@ mod canvases;
 mod custom;
 mod device_loss;
 mod encode;
+#[cfg(not(target_arch = "wasm32"))]
+mod external;
 mod outputs;
 mod pipeline;
 mod prepare;
@@ -38,6 +40,8 @@ pub use custom::{Backdrop, CanvasFrame, Transition, TransitionImage, backdrop, c
 pub use custom::{ErrorScopes, local};
 #[doc(hidden)]
 pub use device_loss::DeviceLoss;
+#[cfg(not(target_arch = "wasm32"))]
+pub use external::external_texture;
 pub use outputs::PendingPresentation;
 use outputs::{CanvasCache, PresentationHistory};
 use pipeline::PipelineCache;

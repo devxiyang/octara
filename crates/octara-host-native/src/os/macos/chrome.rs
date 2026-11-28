@@ -194,10 +194,15 @@ impl Chrome {
         self.window.styleMask().contains(NSWindowStyleMask::FullScreen)
     }
 
-    pub(super) fn metrics(&self, view: &NSView) -> WindowChrome {
-        let TitlebarStyle::HiddenInset { traffic_light_offset } = self.style else { return WindowChrome::default() };
+    pub(super) fn relayout_after_presentation(&self, view: &NSView) -> bool {
+        // AppKit can restore the default button frames when the window title changes.
+        self.shown && self.layout_traffic_lights(view).is_some()
+    }
+
+    fn layout_traffic_lights(&self, view: &NSView) -> Option<Vec<Retained<NSButton>>> {
+        let TitlebarStyle::HiddenInset { traffic_light_offset } = self.style else { return None };
         if self.has_fullscreen_style() {
-            return WindowChrome::default();
+            return None;
         }
         let buttons: Vec<_> = [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton]
             .into_iter()
@@ -222,6 +227,11 @@ impl Chrome {
                 }
             }
         }
+        Some(buttons)
+    }
+
+    pub(super) fn metrics(&self, view: &NSView) -> WindowChrome {
+        let Some(buttons) = self.layout_traffic_lights(view) else { return WindowChrome::default() };
         let traffic_light_rect = buttons.iter().filter_map(|button| button_rect(view, button)).reduce(|a, b| {
             let x = a.x.min(b.x);
             let y = a.y.min(b.y);

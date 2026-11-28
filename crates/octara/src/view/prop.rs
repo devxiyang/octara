@@ -8,6 +8,7 @@ use octara_model::{
     overlay::AnchorTarget,
     paint::PaintInput,
     semantics::{Checked, NumericRange},
+    style::Transform3D,
     theme::{Color, ColorToken, ColorValue, Fill, ThemePatch},
 };
 use octara_runtime::{Binding, Field, ReadCx, ReadSignal, Signal};
@@ -100,6 +101,7 @@ static_prop! {
     Option<bool> => [bool, Option<bool>],
     Option<Point> => [Point, Option<Point>],
     Option<TextReveal> => [TextReveal, Option<TextReveal>],
+    Option<Transform3D> => [Transform3D, Option<Transform3D>],
     Option<AnchorTarget> => [AnchorTarget, Option<AnchorTarget>],
     u8 => [u8],
     Checked => [Checked, bool],

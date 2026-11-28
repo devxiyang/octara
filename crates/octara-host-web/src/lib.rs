@@ -6,6 +6,7 @@ mod dom;
 mod drag_out;
 mod edit;
 mod engine;
+mod external_canvas;
 mod gestures;
 #[cfg(feature = "webgpu")]
 mod gpu;
@@ -20,6 +21,7 @@ mod services;
 mod undo;
 
 pub use engine::DomEngine;
+pub use external_canvas::WebCanvas;
 pub use measure::MeasureMode;
 pub use navigation::RouteCodec;
 #[cfg(feature = "webgpu")]

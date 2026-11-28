@@ -39,7 +39,11 @@ impl TextFramePlanner {
     pub fn measure(&mut self, list: &DisplayList) -> Option<TextFrameMetrics> {
         let FramePlan { mut passes, requests, clips, resources, bounds, resolve_output, .. } =
             plan_frame_cached(list, self.target, None, &mut self.glyphs);
-        if !resources.materials.is_empty() || !requests.receipts.is_empty() {
+        if !resources.materials.is_empty()
+            || !resources.external_textures.is_empty()
+            || !requests.receipts.is_empty()
+            || passes.iter().any(|pass| pass.projection.is_some())
+        {
             return None;
         }
 

@@ -47,6 +47,15 @@ struct EntryState {
     inert: bool,
 }
 
+impl EntryState {
+    fn mounted_external_media(&self) -> impl Iterator<Item = &HtmlElement> {
+        self.media
+            .iter()
+            .chain(self.inline_media.iter().flat_map(|inline| inline.values()))
+            .filter_map(assets::MediaFrame::mounted_external)
+    }
+}
+
 #[derive(Clone)]
 struct CanvasFrame {
     canvas: HtmlCanvasElement,
@@ -500,6 +509,9 @@ impl HostEngine for DomEngine {
 impl Drop for DomEngine {
     fn drop(&mut self) {
         reveal::octara_clear_reveals(&self.surface);
+        for element in self.entries.values().flat_map(EntryState::mounted_external_media) {
+            element.remove();
+        }
         if let Some(root) = self.root.and_then(|node| self.dom.element(node)) {
             root.remove();
         }

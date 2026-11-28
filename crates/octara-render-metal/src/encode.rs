@@ -1,6 +1,7 @@
 //! Records painter-order geometry and isolated layers into the caller's command buffer.
 
 use super::atlas::Atlases;
+use super::external::MetalImage;
 use super::pipeline::{Pipeline, Pipelines};
 use super::prepare::{Buffer, DrawBuffers, PreparedFrame};
 use super::target::{
@@ -63,7 +64,7 @@ impl LayerTargets {
                 for (core, range) in [(true, seg.cores.clone()), (false, seg.blended.clone())] {
                     for batch in &frame.batches[range] {
                         if !matches!(batch.draw, Draw::Material(_)) {
-                            pipelines.get(device, pipeline(batch.draw, core), format, depth_format)?;
+                            pipelines.get(device, pipeline(frame, batch.draw, core), format, depth_format)?;
                         }
                     }
                 }
@@ -177,8 +178,8 @@ impl Render<'_> {
                     fullscreen(&encoder);
                 }
             }
-            if let (Some(segment), Some(projection)) = (segment, &prepared.projection) {
-                self.bind_projection(&encoder, projection);
+            if let (Some(segment), Some(globals)) = (segment, &prepared.globals) {
+                self.bind_globals(&encoder, globals);
                 let draws = SceneEncoder { renderer: self, encoder: &encoder, format, depth: depth_format, damage };
                 profile.draw_batches += draws.batches(segment.cores.clone(), true);
                 profile.draw_batches += draws.batches(segment.blended.clone(), false);
@@ -220,8 +221,8 @@ impl Render<'_> {
         Ok(())
     }
 
-    fn bind_projection(&self, encoder: &Encoder, projection: &Buffer) {
-        bind_shared(encoder, projection, 0);
+    fn bind_globals(&self, encoder: &Encoder, globals: &Buffer) {
+        bind_shared(encoder, globals, 0);
         let clip = self.frame.buffers.clips.as_ref();
         bind_shared(encoder, clip.unwrap_or(self.dummy), 5);
         bind_shared(encoder, self.spatial.unwrap_or(self.dummy), 8);
@@ -247,6 +248,11 @@ impl SceneEncoder<'_, '_> {
     }
 
     fn batch(&self, batch: &PlannedBatch, core: bool) -> u32 {
+        if let Draw::Layer(index) = batch.draw
+            && self.renderer.targets.composite(index).is_none()
+        {
+            return 0;
+        }
         let mut bind = true;
         let mut draw = |instances: Range<u32>| {
             if bind {
@@ -277,7 +283,7 @@ impl SceneEncoder<'_, '_> {
         let renderer = self.renderer;
         let state = match draw {
             Draw::Material(material) => renderer.pipelines.material_state(material, self.format, self.depth),
-            _ => renderer.pipelines.state(pipeline(draw, core), self.format, self.depth),
+            _ => renderer.pipelines.state(pipeline(renderer.frame, draw, core), self.format, self.depth),
         };
         encoder.setRenderPipelineState(state);
         let DrawBuffers { draws, quads, shadows, images, glyphs, glyph_draws, glyph_clips, gradients, materials, .. } =
@@ -286,7 +292,7 @@ impl SceneEncoder<'_, '_> {
         let payload = match draw {
             Draw::Quad | Draw::Cutout => quads,
             Draw::Shadow => shadows,
-            Draw::Image(_) | Draw::Layer(_) => images,
+            Draw::Image(_) | Draw::Layer(_) | Draw::External(_) => images,
             Draw::Glyph(_) => glyphs,
             Draw::Material(_) => materials,
             _ => unreachable!("paint resolved before recording"),
@@ -310,15 +316,36 @@ impl SceneEncoder<'_, '_> {
                     }
                     Draw::Layer(index) => {
                         encoder.setFragmentTexture_atIndex(renderer.targets.composite(index).map(|texture| &**texture), 4);
+                        let pass = &renderer.frame.passes[index];
+                        if let Some(matrix) = pass.transform {
+                            let bounds = pass
+                                .transition
+                                .as_ref()
+                                .and_then(|transition| transition.composite.as_ref())
+                                .map_or(pass.bounds, |crossfade| crossfade.bounds);
+                            let [x, y, z, w] = matrix;
+                            let transform = [x, y, z, w, bounds.rect()];
+                            let bytes = octara_render::plan::bytemuck::bytes_of(&transform);
+                            encoder.setVertexBytes_length_atIndex(std::ptr::NonNull::from(bytes).cast(), bytes.len(), 9);
+                            encoder.setFragmentSamplerState_atIndex(Some(&renderer.pipelines.sampler), 3);
+                        }
+                    }
+                    Draw::External(index) => {
+                        encoder.setFragmentTexture_atIndex(Some(&self.external(index).texture), 4);
+                        encoder.setFragmentSamplerState_atIndex(Some(&renderer.pipelines.sampler), 3);
                     }
                     _ => {}
                 }
             }
         }
     }
+
+    fn external(&self, index: usize) -> &MetalImage {
+        self.renderer.frame.external[index].as_ref().and_then(|handle| handle.downcast_ref()).expect("prepared Metal texture")
+    }
 }
 
-fn pipeline(draw: Draw, core: bool) -> Pipeline {
+fn pipeline(frame: &PreparedFrame, draw: Draw, core: bool) -> Pipeline {
     match (draw, core) {
         (Draw::Quad, true) => Pipeline::QuadCore,
         (Draw::Image(_), true) => Pipeline::ImageCore,
@@ -327,7 +354,9 @@ fn pipeline(draw: Draw, core: bool) -> Pipeline {
         (Draw::Cutout, false) => Pipeline::Cutout,
         (Draw::Glyph(_), false) => Pipeline::Glyph,
         (Draw::Shadow, false) => Pipeline::Shadow,
+        (Draw::Layer(index), false) if frame.passes[index].transform.is_some() => Pipeline::ProjectedLayer,
         (Draw::Layer(_), false) => Pipeline::Layer,
+        (Draw::External(_), false) => Pipeline::External,
         _ => unreachable!("draw scheduled before encoding"),
     }
 }

@@ -216,9 +216,10 @@ impl NativeEngine {
         }
     }
 
-    fn check_layout(&self, tree: &Tree, cold: &LayoutKernel, cold_text: &TextEngine) {
+    fn check_layout(&self, tree: &Tree, cold: &LayoutKernel, cold_text: &TextEngine, projected: Option<(&Arc<DisplayList>, f32)>) {
         let mut cold_flat = FlatTree::default();
         cold_flat.project(tree, &TreeDelta::default(), cold);
+        cold_flat.project_draw(projected);
         let incremental_flat = self.flat.fork_for_layout_check();
         for (node, _) in tree.nodes().filter(|(node, _)| tree.is_live(*node)) {
             assert_eq!(self.layout.geometry(node), cold.geometry(node), "layout box for {node:?}");
@@ -298,7 +299,7 @@ impl NativeEngine {
     }
 
     pub fn text_hit(&self, node: NodeId, pos: Point) -> Option<usize> {
-        text::geometry::hit_byte(&self.text.geometry(node, &self.layout)?, pos)
+        text::geometry::hit_byte(&self.text.geometry(node, &self.layout)?, self.flat.source_point(&self.layout, node, pos)?)
     }
 
     pub fn text_vertical(&self, node: NodeId, byte: usize, direction: i32, column: Option<f32>) -> Option<(usize, f32)> {
@@ -352,10 +353,6 @@ impl HostEngine for NativeEngine {
         });
         let mut updates = self.layout.project(tree, delta, layout_viewport, &mut self.text);
         self.flat.project(tree, delta, &self.layout);
-        if let Some((mut cold, mut text)) = oracle {
-            cold.project(tree, delta, layout_viewport, &mut text);
-            self.check_layout(tree, &cold, &text);
-        }
         let scroll_deadline = self.scrolling.step(tree, &self.layout, &mut updates, now, self.config.reduced_motion);
         self.accessibility.project(tree, delta, &self.layout, &self.text, viewport.scale, self.config.check_a11y_cache);
         let airspace = self.publication.airspace.borrow().project(tree, &self.layout);
@@ -374,6 +371,12 @@ impl HostEngine for NativeEngine {
                 native_snapshots: &airspace.images,
             },
         );
+        let projected = frame.has_projected_layers.then_some((&frame.draw, viewport.scale));
+        self.flat.project_draw(projected);
+        if let Some((mut cold, mut text)) = oracle {
+            cold.project(tree, delta, layout_viewport, &mut text);
+            self.check_layout(tree, &cold, &text, projected);
+        }
         let editor = tree.focus().filter(|&node| tree.editor(node).is_some());
         self.native.project(tree, &self.layout, &frame.draw, viewport);
         self.staged = Some(StagedFrame {
@@ -450,6 +453,12 @@ impl HostEngine for NativeEngine {
         self.layout.bounds(node)
     }
 
+    fn interaction_local_point(&self, node: NodeId, pos: Point) -> Option<Point> {
+        let bounds = self.layout.bounds(node)?;
+        let pos = self.flat.source_point(&self.layout, node, pos)?;
+        Some(Point::new(pos.x - bounds.x, pos.y - bounds.y))
+    }
+
     fn inline_attachment_bounds(&self, node: NodeId, index: usize) -> Option<Rect> {
         self.text.attachment_bounds(node, index, &self.layout)
     }
@@ -467,7 +476,7 @@ impl HostEngine for NativeEngine {
     }
 
     fn text_pointer_hit(&self, node: NodeId, pos: Point) -> Option<(usize, usize)> {
-        text::geometry::hit_text(&self.text.geometry(node, &self.layout)?, pos)
+        text::geometry::hit_text(&self.text.geometry(node, &self.layout)?, self.flat.source_point(&self.layout, node, pos)?)
     }
 
     fn text_vertical(&self, node: NodeId, byte: usize, direction: i32, column: Option<f32>) -> Option<(usize, f32)> {
@@ -490,7 +499,11 @@ impl HostEngine for NativeEngine {
         let hit = self.flat.hit(tree, &self.layout, &self.text, position)?;
         // A parent's scrollbar paints over its descendants.
         std::iter::successors(Some(hit), |&node| tree.physical_parent(node))
-            .filter_map(|node| self.paint.scrollbar_hit(tree, &self.layout, node, position))
+            .filter_map(|node| {
+                self.layout.scroll_range(node)?;
+                let position = self.flat.scrollbar_point(tree, &self.layout, node, position)?;
+                self.paint.scrollbar_hit(tree, &self.layout, node, position)
+            })
             .last()
     }
 

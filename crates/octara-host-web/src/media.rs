@@ -23,6 +23,14 @@ impl MediaLoader for BrowserMediaLoader {
             let policy = request.cache_policy();
             let result = match request.source {
                 ImageSource::Pixels(image) => return Ok(LoadedMedia::pixels(image)),
+                ImageSource::External(handle) => {
+                    return Ok(LoadedMedia {
+                        natural_size: handle.size(),
+                        asset: MediaAsset::External(handle),
+                        cacheable: false,
+                        cache_for: None,
+                    });
+                }
                 ImageSource::Uri(uri) => direct(&uri).await,
                 ImageSource::File(_) => return Err(Arc::from("Local image files require a native host")),
                 ImageSource::Encoded { bytes, mime } => {

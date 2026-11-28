@@ -1,6 +1,6 @@
 //! Offscreen Metal render and readback on a real device.
 
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", all(target_os = "ios", target_abi = "sim")))]
 
 #[path = "../../octara-render/tests/integration/fixtures.rs"]
 mod fixtures;
@@ -11,17 +11,31 @@ use objc2::{
     rc::{Retained, autoreleasepool},
     runtime::ProtocolObject,
 };
+use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFType};
+use objc2_core_video::{
+    CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetIOSurface, kCVPixelBufferIOSurfacePropertiesKey,
+    kCVPixelBufferMetalCompatibilityKey, kCVPixelFormatType_32BGRA, kCVReturnSuccess,
+};
 use objc2_metal::*;
 use octara_model::capture::{PaintOutcome, PaintReceipt, PaintSample};
 use octara_model::geometry::{Rect, Size, Vec2};
 use octara_model::identity::NodeId;
+use octara_model::image::ExternalTextureHandle;
 use octara_model::paint::{
-    CustomPaint, DisplayList, Image, Item, PaintMount, PaintProgram, Part, Picture, ScrollPlacement, ScrollPlacements, TransitionPaint,
+    CustomPaint, DisplayList, ExternalTexturePaint, Image, Item, PaintMount, PaintProgram, Part, Picture, ScrollPlacement,
+    ScrollPlacements, Shadow, TransitionPaint,
 };
+use octara_model::style::Transform3D;
 use octara_model::theme::{Color, rgb};
 use octara_render::{CpuRenderer, OutputColor};
-use octara_render_metal::{MetalEncodedFrame, MetalRenderer};
-use std::{sync::Arc, time::Duration};
+use octara_render_metal::{
+    MetalEncodedFrame, MetalRenderer, MetalTextureCache, external_texture_from_iosurface, external_texture_from_metal,
+};
+use std::{
+    ptr::{self, NonNull},
+    sync::Arc,
+    time::Duration,
+};
 
 struct Metal {
     renderer: MetalRenderer,
@@ -42,6 +56,16 @@ impl Metal {
     }
 
     fn capture(&mut self, list: &DisplayList, scale: f32, sample: Option<PaintSample>) -> (Picture, MetalEncodedFrame) {
+        let (finish, frame) = self.record_capture(list, scale, sample);
+        (finish(), frame)
+    }
+
+    fn record_capture(
+        &mut self,
+        list: &DisplayList,
+        scale: f32,
+        sample: Option<PaintSample>,
+    ) -> (impl FnOnce() -> Picture + use<>, MetalEncodedFrame) {
         let width = (list.size.width * scale).ceil().max(1.0) as usize;
         let height = (list.size.height * scale).ceil().max(1.0) as usize;
         // These fixtures use 2D extents within the Metal device's limits.
@@ -70,17 +94,220 @@ impl Metal {
             );
         }
         blit.endEncoding();
-        command.commit();
-        command.waitUntilCompleted();
-        assert_eq!(command.status(), MTLCommandBufferStatus::Completed, "{:?}", command.error());
-        // SAFETY: the completed blit initialized each row's pixel bytes in the retained shared buffer.
-        let mut rgba = Vec::with_capacity(row_bytes * height);
-        for y in 0..height {
-            let row = unsafe { std::slice::from_raw_parts(buffer.contents().cast::<u8>().as_ptr().add(y * pitch), row_bytes) };
-            rgba.extend_from_slice(row);
-        }
-        (Picture::new(width as u32, height as u32, rgba).unwrap(), frame)
+        let finish = move || {
+            command.commit();
+            command.waitUntilCompleted();
+            assert_eq!(command.status(), MTLCommandBufferStatus::Completed, "{:?}", command.error());
+            // SAFETY: the completed blit initialized each row's pixel bytes in the retained shared buffer.
+            let mut rgba = Vec::with_capacity(row_bytes * height);
+            for y in 0..height {
+                let row = unsafe { std::slice::from_raw_parts(buffer.contents().cast::<u8>().as_ptr().add(y * pitch), row_bytes) };
+                rgba.extend_from_slice(row);
+            }
+            Picture::new(width as u32, height as u32, rgba).unwrap()
+        };
+        (finish, frame)
     }
+}
+
+#[test]
+fn perspective_tilt_and_flip_match_the_reference() {
+    autoreleasepool(|_| {
+        let Some(mut metal) = Metal::new() else { return };
+        let mut cpu = CpuRenderer::new();
+        #[cfg(feature = "wgpu")]
+        let mut wgpu = wgpu_or_skip();
+        for (name, angle, perspective) in [("tilt", 36.0, 94.0), ("flip", 133.0, 94.0), ("near-plane tilt", 67.0, 24.0)] {
+            let source = NodeId::default();
+            let card = Rect::new(19.0, 16.0, 58.0, 42.0);
+            let transform = Transform3D::default().perspective(perspective).rotate_x(17.0).rotate_y(angle);
+            let list = fixtures::list(
+                (98.0, 74.0),
+                rgb(0x283449),
+                [
+                    Item::PushLayer { source, opacity: 0.82 },
+                    Item::PushClip { source, rect: Rect::new(26.25, 14.75, 49.0, 46.0), radius: [9.0; 4] },
+                    Item::PushTransform { source, rect: card, transform },
+                    Item::PushClip { source, rect: card, radius: [7.0; 4] },
+                    Item::Quad(fixtures::quad(card, 0.0, rgb(0xef2020))),
+                    Item::Quad(fixtures::quad(Rect::new(41.0, 22.0, 29.0, 30.0), 3.0, rgb(0x209930))),
+                    Item::PopClip,
+                    Item::PopLayer,
+                    Item::PopClip,
+                    Item::PopLayer,
+                    Item::Quad(fixtures::quad(Rect::new(46.0, 32.0, 8.0, 12.0), 0.0, Color::WHITE)),
+                ],
+            );
+            for scale in [1.0, 2.0] {
+                let reference = cpu.render(&list, scale);
+                let (native, frame) = metal.capture(&list, scale, None);
+                assert!(frame.profile.layer_pixels > 0);
+                assert_eq!(native.pixel((48.0 * scale) as u32, (35.0 * scale) as u32), Some([255; 4]));
+                assert!(native.rgba().as_chunks::<4>().0.iter().any(|p| p[0] > 100 && p[1] < 100), "{name} shows the red side of the card");
+                parity::compare(&format!("{name} Metal/CPU at {scale}x"), &reference, &native);
+                #[cfg(feature = "wgpu")]
+                if let Some(wgpu) = &mut wgpu {
+                    let portable = wgpu.render(&list, scale);
+                    parity::compare(&format!("{name} wgpu/CPU at {scale}x"), &reference, &portable);
+                    parity::compare(&format!("{name} Metal/wgpu at {scale}x"), &portable, &native);
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn nested_projection_brings_source_pixels_from_outside_the_window() {
+    autoreleasepool(|_| {
+        let Some(mut metal) = Metal::new() else { return };
+        let source = NodeId::default();
+        let card = Rect::new(-83.0, 18.0, 34.0, 38.0);
+        let list = fixtures::list(
+            (80.0, 74.0),
+            Color::WHITE,
+            [
+                Item::PushTransform { source, rect: card, transform: Transform3D::default().translate(102.0, 0.0, 0.0) },
+                Item::PushAxisClip { source, rect: Rect::new(0.0, 25.0, 0.0, 18.0), horizontal: false },
+                Item::PushTransform { source, rect: card, transform: Transform3D::default().translate(6.0, 0.0, 0.0) },
+                Item::Quad(fixtures::quad(card, 0.0, rgb(0xff0000))),
+                Item::PopLayer,
+                Item::PopClip,
+                Item::PopLayer,
+            ],
+        );
+        let reference = CpuRenderer::new().render(&list, 1.0);
+        assert_eq!(reference.pixel(32, 32), Some([255, 0, 0, 255]));
+        assert_eq!(reference.pixel(32, 22), Some([255; 4]));
+        assert_eq!(reference.pixel(22, 32), Some([255; 4]));
+        let (native, _) = metal.capture(&list, 1.0, None);
+        assert_eq!(native.rgba(), reference.rgba());
+        #[cfg(feature = "wgpu")]
+        if let Some(mut wgpu) = wgpu_or_skip() {
+            assert_eq!(wgpu.render(&list, 1.0).rgba(), reference.rgba());
+        }
+    });
+}
+
+#[test]
+fn external_metal_iosurface_and_core_video_match_the_composite() {
+    autoreleasepool(|_| {
+        let Some(mut metal) = Metal::new() else { return };
+        let format = MTLPixelFormat::BGRA8Unorm;
+        // All three imports have an 8x8 producer texture with visibly different rows.
+        let producer =
+            fixtures::list((8.0, 8.0), rgb(0x00ff00), [Item::Quad(fixtures::quad(Rect::new(0.0, 0.0, 8.0, 4.0), 0.0, rgb(0xff0000)))]);
+        let packed = Image::rgba(8, 8, [[255, 0, 0, 255].repeat(32), [0, 255, 0, 255].repeat(32)].concat());
+        let rect = Rect::new(9.0, 9.0, 39.0, 29.0);
+        let bounds = Rect::new(12.0, 11.0, 33.0, 25.0);
+        let reference_list = external_scene(parity::sample(&packed, rect, bounds, 6.0, 0.74), bounds);
+        let reference = CpuRenderer::new().render(&reference_list, 1.0);
+        let list = |texture: ExternalTextureHandle| {
+            assert_eq!(texture.size(), (8, 8));
+            external_scene(
+                Item::ExternalTexture(ExternalTexturePaint {
+                    source: NodeId::default(),
+                    texture,
+                    rect,
+                    bounds,
+                    radius: [6.0; 4],
+                    opacity: 0.74,
+                }),
+                bounds,
+            )
+        };
+        // Both native producers submit their writes on the compositor's queue.
+        let descriptor = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(format, 8, 8, false) };
+        descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+        let raw = metal.device.newTextureWithDescriptor(&descriptor).unwrap();
+        produce(&mut metal, &raw, &producer);
+        check_external(&mut metal, list(external_texture_from_metal(raw).unwrap()), &reference, "retained Metal texture");
+
+        let pixels = producer_pixel_buffer();
+        let surface = CVPixelBufferGetIOSurface(Some(&pixels)).expect("IOSurface-backed fixture");
+        let storage = if cfg!(target_os = "macos") && !metal.device.supportsFamily(MTLGPUFamily::Apple1) {
+            MTLStorageMode::Managed
+        } else {
+            MTLStorageMode::Shared
+        };
+        descriptor.setStorageMode(storage);
+        let target = metal.device.newTextureWithDescriptor_iosurface_plane(&descriptor, &surface, 0).expect("IOSurface producer target");
+        produce(&mut metal, &target, &producer);
+        drop(target);
+
+        let count = surface.use_count();
+        let iosurface_list = list(external_texture_from_iosurface(&metal.device, &surface, format).unwrap());
+        let (finish, frame) = metal.record_capture(&iosurface_list, 1.0, Some(PaintSample { revision: 1, sampled_at: Duration::ZERO }));
+        drop(iosurface_list);
+        assert!(surface.use_count() > count, "an unsubmitted command keeps the IOSurface in use");
+        let captured = finish();
+        assert_eq!(surface.use_count(), count, "the completed command releases the IOSurface use count");
+        assert_eq!(frame.profile.atlas_upload_bytes, 0);
+        parity::compare("IOSurface", &reference, &captured);
+
+        autoreleasepool(|_| {
+            let abandoned = list(external_texture_from_iosurface(&metal.device, &surface, format).unwrap());
+            let (unsubmitted, _) = metal.record_capture(&abandoned, 1.0, None);
+            drop(unsubmitted);
+        });
+        let empty = fixtures::list((60.0, 46.0), Color::BLACK, []);
+        metal.capture(&empty, 1.0, None);
+        assert_eq!(surface.use_count(), count, "the next recording releases the abandoned surface use count");
+
+        let cache = MetalTextureCache::new(&metal.device).unwrap();
+        let video_list = list(cache.texture(&pixels, format).unwrap());
+        drop(cache);
+        drop(pixels);
+        drop(surface);
+        check_external(&mut metal, video_list, &reference, "Core Video texture");
+    });
+}
+
+fn external_scene(image: Item, bounds: Rect) -> DisplayList {
+    let source = NodeId::default();
+    fixtures::list(
+        (60.0, 46.0),
+        rgb(0x101010),
+        [
+            Item::PushClip { source, rect: Rect::new(13.25, 10.0, 31.0, 28.0), radius: [8.0; 4] },
+            Item::PushTransform { source, rect: bounds, transform: Transform3D::default().perspective(90.0).rotate_y(25.0) },
+            Item::Shadow(Shadow { source, rect: Rect::new(11.0, 13.0, 35.0, 25.0), radius: [6.0; 4], color: Color::WHITE, blur: 3.0 }),
+            image,
+            Item::PopLayer,
+            Item::PopClip,
+            Item::Quad(fixtures::quad(Rect::new(25.0, 18.0, 9.0, 8.0), 0.0, rgb(0x0000ff))),
+        ],
+    )
+}
+
+fn produce(metal: &mut Metal, target: &ProtocolObject<dyn MTLTexture>, list: &DisplayList) {
+    let command = metal.queue.commandBuffer().unwrap();
+    metal.renderer.encode(&command, target, list, 1.0, OutputColor::SrgbOpaque, None).unwrap();
+    command.commit();
+    command.waitUntilCompleted();
+    assert_eq!(command.status(), MTLCommandBufferStatus::Completed, "{:?}", command.error());
+}
+
+fn check_external(metal: &mut Metal, list: DisplayList, reference: &Picture, name: &str) {
+    let (finish, frame) = metal.record_capture(&list, 1.0, Some(PaintSample { revision: 2, sampled_at: Duration::ZERO }));
+    drop(list);
+    let actual = finish();
+    assert_eq!(frame.profile.atlas_upload_bytes, 0);
+    assert!(!frame.profile.partial_raster);
+    assert_eq!(actual.pixel(29, 22), Some([0, 0, 255, 255]));
+    parity::compare(name, reference, &actual);
+}
+
+fn producer_pixel_buffer() -> CFRetained<CVPixelBuffer> {
+    let surface = CFDictionary::<CFType, CFType>::empty();
+    // These keys are process-lifetime Core Video constants.
+    let keys = unsafe { [kCVPixelBufferIOSurfacePropertiesKey, kCVPixelBufferMetalCompatibilityKey] };
+    let attrs = CFDictionary::from_slices(&keys, [&*surface as &CFType, CFBoolean::new(true)].as_slice());
+    let mut buffer = ptr::null_mut();
+    // The attributes request an empty IOSurface property dictionary and Metal compatibility.
+    let status = unsafe { CVPixelBufferCreate(None, 8, 8, kCVPixelFormatType_32BGRA, Some(attrs.as_opaque()), NonNull::from(&mut buffer)) };
+    assert_eq!(status, kCVReturnSuccess);
+    // A successful create transfers the pixel buffer's +1 reference.
+    unsafe { CFRetained::from_raw(NonNull::new(buffer).expect("Core Video pixel buffer")) }
 }
 
 #[test]

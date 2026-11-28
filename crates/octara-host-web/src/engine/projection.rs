@@ -100,6 +100,7 @@ impl DomEngine {
                     let node = ticket.node;
                     let plan = exits.remove(&node);
                     if plan.is_none() {
+                        self.detach_external_canvases(node)?;
                         feedback.replies.push(HostReply::ExitFinished(ticket));
                     }
                     if let Some(element) = self.projected_element(node) {
@@ -109,6 +110,7 @@ impl DomEngine {
                 }
             };
             if let Some(element) = self.projected_element(node) {
+                self.detach_external_canvases(node)?;
                 self.pending().undo.place(&element, None, None)?;
                 self.pending().retired.insert(node);
                 self.pending().exits.remove(&node);
@@ -287,9 +289,18 @@ impl DomEngine {
                     entry.inline_images = rich::has_images(&tree.text(node).expect("text").attachments);
                     if let Some(inline) = entry.inline_media.as_deref_mut() {
                         let count = tree.inline_media_on(node).count();
+                        let external: Vec<_> = inline
+                            .iter()
+                            .filter(|&(&index, _)| index >= count)
+                            .filter_map(|(_, frame)| frame.mounted_external())
+                            .cloned()
+                            .collect();
                         inline.retain(|&occurrence, _| occurrence < count);
                         if inline.is_empty() {
                             entry.inline_media = None;
+                        }
+                        for canvas in external {
+                            self.pending().undo.place(&canvas, None, None)?;
                         }
                     }
                     self.register_indexes(node);
@@ -370,6 +381,7 @@ impl DomEngine {
         image_nodes.extend(styles.iter().filter(|&node| {
             tree.image(node).is_some() || tree.media_source(node).is_some() || tree.inline_media_on(node).next().is_some()
         }));
+        self.release_replaced_canvases(tree, image_nodes.iter().copied())?;
         for node in image_nodes {
             if !tree.is_live(node) {
                 continue;

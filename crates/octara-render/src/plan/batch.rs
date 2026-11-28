@@ -5,7 +5,7 @@ use super::packing::{ArrayId, Region};
 use super::{Material, TransitionRequest, union};
 use color::LinearSrgb;
 use octara_model::geometry::Rect;
-use octara_model::paint::{CustomPaint, ImagePaint, Quad, Shadow};
+use octara_model::paint::{CustomPaint, ExternalTexturePaint, ImagePaint, Quad, Shadow};
 use octara_model::theme::{Color, Gradient};
 use std::ops::Range;
 
@@ -85,13 +85,19 @@ pub(crate) fn custom_quad(paint: &CustomPaint, fallback: &Paint) -> Paint {
 }
 
 pub(crate) fn image(i: &ImagePaint, scale: f32, clip: [f32; 4], clip_head: u32) -> Paint {
+    image_shape(i.rect, i.bounds, i.radius, i.opacity, scale, Paint { clip, clip_head, ..Paint::default() })
+}
+
+pub(crate) fn external(i: &ExternalTexturePaint, scale: f32, clip: [f32; 4], clip_head: u32) -> Paint {
+    image_shape(i.rect, i.bounds, i.radius, i.opacity, scale, Paint { clip, clip_head, ..Paint::default() })
+}
+
+fn image_shape(rect: Rect, bounds: Rect, radius: [f32; 4], opacity: f32, scale: f32, base: Paint) -> Paint {
     Paint {
-        rect: xywh(i.rect).map(|px| px * scale),
-        clip,
-        clip_head,
-        spatial: 0,
-        radius: i.bounds.corner_radii(i.radius).map(|radius| radius * scale),
-        shape: Shape::Image { bounds: xywh(i.bounds).map(|px| px * scale), opacity: i.opacity, region: None },
+        rect: xywh(rect).map(|px| px * scale),
+        radius: bounds.corner_radii(radius).map(|radius| radius * scale),
+        shape: Shape::Image { bounds: xywh(bounds).map(|px| px * scale), opacity, region: None },
+        ..base
     }
 }
 
@@ -126,6 +132,10 @@ pub struct Pass {
     pub opacity: f32,
     pub clip_limit: Option<Rect>,
     pub transition: Option<TransitionRequest>,
+    /// Index in the spatial table for projecting source pixels into the parent.
+    pub projection: Option<usize>,
+    /// Source coordinates visible through the surrounding projected layers.
+    pub(crate) raster_window: Option<Rect>,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -138,6 +148,7 @@ pub enum Draw {
     Material(Material),
     RequestedMaterial(usize),
     Sample(usize),
+    External(usize),
     Glyph(ArrayId),
     Canvas(usize),
     Backdrop(usize),
@@ -231,6 +242,7 @@ impl Pass {
     }
 
     pub(crate) fn visible_window(&self, window: &Rect) -> Rect {
-        self.clip_limit.map_or(*window, |limit| window.intersect(&limit))
+        let window = self.raster_window.unwrap_or(*window);
+        self.clip_limit.map_or(window, |limit| window.intersect(&limit))
     }
 }

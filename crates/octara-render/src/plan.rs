@@ -3,9 +3,10 @@
 use crate::glyphs::{GlyphImage, GlyphKey, SUBPIXEL_STEPS};
 use crate::paths;
 use crate::shape::{ClipAxes, raster_offsets};
-use batch::{NO_CLIP, clip_envelope, custom_quad, image, quad, shadow, xywh};
+use batch::{NO_CLIP, clip_envelope, custom_quad, external, image, quad, shadow, xywh};
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample};
 use octara_model::geometry::{Rect, Vec2};
+pub use octara_model::image::{ExternalTextureHandle, ExternalTextureKind};
 use octara_model::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, PlacedItem, Quad, TransitionPaint};
 use octara_model::theme::Color;
 use paint::can_retain_canvas;
@@ -23,6 +24,7 @@ mod output;
 pub(crate) mod packing;
 pub(crate) mod paint;
 mod profile;
+pub(crate) mod projective;
 mod schedule;
 mod spatial;
 
@@ -50,7 +52,7 @@ pub use {bytemuck, color};
 /// A pass's pixel bounds in window coordinates, before rounding its allocation up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PassBounds {
-    pub origin: [u32; 2],
+    pub origin: [i32; 2],
     pub size: [u32; 2],
 }
 
@@ -59,8 +61,9 @@ impl PassBounds {
         if rect.is_empty() {
             return Self::default();
         }
-        let origin = [rect.x.floor() as u32, rect.y.floor() as u32];
-        Self { origin, size: [rect.right().ceil() as u32 - origin[0], rect.bottom().ceil() as u32 - origin[1]] }
+        let [x, y] = [rect.x.floor() as i32, rect.y.floor() as i32];
+        let [right, bottom] = [rect.right().ceil() as i32, rect.bottom().ceil() as i32];
+        Self { origin: [x, y], size: [right.abs_diff(x), bottom.abs_diff(y)] }
     }
 
     pub fn rect(self) -> [f32; 4] {
@@ -68,7 +71,10 @@ impl PassBounds {
     }
 
     pub fn allocation(self, window: [u32; 2]) -> [u32; 2] {
-        std::array::from_fn(|axis| self.size[axis].max(1).next_multiple_of(64).min(window[axis].max(1)))
+        std::array::from_fn(|axis| {
+            let size = self.size[axis].max(1);
+            if size > window[axis] { size } else { size.next_multiple_of(64).min(window[axis]) }
+        })
     }
 
     pub fn is_empty(self) -> bool {
@@ -130,6 +136,7 @@ pub struct FramePlan {
     pub requests: PaintRequests,
     pub clips: ClipStack,
     pub resources: ResourcePlan,
+    pub spatial: SpatialTable,
     pub bounds: Vec<PassBounds>,
     pub resolve_output: bool,
     pub backdrop_inputs: Vec<BackdropInput>,
@@ -137,8 +144,8 @@ pub struct FramePlan {
 
 impl FramePlan {
     /// Pixel bounds in window coordinates, visiting child targets before their parents.
-    pub fn pass_bounds(&self) -> impl Iterator<Item = [u32; 4]> + '_ {
-        self.bounds.iter().rev().map(|b| [b.origin[0], b.origin[1], b.size[0], b.size[1]])
+    pub fn pass_bounds(&self) -> impl Iterator<Item = [i32; 4]> + '_ {
+        self.bounds.iter().rev().map(|b| [b.origin[0], b.origin[1], b.size[0] as i32, b.size[1] as i32])
     }
 
     /// Backdrop reads in display-list order.
@@ -147,10 +154,10 @@ impl FramePlan {
     }
 
     /// Current bounds of transition regions in display-list order.
-    pub fn transitions(&self) -> impl Iterator<Item = (octara_model::identity::NodeId, [u32; 4])> + '_ {
+    pub fn transitions(&self) -> impl Iterator<Item = (octara_model::identity::NodeId, [i32; 4])> + '_ {
         self.passes.iter().zip(&self.bounds).filter_map(|(pass, bounds)| {
             let request = pass.transition.as_ref()?;
-            Some((request.paint.source, [bounds.origin[0], bounds.origin[1], bounds.size[0], bounds.size[1]]))
+            Some((request.paint.source, [bounds.origin[0], bounds.origin[1], bounds.size[0] as i32, bounds.size[1] as i32]))
         })
     }
 
@@ -164,6 +171,7 @@ impl FramePlan {
 pub struct ResourcePlan {
     pub samples: Vec<DrawSample>,
     pub materials: Vec<MaterialRequest>,
+    pub external_textures: Vec<ExternalTextureHandle>,
 }
 
 pub struct MaterialRequest {
@@ -200,7 +208,7 @@ pub fn plan_frame_spatial(list: &DisplayList, target: TargetInfo, glyphs: &mut G
     let mut clips = ClipStack::default();
     let mut resources = ResourcePlan::default();
     for placed in list.placed_items_unculled_at(scale) {
-        let spatial = if placed.spatial_id == 0 { 0 } else { *spatial.slots.get(&placed.spatial_id)? };
+        let spatial = if placed.spatial_id == 0 { 0 } else { spatial.row(placed.spatial_id)? };
         if spatial > u32::MAX >> SPATIAL_SHIFT {
             return None;
         }
@@ -273,6 +281,7 @@ pub fn plan_frame_spatial(list: &DisplayList, target: TargetInfo, glyphs: &mut G
         requests: PaintRequests::default(),
         clips,
         resources,
+        spatial: SpatialTable::default(),
         bounds: vec![PassBounds { size: target.extent, ..PassBounds::default() }],
         resolve_output: target.encode_output,
         backdrop_inputs: Vec::new(),
@@ -338,26 +347,32 @@ pub fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<
     let mut requests = PaintRequests::default();
     let mut resources = ResourcePlan::default();
     let mut open: Vec<usize> = vec![0];
+    let mut projections = Vec::new();
+    let mut spatial = SpatialTable::default();
     let mut clips = ClipStack::default();
     let [width, height] = target.extent;
     let window = Rect::new(0.0, 0.0, width as f32, height as f32);
     let mut native_transitions = None;
     for (index, placed) in list.placed_items_at(scale).enumerate() {
+        let current = *open.last().expect("a pass");
+        let visible = passes[current].visible_window(&window);
         let (item, path_shift) = match placed.item {
             Item::Glyphs(_) => (Cow::Borrowed(placed.item), Vec2::default()),
             Item::Path(_) => paths::raster_item(placed),
+            Item::PushAxisClip { .. } if passes[current].raster_window.is_some() => {
+                (placed.resolve_in(unscale(visible, scale)), Vec2::default())
+            }
             _ => (placed.resolve(), Vec2::default()),
         };
         let clip_state = clips.current();
         let clip = clip_state.bounds.map_or(NO_CLIP, |c| [c.x, c.y, c.w, c.h]);
         let clip_head = clip_state.head;
-        let current = *open.last().expect("a pass");
         match item.as_ref() {
             Item::Shadow(s) => passes[current].push(shadow(s, scale, clip, clip_head), Draw::Shadow),
             Item::Quad(q) => passes[current].push(quad(q, scale, clip, clip_head), Draw::Quad),
             Item::Custom(paint) => {
                 let fallback = quad(&paint.fallback, scale, clip, clip_head);
-                if fallback.visible_bounds(&window).is_empty() {
+                if fallback.visible_bounds(&visible).is_empty() {
                     continue;
                 }
                 let mut instance = custom_quad(paint, &fallback);
@@ -419,6 +434,21 @@ pub fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<
                 resources.samples.push(DrawSample::Image(i.clone()));
                 passes[current].push(instance, Draw::Sample(index));
             }
+            Item::ExternalTexture(i) => {
+                let (width, height) = i.texture.size();
+                if i.opacity <= 0.0 || width == 0 || height == 0 {
+                    continue;
+                }
+                let instance = external(i, scale, clip, clip_head);
+                let Shape::Image { bounds, .. } = instance.shape else { unreachable!("external image paint") };
+                let bounds = visible.intersect(&clip_envelope(batch::rect(bounds)));
+                if instance.visible_bounds(&bounds).is_empty() {
+                    continue;
+                }
+                let index = resources.external_textures.len();
+                resources.external_textures.push(i.texture.clone());
+                passes[current].push(instance, Draw::External(index));
+            }
             Item::Glyphs(run) => {
                 let visible = passes[current].visible_window(&window);
                 let visible = clip_state.bounds.map_or(visible, |rect| visible.intersect(&clip_envelope(rect)));
@@ -429,8 +459,8 @@ pub fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<
                 push_glyphs((&mut passes[current], &mut resources), glyphs, run, placed, scale, Some(visible), base);
             }
             Item::Path(p) => {
-                let window = paths::window((width, height), clip_state.bounds.map(|c| (c.x, c.y, c.w, c.h)));
-                let Some(at) = paths::place_translated(p, scale, window, path_shift) else { continue };
+                let crop = paths::raster_window(visible, clip_state.bounds);
+                let Some(at) = paths::place_translated(p, scale, crop, path_shift) else { continue };
                 let base = Paint { clip, clip_head, ..Paint::default() };
                 push_path(&mut passes[current], &mut resources, p, at, scale, path_shift, base);
             }
@@ -453,8 +483,23 @@ pub fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<
             Item::PushAxisClip { .. } => unreachable!("placed clips resolve to window coordinates"),
             Item::PopClip => clips.pop(),
             Item::PushLayer { opacity, .. } => {
-                passes.push(Pass { opacity: *opacity, clip_limit: passes[current].clip_limit, ..Pass::default() });
+                passes.push(Pass {
+                    opacity: *opacity,
+                    clip_limit: passes[current].clip_limit,
+                    raster_window: passes[current].raster_window,
+                    ..Pass::default()
+                });
                 open.push(passes.len() - 1);
+            }
+            Item::PushTransform { rect, transform, .. } => {
+                let layer = passes.len();
+                let matrix = transform.device_matrix(*rect, scale);
+                let crop = clip_state.bounds.map_or(visible, |clip| visible.intersect(&clip_envelope(clip)));
+                let border = batch::rect(xywh(*rect).map(|px| px * scale));
+                let raster_window = Some(projective::source_window(&matrix, crop, border, target.max_texture_dimension));
+                passes.push(Pass { opacity: 1.0, projection: Some(spatial.push_projection(matrix)), raster_window, ..Pass::default() });
+                projections.push((layer, clip_state, clips.enter_scope()));
+                open.push(layer);
             }
             Item::SkipTransition { source, mount, revision } => {
                 requests.skipped_transitions.push((mount.downgrade(), *revision));
@@ -485,7 +530,13 @@ pub fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<
                     }
                     None
                 };
-                passes.push(Pass { opacity: paint.opacity, clip_limit, transition, ..Pass::default() });
+                passes.push(Pass {
+                    opacity: paint.opacity,
+                    clip_limit,
+                    transition,
+                    raster_window: passes[current].raster_window,
+                    ..Pass::default()
+                });
                 open.push(passes.len() - 1);
             }
             Item::PopLayer => {
@@ -500,14 +551,20 @@ pub fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<
                 let opacity = passes[layer].opacity;
                 // Regular layers apply their clips inside. Transition regions apply their
                 // outer clips here so snapshots can be composed through them exactly once.
-                let outer = passes[layer].transition.as_ref().and_then(|request| {
+                let outer = if projections.last().is_some_and(|&(index, _, _)| index == layer) {
+                    let (_, state, scope) = projections.pop().expect("open projection");
+                    clips.leave_scope(scope);
+                    state
+                } else if let Some(request) = &passes[layer].transition {
                     clips.leave_scope(request.clip_scope);
-                    request.clip.bounds.map(|bounds| ([bounds.x, bounds.y, bounds.w, bounds.h], request.clip.head))
-                });
+                    request.clip
+                } else {
+                    ClipState::default()
+                };
                 passes[parent].push(
                     Paint {
-                        clip: outer.map_or(NO_CLIP, |(clip, _)| clip),
-                        clip_head: outer.map_or(0, |(_, head)| head),
+                        clip: outer.bounds.map_or(NO_CLIP, xywh),
+                        clip_head: outer.head,
                         shape: Shape::Layer { opacity },
                         ..Paint::default()
                     },
@@ -519,9 +576,13 @@ pub fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<
     for index in open.into_iter().skip(1) {
         passes[index].transition = None;
     }
-    let bounds = bound_passes(&mut passes, target.extent, |_, _, bounds, _| bounds);
+    let bounds = bound_passes(&mut passes, &spatial, target.extent, |_, _, bounds, _| bounds);
     let (backdrop_inputs, resolve_output) = backdrop_inputs(&requests.backdrops, &bounds, target);
-    FramePlan { passes, requests, clips, resources, bounds, resolve_output, backdrop_inputs }
+    FramePlan { passes, requests, clips, resources, spatial, bounds, resolve_output, backdrop_inputs }
+}
+
+pub(crate) fn unscale(r: Rect, scale: f32) -> Rect {
+    Rect::new(r.x / scale, r.y / scale, r.w / scale, r.h / scale)
 }
 
 pub fn backdrop_inputs(backdrops: &[BackdropRequest], bounds: &[PassBounds], output: TargetInfo) -> (Vec<BackdropInput>, bool) {
@@ -597,6 +658,7 @@ pub struct DrawSegment {
 /// Size the inner layers first, then use their composite bounds in the parent.
 pub fn bound_passes(
     passes: &mut [Pass],
+    spatial: &SpatialTable,
     size: [u32; 2],
     mut transition_bounds: impl FnMut(usize, &TransitionRequest, PassBounds, Rect) -> PassBounds,
 ) -> Vec<PassBounds> {
@@ -604,10 +666,16 @@ pub fn bound_passes(
     let mut bounds = vec![PassBounds::default(); passes.len()];
     let mut composites = FxHashMap::default();
     bounds[0].size = size;
-    for (index, pass) in passes.iter_mut().enumerate().rev() {
+    for index in (0..passes.len()).rev() {
+        let (current, children) = passes.split_at_mut(index + 1);
+        let pass = &mut current[index];
         for batch in &pass.batches {
             if let Draw::Layer(layer) = batch.draw {
-                pass.paints[batch.instances.start].rect = composites.get(&layer).copied().unwrap_or(bounds[layer]).rect();
+                let source = composites.get(&layer).copied().unwrap_or(bounds[layer]).rect();
+                let rect = children[layer - index - 1]
+                    .projection
+                    .map_or(source, |index| xywh(projective::bounds(batch::rect(source), spatial.projection(index))));
+                pass.paints[batch.instances.start].rect = rect;
             }
         }
         if index == 0 {
@@ -658,7 +726,7 @@ fn transitions_with_native(list: &DisplayList, scale: f32) -> FxHashSet<usize> {
     let mut native_count = 0;
     for (index, placed) in list.placed_items_at(scale).enumerate() {
         match placed.item {
-            Item::PushLayer { .. } => layers.push(None),
+            Item::PushLayer { .. } | Item::PushTransform { .. } => layers.push(None),
             Item::PushTransition(_) => layers.push(Some((index, native_count))),
             Item::PopLayer => {
                 if let Some(Some((start, natives))) = layers.pop()
@@ -783,7 +851,7 @@ mod tests {
         passes[1].push(quad, Draw::Quad);
         passes[1].push(composite, Draw::Layer(2));
         passes[2].push(shadow, Draw::Shadow);
-        let bounds = bound_passes(&mut passes, window, |_, _, _, _| unreachable!("no transition regions"));
+        let bounds = bound_passes(&mut passes, &SpatialTable::default(), window, |_, _, _, _| unreachable!("no transition regions"));
         assert_eq!(bounds[0].size, window);
         assert_eq!(bounds[1].rect(), [369.0, 459.0, 46.0, 32.0]);
         assert_eq!(bounds[2].rect(), [403.0, 479.0, 12.0, 12.0]);

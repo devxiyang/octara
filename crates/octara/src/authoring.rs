@@ -4,7 +4,9 @@ pub use octara_model::ask::{
     Answer, Ask, ClipboardItem, ClipboardKinds, Menu, MenuItem, PromptLevel, ServiceError, ServiceOutcome, ServiceRequest,
 };
 pub use octara_model::geometry::{Align, Edges, LayoutBox, Placement, Point, Rect, Side, Size, Vec2, WindowViewport, point};
-pub use octara_model::image::{CachePolicy, HttpMediaEntry, ImageSource, ImageState, VideoSource};
+pub use octara_model::image::{
+    CachePolicy, ExternalTextureHandle, ExternalTextureKind, HttpMediaEntry, ImageSource, ImageState, VideoSource,
+};
 pub use octara_model::input::{
     Button, Chord, ContextMenuEvent, ContextMenuItem, CopyFormat, CursorStyle, DragItem, DragPayload, DropAxis, DropEvent, DropHover,
     DropPosition, DroppedFile, EditorCommand, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers, PasteEvent,
@@ -20,7 +22,7 @@ pub use octara_model::paint::{
 pub use octara_model::semantics::{A11yAction, Checked, Live, Role, TextPosition};
 pub use octara_model::style::{
     AlignItems, Contain, Direction, Display, FlexDirection, FlexWrap, GridPos, JustifyContent, LayoutLength, Overflow, Position,
-    ScrollbarVisibility, StyleProp, UserSelect,
+    ScrollbarVisibility, StyleProp, Transform3D, TransformOrigin, UserSelect,
 };
 pub use octara_model::text::{
     AutoCapitalize, Autocorrect, ClauseStyle, FontStyle, FontWeight, InlineAlign, InlineAttachment, InlineContent, InlinePill, InputTraits,

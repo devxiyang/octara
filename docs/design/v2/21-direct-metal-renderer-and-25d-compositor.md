@@ -108,6 +108,12 @@ Keep core crates 100% free of 3D game-engine bloat (no glTF, PBR, skeletal anima
      - `WebCanvas` (browser `<canvas>` WebGL/WebGPU compositor slot).
    - Composited directly inside `ImagePipeline` with **0 pixel readback, 0 airspace occlusion bugs**, full rounded-corner clipping, shadows, opacity, 2.5D `Mat4` transforms, and Octara UI/modals composited seamlessly on top.
 
+Native projection flattens each transformed layer into its parent in paint order and preserves the authored layout box.
+Platform-native view subtrees retain their platform placement and cutouts. External textures participate in the GPU or DOM scene.
+Pass an imported handle through `ImageSource::External`. Native producers synchronize their writes with the compositor and retain
+the resource until sampling completes. The Core Video importer accepts IOSurface-backed packed RGB buffers. On the browser,
+`WebCanvas::register` mounts the producer's canvas in its owning document.
+
 ---
 
 ## 3. Phased Implementation Plan & Hard Exit Gates (`0.0.11`)

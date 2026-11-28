@@ -73,6 +73,15 @@ impl ResolvedStyle {
         for value in [v.font_size, v.line_height, v.letter_spacing, v.opacity, v.text_scale] {
             float_bits(value).hash(&mut hash);
         }
+        if let Some(transform) = v.transform {
+            transform.perspective.map(float_bits).hash(&mut hash);
+            transform.translation.map(float_bits).hash(&mut hash);
+            transform.rotation.map(float_bits).hash(&mut hash);
+            transform.scale.map(float_bits).hash(&mut hash);
+            length_key(transform.origin.x).hash(&mut hash);
+            length_key(transform.origin.y).hash(&mut hash);
+            float_bits(transform.origin.z).hash(&mut hash);
+        }
         v.font_weight.hash(&mut hash);
         v.font_family.hash(&mut hash);
         (v.italic, v.underline, v.strike, v.tabular_nums, v.max_lines, v.pointer_events).hash(&mut hash);

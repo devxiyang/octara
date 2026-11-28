@@ -4,16 +4,28 @@ use crate::plan::GlyphInst;
 use crate::plan::instances::Globals;
 use crate::plan::instances::{DrawInst, GlyphClip, GlyphDraw, GradientInst, ImageInst, MaterialInst, QuadInst, ShadowInst};
 use crate::shape::ClipNode;
+use bytemuck::{Pod, Zeroable};
+use octara_model::style::Mat4;
 use rustc_hash::FxHashMap;
 
 pub(super) const SHARED_SHADER: &str = include_str!("shared.wgsl");
 pub(super) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct LayerProjection {
+    pub matrix: Mat4,
+    pub source: [f32; 4],
+}
+
+const _: () = assert!(size_of::<LayerProjection>() == 80);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PipelineKind {
     Quad,
     Shadow,
     Image,
+    ProjectedLayer,
     Glyph,
     Material,
 }
@@ -24,6 +36,7 @@ impl PipelineKind {
             Self::Quad => "octara quad",
             Self::Shadow => "octara shadow",
             Self::Image => "octara image",
+            Self::ProjectedLayer => "octara projected layer",
             Self::Glyph => "octara glyph",
             Self::Material => "octara material",
         }
@@ -33,7 +46,9 @@ impl PipelineKind {
         match self {
             Self::Quad => concat!(include_str!("shared.wgsl"), include_str!("gradient.wgsl"), include_str!("quad.wgsl")),
             Self::Shadow => concat!(include_str!("shared.wgsl"), include_str!("shadow.wgsl")),
-            Self::Image => concat!(include_str!("shared.wgsl"), include_str!("gradient.wgsl"), include_str!("image.wgsl")),
+            Self::Image | Self::ProjectedLayer => {
+                concat!(include_str!("shared.wgsl"), include_str!("gradient.wgsl"), include_str!("image.wgsl"))
+            }
             Self::Glyph => concat!(include_str!("shared.wgsl"), include_str!("glyphs.wgsl")),
             Self::Material => unreachable!("materials supply author code"),
         }
@@ -43,10 +58,14 @@ impl PipelineKind {
         match self {
             Self::Quad => size_of::<QuadInst>(),
             Self::Shadow => size_of::<ShadowInst>(),
-            Self::Image => size_of::<ImageInst>(),
+            Self::Image | Self::ProjectedLayer => size_of::<ImageInst>(),
             Self::Glyph => size_of::<GlyphInst>(),
             Self::Material => size_of::<MaterialInst>(),
         }
+    }
+
+    pub(super) fn is_image(self) -> bool {
+        matches!(self, Self::Image | Self::ProjectedLayer)
     }
 }
 
@@ -97,21 +116,33 @@ impl DrawLayout {
             ),
             buffer_entry(8, size_of::<[f32; 4]>(), Stages::VERTEX_FRAGMENT, false),
         ];
-        if matches!(kind, PipelineKind::Quad | PipelineKind::Image) {
+        if kind == PipelineKind::Quad || kind.is_image() {
             entries.push(buffer_entry(7, size_of::<GradientInst>(), Stages::FRAGMENT, false));
         }
         if kind == PipelineKind::Glyph {
             entries.push(buffer_entry(7, size_of::<GlyphClip>(), Stages::VERTEX_FRAGMENT, false));
         }
-        if matches!(kind, PipelineKind::Glyph | PipelineKind::Image) {
-            entries.push(texture_entry(1, Dim::D2Array, kind == PipelineKind::Image));
+        if kind == PipelineKind::Glyph || kind.is_image() {
+            entries.push(texture_entry(1, Dim::D2Array, kind.is_image()));
         }
-        if kind == PipelineKind::Image {
+        if kind.is_image() {
             entries.push(texture_entry(4, Dim::D2, true));
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding: 3,
                 visibility: Stages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            });
+        }
+        if kind == PipelineKind::ProjectedLayer {
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: Stages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(size_of::<LayerProjection>() as u64),
+                },
                 count: None,
             });
         }
@@ -131,6 +162,7 @@ pub(super) enum Phase {
     Core,
     Cutout,
     Material,
+    ProjectedLayer,
 }
 
 pub(super) fn render_pipeline(
@@ -143,10 +175,15 @@ pub(super) fn render_pipeline(
     fragment_clipping: bool,
 ) -> wgpu::RenderPipeline {
     let core = matches!(phase, Phase::Core);
-    let vertex = if core { "vs_core" } else { "vs" };
+    let vertex = match phase {
+        Phase::Core => "vs_core",
+        Phase::ProjectedLayer => "vs_projected_layer",
+        _ => "vs",
+    };
     let fragment = match phase {
         Phase::Core => "fs_core",
         Phase::Material => "fs_material",
+        Phase::ProjectedLayer => "fs_projected_layer",
         _ => "fs",
     };
     let cutout = wgpu::BlendComponent {
@@ -251,9 +288,11 @@ pub(super) struct PipelineCache {
     quad: MicroPipeline,
     shadow: MicroPipeline,
     image: MicroPipeline,
+    projected: Option<DrawLayout>,
     glyph: MicroPipeline,
     pub(super) material: DrawLayout,
     pub(super) formats: FxHashMap<(wgpu::TextureFormat, bool), DrawPipelines>,
+    pub(super) projected_formats: FxHashMap<(wgpu::TextureFormat, bool), wgpu::RenderPipeline>,
 }
 
 impl PipelineCache {
@@ -262,9 +301,11 @@ impl PipelineCache {
             quad: MicroPipeline::new(device, PipelineKind::Quad),
             shadow: MicroPipeline::new(device, PipelineKind::Shadow),
             image: MicroPipeline::new(device, PipelineKind::Image),
+            projected: None,
             glyph: MicroPipeline::new(device, PipelineKind::Glyph),
             material: DrawLayout::new(device, PipelineKind::Material),
             formats: FxHashMap::default(),
+            projected_formats: FxHashMap::default(),
         }
     }
 
@@ -273,6 +314,7 @@ impl PipelineCache {
             PipelineKind::Quad => &self.quad.layout,
             PipelineKind::Shadow => &self.shadow.layout,
             PipelineKind::Image => &self.image.layout,
+            PipelineKind::ProjectedLayer => self.projected.as_ref().expect("prepared projected layer layout"),
             PipelineKind::Glyph => &self.glyph.layout,
             PipelineKind::Material => &self.material,
         }
@@ -299,5 +341,13 @@ impl PipelineCache {
                 glyph: self.glyph.render(device, format, Phase::Blend, clipping),
             },
         );
+    }
+
+    pub(super) fn prepare_projected(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, clipping: bool) {
+        let kind = PipelineKind::ProjectedLayer;
+        let layout = self.projected.get_or_insert_with(|| DrawLayout::new(device, kind));
+        self.projected_formats.entry((format, clipping)).or_insert_with(|| {
+            render_pipeline(device, &layout.pipeline, format, &self.image.shader, kind.label(), Phase::ProjectedLayer, clipping)
+        });
     }
 }

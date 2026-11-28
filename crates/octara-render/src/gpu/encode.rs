@@ -123,8 +123,17 @@ fn draw_visible(
 }
 
 impl WgpuRenderer {
-    fn bind_composite(&self, empty_array: &wgpu::TextureView, view: &wgpu::TextureView) -> wgpu::BindGroup {
+    pub(super) fn bind_composite(&self, empty_array: &wgpu::TextureView, view: &wgpu::TextureView) -> wgpu::BindGroup {
         self.buffers.bind(&self.device, self.pipelines.layout(PipelineKind::Image), PipelineKind::Image, Some(empty_array), Some(view))
+    }
+
+    pub(super) fn bind_layer(&self, empty_array: &wgpu::TextureView, view: &wgpu::TextureView, offset: Option<u64>) -> wgpu::BindGroup {
+        match offset {
+            Some(offset) => {
+                self.buffers.bind_projected(&self.device, self.pipelines.layout(PipelineKind::ProjectedLayer), empty_array, view, offset)
+            }
+            None => self.bind_composite(empty_array, view),
+        }
     }
 
     async fn encode_backdrop(
@@ -303,9 +312,21 @@ impl WgpuRenderer {
                             if let Some(fallback) = frame.transitions.get(&layer).and_then(|transition| transition.fallback) {
                                 instances = fallback..fallback + 1;
                             }
-                            (&pipelines.image, &frame.layer_binds[layer - 1])
+                            let pipeline = if frame.layer_projections[layer - 1].is_some() {
+                                &self.pipelines.projected_formats[&pipeline_key]
+                            } else {
+                                &pipelines.image
+                            };
+                            (pipeline, &frame.layer_binds[layer - 1])
                         }
                         Draw::Canvas(view) => (&pipelines.image, &frame.canvas_binds[view]),
+                        Draw::External(index) => {
+                            let Some(external) = &frame.external_binds[index] else { continue };
+                            if external.view.texture() == target.texture() {
+                                continue;
+                            }
+                            (&pipelines.image, &external.bind)
+                        }
                         Draw::Glyph(array) => (&pipelines.glyph, &frame.glyph_binds[&array]),
                         Draw::Sample(_) | Draw::RequestedMaterial(_) => unreachable!("draw resources prepared before encoding"),
                         Draw::Material(material) => (self.programs.material_pipeline(material, format), &frame.material_bind),
@@ -360,7 +381,7 @@ impl WgpuRenderer {
                 // The new image is produced by this child pass. Its parent samples the output
                 // after the author commands, without splitting the parent's render pass.
                 encoder = recording.continue_after(&self.device, encoder, command);
-                frame.layer_binds[index - 1] = self.bind_composite(&frame.empty_array, &composite);
+                frame.layer_binds[index - 1] = self.bind_layer(&frame.empty_array, &composite, frame.layer_projections[index - 1]);
             }
         }
         if partial.is_some()

@@ -16,6 +16,7 @@ pub use path::{FillRule, LineCap, LineJoin, Path, PathCmd, PathStyle, Stroke, Tr
 use crate::geometry::{Point, Rect, Size, Vec2};
 use crate::identity::NodeId;
 use crate::native::NativeSlot;
+use crate::style::Transform3D;
 use crate::theme::{Color, Gradient};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -321,6 +322,17 @@ pub struct ImagePaint {
     pub opacity: f32,
 }
 
+/// A device-resident image with the same fit and clipping geometry as an image.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExternalTexturePaint {
+    pub source: NodeId,
+    pub texture: crate::image::ExternalTextureHandle,
+    pub rect: Rect,
+    pub bounds: Rect,
+    pub radius: [f32; 4],
+    pub opacity: f32,
+}
+
 /// A path filled or stroked with a color or a gradient. `transform` maps the path's
 /// coordinates to the window's logical pixels and scales the stroke width.
 #[derive(Clone, Debug, PartialEq)]
@@ -343,6 +355,7 @@ pub enum Item {
     Quad(Quad),
     Custom(CustomPaint),
     Image(ImagePaint),
+    ExternalTexture(ExternalTexturePaint),
     Glyphs(GlyphRun),
     Path(PathPaint),
     /// A native view's position in paint order. Hosts use this item to cut out areas for
@@ -375,6 +388,13 @@ pub enum Item {
         source: NodeId,
         opacity: f32,
     },
+    /// Composites the content through the transform about the logical border box.
+    /// The matching `PopLayer` ends the transformed layer.
+    PushTransform {
+        source: NodeId,
+        rect: Rect,
+        transform: Transform3D,
+    },
     /// Draw this region through the transition compositor, ending at the matching `PopLayer`.
     PushTransition(TransitionPaint),
     /// This region paints normally. An accepted frame retires any previous image for it.
@@ -399,7 +419,10 @@ impl Item {
 
     /// Whether the item draws pixels.
     pub fn draws(&self) -> bool {
-        matches!(self, Item::Shadow(_) | Item::Quad(_) | Item::Custom(_) | Item::Image(_) | Item::Glyphs(_) | Item::Path(_))
+        matches!(
+            self,
+            Item::Shadow(_) | Item::Quad(_) | Item::Custom(_) | Item::Image(_) | Item::ExternalTexture(_) | Item::Glyphs(_) | Item::Path(_)
+        )
     }
 
     /// The retained node whose custom drawing or transition produced this item.
@@ -429,6 +452,10 @@ impl Item {
                 r(&mut i.rect);
                 r(&mut i.bounds);
             }
+            Item::ExternalTexture(i) => {
+                r(&mut i.rect);
+                r(&mut i.bounds);
+            }
             Item::Glyphs(g) => {
                 g.origin.x += dx;
                 g.origin.y += dy;
@@ -437,7 +464,10 @@ impl Item {
                 p.transform = p.transform.then(&Transform::translate(dx, dy));
                 r(&mut p.bounds);
             }
-            Item::Native { rect, .. } | Item::PushClip { rect, .. } | Item::PushAxisClip { rect, .. } => r(rect),
+            Item::Native { rect, .. }
+            | Item::PushClip { rect, .. }
+            | Item::PushAxisClip { rect, .. }
+            | Item::PushTransform { rect, .. } => r(rect),
             Item::PopClip | Item::PushLayer { .. } | Item::PushTransition(_) | Item::SkipTransition { .. } | Item::PopLayer => {}
         }
     }
@@ -463,6 +493,7 @@ impl Item {
                 p.opacity *= k;
             }
             Item::Image(i) => i.opacity *= k,
+            Item::ExternalTexture(i) => i.opacity *= k,
             Item::Glyphs(g) => f(&mut g.color),
             Item::Path(p) => {
                 f(&mut p.color);
@@ -473,6 +504,7 @@ impl Item {
             }
             Item::PushClip { .. }
             | Item::PushAxisClip { .. }
+            | Item::PushTransform { .. }
             | Item::PopClip
             | Item::PopLayer
             | Item::Native { .. }
@@ -627,8 +659,14 @@ pub struct PlacedItem<'a> {
 impl<'a> PlacedItem<'a> {
     /// Gets the item in window coordinates, borrowing it when no offset or fade is needed.
     pub fn resolve(self) -> Cow<'a, Item> {
+        self.resolve_in(self.viewport)
+    }
+
+    /// Resolves a one-axis clip against a projected layer's source plane.
+    pub fn resolve_in(self, viewport: Rect) -> Cow<'a, Item> {
         if let Item::PushAxisClip { source, rect, horizontal } = *self.item {
-            return Cow::Owned(Item::PushClip { source, rect: self.axis_clip(rect, horizontal), radius: [0.0; 4] });
+            let plane = Self { viewport, ..self };
+            return Cow::Owned(Item::PushClip { source, rect: plane.axis_clip(rect, horizontal), radius: [0.0; 4] });
         }
         if self.offset != Vec2::default() || self.fade < 1.0 {
             Cow::Owned(self.item.placed(self.offset, self.fade))
@@ -746,6 +784,8 @@ impl DisplayList {
         let mut spatial_offset_px = Vec2::default();
         let mut local_offset = Vec2::default();
         let mut clips = smallvec::SmallVec::<[Rect; 8]>::new();
+        let mut layers = smallvec::SmallVec::<[bool; 8]>::new();
+        let mut transforms = 0;
         std::iter::from_fn(move || {
             loop {
                 if let Some(item) = items.next() {
@@ -758,6 +798,12 @@ impl DisplayList {
                             Item::PopClip => {
                                 clips.pop();
                             }
+                            Item::PushLayer { .. } | Item::PushTransition(_) => layers.push(false),
+                            Item::PushTransform { .. } => {
+                                layers.push(true);
+                                transforms += 1;
+                            }
+                            Item::PopLayer if layers.pop() == Some(true) => transforms -= 1,
                             _ => {}
                         }
                     }
@@ -777,7 +823,8 @@ impl DisplayList {
                     }
                     Part::CulledGroup { bounds, parts } => {
                         let clip = clips.last().copied().unwrap_or(viewport);
-                        if !cull || !translated(*bounds, spatial).intersect(&clip).is_empty() {
+                        // Coverage in a transform layer is in the source plane.
+                        if !cull || transforms != 0 || !translated(*bounds, spatial).intersect(&clip).is_empty() {
                             let child = group.child(parts);
                             groups.push(child);
                         }
@@ -927,6 +974,39 @@ impl<'de> Deserialize<'de> for Picture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_layers_keep_source_geometry_that_can_project_into_the_viewport() {
+        let source = NodeId::default();
+        let rect = Rect::new(30.0, 0.0, 10.0, 10.0);
+        let quad = Quad {
+            source,
+            rect,
+            radius: [0.0; 4],
+            fill: Some(Color::BLACK),
+            gradient: None,
+            border: [0.0; 4],
+            border_color: Color::TRANSPARENT,
+        };
+        let offscreen = Part::CulledGroup { bounds: rect, parts: Arc::from([Part::Item(Item::Quad(quad))]) };
+        let transform = Transform3D::default().translate(-30.0, 0.0, 0.0);
+        let list = DisplayList {
+            size: Size::new(20.0, 20.0),
+            background: Color::WHITE,
+            parts: vec![
+                Part::Item(Item::PushTransform { source, rect, transform }),
+                Part::Item(Item::PushLayer { source, opacity: 0.5 }),
+                Part::Item(Item::PopLayer),
+                offscreen.clone(),
+                Part::Item(Item::PopLayer),
+                offscreen,
+            ],
+        };
+        assert!(matches!(
+            list.items().as_slice(),
+            [Item::PushTransform { .. }, Item::PushLayer { .. }, Item::PopLayer, Item::Quad(_), Item::PopLayer]
+        ));
+    }
 
     #[test]
     fn placed_items_borrow_payloads_and_preserve_nested_painter_order() {

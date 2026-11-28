@@ -110,6 +110,7 @@ impl Cache {
     fn put(&mut self, key: JobKey, loaded: LoadedMedia, now: Duration) {
         let bytes = match &loaded.asset {
             MediaAsset::Pixels(image) => image.frame().rgba.len(),
+            MediaAsset::External(_) => 0,
             MediaAsset::BrowserUri(uri) => uri.len(),
         };
         let encoded = match &key.source {
@@ -321,7 +322,7 @@ impl AppRuntime {
                     }
                     size = ((bounds.w * viewport.scale).round() as u32, (bounds.h * viewport.scale).round() as u32);
                 }
-                if matches!(slot.source, ImageSource::Pixels(_)) {
+                if matches!(slot.source, ImageSource::Pixels(_) | ImageSource::External(_)) {
                     priority = 0;
                 }
                 desired.push(Desired {
@@ -342,9 +343,16 @@ impl AppRuntime {
             let owner = want.owner;
             let runtime = self.windows.get_mut(&owner.window).expect("media window");
             let slot = owner.slot(&runtime.tree).expect("live media source");
-            if let ImageSource::Pixels(image) = want.source {
-                let state = ImageState::Ready { natural_size: image.size() };
-                runtime.apply(owner.update(state, Some(MediaAsset::Pixels(image))));
+            let direct = match &want.source {
+                ImageSource::Pixels(image) => Some((image.size(), MediaAsset::Pixels(image.clone()))),
+                ImageSource::External(texture) => Some((texture.size(), MediaAsset::External(texture.clone()))),
+                _ => None,
+            };
+            if let Some((natural_size, asset)) = direct {
+                self.media.presented_targets.remove(&owner);
+                if slot.state != (ImageState::Ready { natural_size }) || slot.asset.as_ref() != Some(&asset) {
+                    runtime.apply(owner.update(ImageState::Ready { natural_size }, Some(asset)));
+                }
                 continue;
             }
             if want.priority == 2 {

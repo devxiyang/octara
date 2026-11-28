@@ -7,7 +7,7 @@ pub use octara_model::image::HttpMediaEntry;
 pub use probe::probe_image_size;
 pub(crate) use schedule::MediaScheduler;
 
-use octara_model::image::{CachePolicy, Image, ImageSource, MediaAsset, ObjectFit, VideoSource};
+use octara_model::image::{CachePolicy, ExternalTextureHandle, Image, ImageSource, MediaAsset, ObjectFit, VideoSource};
 use octara_model::native::TypedNativeProps;
 use std::future::{Future, ready};
 use std::pin::Pin;
@@ -51,6 +51,10 @@ impl LoadedMedia {
     pub fn pixels(image: Image) -> Self {
         let size = image.size();
         Self { asset: MediaAsset::Pixels(image), natural_size: size, cacheable: true, cache_for: None }
+    }
+
+    pub fn external(texture: ExternalTextureHandle) -> Self {
+        Self { natural_size: texture.size(), asset: MediaAsset::External(texture), cacheable: false, cache_for: None }
     }
 }
 
@@ -148,6 +152,7 @@ impl MediaLoader for PixelsOnly {
     fn load(&self, request: MediaRequest, _: MediaProgress) -> MediaFuture {
         Box::pin(ready(match request.source {
             ImageSource::Pixels(image) => Ok(LoadedMedia::pixels(image)),
+            ImageSource::External(texture) => Ok(LoadedMedia::external(texture)),
             _ => Err(Arc::from("This host has no encoded image loader")),
         }))
     }

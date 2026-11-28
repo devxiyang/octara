@@ -1,6 +1,6 @@
 export function octara_measure_batch(surface, elements, out) {
     const origin = surface.getBoundingClientRect();
-    for (let i = 0, o = 0; i < elements.length; ++i, o += 18) {
+    for (let i = 0, o = 0; i < elements.length; ++i, o += 20) {
         const el = elements[i];
         const rect = el.getBoundingClientRect();
         const box = rect.width || rect.height || rect.x || rect.y || el.getClientRects().length;
@@ -23,6 +23,9 @@ export function octara_measure_batch(surface, elements, out) {
         out[o + 15] = parseFloat(css.borderRightWidth) || 0;
         out[o + 16] = parseFloat(css.borderBottomWidth) || 0;
         out[o + 17] = parseFloat(css.borderLeftWidth) || 0;
+        // The used size stays in local coordinates when a CSS transform changes rect.
+        out[o + 18] = box ? (parseFloat(css.width) || el.offsetWidth) : 0;
+        out[o + 19] = box ? (parseFloat(css.height) || el.offsetHeight) : 0;
     }
 }
 

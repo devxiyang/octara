@@ -18,7 +18,7 @@ use octara_model::{
     native::{NativeEvent, NativeSlot, TypedNativeProps},
     paint::{Canvas, Icon, Image, NodeIcon, ObjectFit, PaintInput, PaintMount, PaintProgram},
     semantics::{Checked, Live, NumericRange, Role},
-    style::{FlexDirection, Position, State, StyleProp, When},
+    style::{FlexDirection, Position, State, StyleProp, Transform3D, When},
     text::{AutoCapitalize, Autocorrect, KeyboardType, ReturnKeyType, TextContentType},
     theme::{ColorValue, Fill, Theme, ThemePatch},
 };
@@ -597,6 +597,11 @@ impl<C> El<C> {
 
     pub fn opacity(self, value: impl IntoProp<f32>) -> Self {
         self.style_prop(style_entry(value.into_prop(), StyleProp::Opacity))
+    }
+
+    /// Applies a fixed or reactive paint transform to the element and its descendants.
+    pub fn transform_3d(self, value: impl IntoProp<Option<Transform3D>>) -> Self {
+        self.style_prop(style_entry(value.into_prop(), StyleProp::Transform3D))
     }
 
     fn style_prop(mut self, entry: StyleEntry) -> Self {

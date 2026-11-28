@@ -5,17 +5,20 @@
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, full_lod, opaque, packed_image_layout};
 use crate::paths::{self, PathCache};
+use crate::plan::{PassBounds, TargetInfo, batch, plan_frame_cached, projective, unscale};
 use crate::shape::{ClipStack, blend, blend_premultiplied, coverage, inner_rect, raster_offsets, sd_round_rect, shadow_alpha};
 use color::{LinearSrgb, PremulColor, Rgba8};
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample, PaintedPicture};
-use octara_model::geometry::{Rect, Vec2};
+use octara_model::geometry::{Point, Rect, Vec2};
 use octara_model::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Picture, PlacedItem, Quad, Shadow};
+use octara_model::style::{Mat4, PlaneInverse};
 use octara_model::theme::{Color, Gradient};
 use std::alloc::Layout;
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
-/// Renders display lists to RGBA images; keeps rasterized glyphs and paths between frames.
+/// Renders display lists to RGBA images and keeps rasterized glyphs and paths between frames.
+/// Device-owned external textures require their native compositor and leave the reference image transparent there.
 #[derive(Default)]
 pub struct CpuRenderer {
     glyphs: GlyphCache,
@@ -23,21 +26,74 @@ pub struct CpuRenderer {
 }
 
 struct Target {
-    width: u32,
-    height: u32,
+    extent: PassBounds,
     /// Premultiplied linear-light RGBA with sRGB primaries.
     pixels: Vec<[f32; 4]>,
     clips: ClipStack,
     /// Pixels under open groups. A transition at full opacity passes through to its parent.
-    layers: Vec<Option<(Vec<[f32; 4]>, f32)>>,
+    layers: Vec<Option<Layer>>,
+}
+
+struct Layer {
+    below: Vec<[f32; 4]>,
+    extent: PassBounds,
+    opacity: f32,
+    projection: Option<(Mat4, usize)>,
 }
 
 impl Target {
+    fn raster_rect(&self) -> Rect {
+        batch::rect(self.extent.rect())
+    }
+
+    fn pixel_mut(&mut self, x: i32, y: i32) -> &mut [f32; 4] {
+        let PassBounds { origin: [left, top], size: [width, _] } = self.extent;
+        &mut self.pixels[(y - top) as usize * width as usize + (x - left) as usize]
+    }
+
     fn clip_coverage(&self, px: f32, py: f32) -> f32 {
         self.clips.coverage(px, py)
     }
+
+    fn composite_projected(&mut self, layer: &[[f32; 4]], source: PassBounds, matrix: &Mat4, opacity: f32) {
+        let src = batch::rect(source.rect());
+        let visible = projective::bounds(src, matrix).intersect(&self.raster_rect());
+        let Some(inverse) = PlaneInverse::new(matrix).filter(|_| !visible.is_empty()) else {
+            return;
+        };
+        let (left, top, right, bottom) = self.bounds(visible.x, visible.y, visible.w, visible.h);
+        let [source_width, source_height] = source.size;
+        let stride = source_width as usize;
+        for y in top..bottom {
+            for x in left..right {
+                let point = Point::new(x as f32 + 0.5, y as f32 + 0.5);
+                let Some(Point { x: sx, y: sy }) = inverse.source_point(point) else { continue };
+                if !(src.x..src.right()).contains(&sx) || !(src.y..src.bottom()).contains(&sy) {
+                    continue;
+                }
+                let k = self.clip_coverage(point.x, point.y) * opacity;
+                if k == 0.0 {
+                    continue;
+                }
+                let bilinear = |p: f32, last: u32| {
+                    let p = (p - 0.5).clamp(0.0, last as f32);
+                    let lo = p as usize;
+                    (lo, (lo + 1).min(last as usize), p.fract())
+                };
+                let (x0, x1, dx) = bilinear(sx - src.x, source_width - 1);
+                let (y0, y1, dy) = bilinear(sy - src.y, source_height - 1);
+                let [a, b, c, d] = [y0 * stride + x0, y0 * stride + x1, y1 * stride + x0, y1 * stride + x1].map(|i| layer[i]);
+                let color = std::array::from_fn(|i| {
+                    let top = a[i] + (b[i] - a[i]) * dx;
+                    let bottom = c[i] + (d[i] - c[i]) * dx;
+                    (top + (bottom - top) * dy) * k
+                });
+                blend_premultiplied(self.pixel_mut(x, y), color);
+            }
+        }
+    }
     /// Device-pixel bounds grown by one pixel, limited to the target and clip bounds.
-    fn bounds(&self, x: f32, y: f32, w: f32, h: f32) -> (u32, u32, u32, u32) {
+    fn bounds(&self, x: f32, y: f32, w: f32, h: f32) -> (i32, i32, i32, i32) {
         let (mut x0, mut y0, mut x1, mut y1) = (x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0);
         if let Some(c) = self.clips.current().bounds {
             if c.is_empty() {
@@ -48,8 +104,9 @@ impl Target {
             x1 = x1.min(c.right() + 1.0);
             y1 = y1.min(c.bottom() + 1.0);
         }
-        let clampx = |v: f32| v.clamp(0.0, self.width as f32) as u32;
-        let clampy = |v: f32| v.clamp(0.0, self.height as f32) as u32;
+        let extent = self.raster_rect();
+        let clampx = |v: f32| v.clamp(extent.x, extent.right()) as i32;
+        let clampy = |v: f32| v.clamp(extent.y, extent.bottom()) as i32;
         (clampx(x0.floor()), clampy(y0.floor()), clampx(x1.ceil()), clampy(y1.ceil()))
     }
 }
@@ -126,12 +183,17 @@ impl CpuRenderer {
         let count = target_len(width, height).ok_or("CPU target exceeds addressable memory")?;
         let (bg, bga) = rgb(dl.background);
         let base = [bg[0] * bga, bg[1] * bga, bg[2] * bga, bga];
-        let mut t = Target { width, height, pixels: vec![base; count], clips: ClipStack::default(), layers: Vec::new() };
+        let extent = PassBounds { origin: [0; 2], size: [width, height] };
+        let mut t = Target { extent, pixels: vec![base; count], clips: ClipStack::default(), layers: Vec::new() };
         let mut effects = Vec::new();
+        let mut projected_extents = None;
         for placed in dl.placed_items_at(scale) {
             let (item, path_shift) = match placed.item {
                 Item::Glyphs(_) => (Cow::Borrowed(placed.item), Vec2::default()),
                 Item::Path(_) => paths::raster_item(placed),
+                Item::PushAxisClip { .. } if t.layers.iter().flatten().any(|layer| layer.projection.is_some()) => {
+                    (placed.resolve_in(unscale(t.raster_rect(), scale)), Vec2::default())
+                }
                 _ => (placed.resolve(), Vec2::default()),
             };
             let item = item.as_ref();
@@ -146,6 +208,8 @@ impl CpuRenderer {
                     });
                 }
                 Item::Image(i) => image(&mut t, i, scale),
+                // Native textures are only sampled by the renderer that owns the resource.
+                Item::ExternalTexture(_) => {}
                 Item::Glyphs(g) => self.glyph_run(&mut t, g, scale, placed),
                 Item::Path(p) => self.path(&mut t, p, scale, path_shift),
                 // An underlay view the platform shows: a hole down to transparent.
@@ -174,12 +238,44 @@ impl CpuRenderer {
                             continue;
                         }
                     }
-                    let below = std::mem::replace(&mut t.pixels, vec![[0.0; 4]; count]);
-                    t.layers.push(Some((below, *opacity)));
+                    let layer = vec![[0.0; 4]; t.pixels.len()];
+                    let below = std::mem::replace(&mut t.pixels, layer);
+                    t.layers.push(Some(Layer { below, extent: t.extent, opacity: *opacity, projection: None }));
+                }
+                Item::PushTransform { .. } => {
+                    let extents = projected_extents.get_or_insert_with(|| {
+                        let target = TargetInfo {
+                            extent: [width, height],
+                            scale,
+                            max_texture_dimension: 16384,
+                            copyable: false,
+                            encode_output: false,
+                        };
+                        let plan = plan_frame_cached(dl, target, None, &mut self.glyphs);
+                        let extents: Vec<_> = plan
+                            .passes
+                            .iter()
+                            .zip(plan.bounds)
+                            .filter_map(|(pass, bounds)| pass.projection.map(|index| (bounds, *plan.spatial.projection(index))))
+                            .collect();
+                        extents.into_iter()
+                    });
+                    let (source, matrix) = extents.next().expect("planned projected layer");
+                    let pixels = target_len(source.size[0], source.size[1]).ok_or("CPU layer exceeds addressable memory")?;
+                    let scope = t.clips.enter_scope();
+                    let extent = std::mem::replace(&mut t.extent, source);
+                    let below = std::mem::replace(&mut t.pixels, vec![[0.0; 4]; pixels]);
+                    t.layers.push(Some(Layer { below, extent, opacity: 1.0, projection: Some((matrix, scope)) }));
                 }
                 Item::PopLayer => {
-                    let Some(Some((below, opacity))) = t.layers.pop() else { continue };
+                    let Some(Some(Layer { below, extent, opacity, projection })) = t.layers.pop() else { continue };
+                    let source = std::mem::replace(&mut t.extent, extent);
                     let layer = std::mem::replace(&mut t.pixels, below);
+                    if let Some((matrix, scope)) = projection {
+                        t.clips.leave_scope(scope);
+                        t.composite_projected(&layer, source, &matrix, opacity);
+                        continue;
+                    }
                     for (dst, src) in t.pixels.iter_mut().zip(layer) {
                         blend_premultiplied(dst, src.map(|channel| channel * opacity));
                     }
@@ -187,27 +283,31 @@ impl CpuRenderer {
             }
         }
         self.paths.end_frame();
+        if t.layers.iter().flatten().any(|layer| layer.projection.is_some()) {
+            return Err("Unclosed projected layer".into());
+        }
         Ok(PaintedPicture { picture: from_premultiplied(width, height, &t.pixels), effects })
     }
 
     fn path(&mut self, t: &mut Target, p: &PathPaint, scale: f32, shift: Vec2) {
-        let window = paths::window((t.width, t.height), t.clips.current().bounds.map(|c| (c.x, c.y, c.w, c.h)));
+        let window = paths::raster_window(t.raster_rect(), t.clips.current().bounds);
         let Some(at) = paths::place_translated(p, scale, window, shift) else { return };
         let mask = self.paths.get(p, &at);
         let (color, alpha) = rgb(p.color);
         let b = p.bounds;
         let gradient = p.gradient.map(|g| LinearGradient::new(g, b.x * scale + shift.x, b.y * scale + shift.y, b.w * scale, b.h * scale));
+        let PassBounds { origin: [left, top], size: [width, height] } = t.extent;
         for row in 0..mask.height {
             let py = at.y + row as i32;
             for col in 0..mask.width {
                 let px = at.x + col as i32;
                 let cov = mask.data[row as usize * mask.width as usize + col as usize];
-                if cov == 0 || px < 0 || py < 0 || px >= t.width as i32 || py >= t.height as i32 {
+                if cov == 0 || px < left || py < top || px.abs_diff(left) >= width || py.abs_diff(top) >= height {
                     continue;
                 }
                 let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
                 let k = cov as f32 / 255.0 * t.clip_coverage(cx, cy);
-                let dst = &mut t.pixels[py as usize * t.width as usize + px as usize];
+                let dst = t.pixel_mut(px, py);
                 if let Some(g) = &gradient {
                     blend_premultiplied(dst, g.sample(cx, cy).map(|v| v * k));
                 } else {
@@ -235,13 +335,13 @@ impl CpuRenderer {
             let (x0, y0, x1, y1) = t.bounds(ox as f32, oy as f32, img.width as f32, img.height as f32);
             for py in y0..y1 {
                 for px in x0..x1 {
-                    let (sx, sy) = (px as i32 - ox, py as i32 - oy);
+                    let (sx, sy) = (px - ox, py - oy);
                     if sx < 0 || sy < 0 || sx >= img.width as i32 || sy >= img.height as i32 {
                         continue;
                     }
                     let clip = t.clip_coverage(px as f32 + 0.5, py as f32 + 0.5);
                     let i = sy as usize * img.width as usize + sx as usize;
-                    let dst = &mut t.pixels[py as usize * t.width as usize + px as usize];
+                    let dst = t.pixel_mut(px, py);
                     if img.color {
                         let [r, g, b, a] = linear_texel(&img.data[i * 4..i * 4 + 4]);
                         blend(dst, [r, g, b], a * alpha * clip);
@@ -270,7 +370,7 @@ fn shadow(t: &mut Target, s: &Shadow, scale: f32) {
                 continue;
             }
             let clip = t.clip_coverage(cx, cy);
-            blend(&mut t.pixels[py as usize * t.width as usize + px as usize], c, a * alpha * clip);
+            blend(t.pixel_mut(px, py), c, a * alpha * clip);
         }
     }
 }
@@ -325,7 +425,7 @@ fn image(t: &mut Target, i: &ImagePaint, scale: f32) {
                     *low += (high - *low) * lod.fract();
                 }
             }
-            blend_premultiplied(&mut t.pixels[py as usize * t.width as usize + px as usize], c.map(|v| v * k));
+            blend_premultiplied(t.pixel_mut(px, py), c.map(|v| v * k));
         }
     }
 }
@@ -335,16 +435,13 @@ fn image(t: &mut Target, i: &ImagePaint, scale: f32) {
 fn cutout(t: &mut Target, rect: Rect, radius: [f32; 4], scale: f32) {
     let (x, y, w, h, r) =
         (rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale, rect.corner_radii(radius).map(|radius| radius * scale));
-    let x0 = (x.floor().max(0.0)) as u32;
-    let y0 = (y.floor().max(0.0)) as u32;
-    let x1 = ((x + w).ceil().max(0.0) as u32).min(t.width);
-    let y1 = ((y + h).ceil().max(0.0) as u32).min(t.height);
+    let (x0, y0, x1, y1) = t.bounds(x, y, w, h);
     for py in y0..y1 {
         for px in x0..x1 {
             let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
             let k = coverage(sd_round_rect(cx, cy, x, y, w, h, r)) * t.clip_coverage(cx, cy);
             if k > 0.0 {
-                let p = &mut t.pixels[py as usize * t.width as usize + px as usize];
+                let p = t.pixel_mut(px, py);
                 *p = p.map(|v| v * (1.0 - k));
             }
         }
@@ -369,7 +466,7 @@ fn quad(t: &mut Target, q: &Quad, scale: f32) {
                 continue;
             }
             let clip = t.clip_coverage(cx, cy);
-            let dst = &mut t.pixels[py as usize * t.width as usize + px as usize];
+            let dst = t.pixel_mut(px, py);
             if let Some(g) = &gradient {
                 blend_premultiplied(dst, g.sample(cx, cy).map(|v| v * outer * clip));
             } else if let Some((c, a)) = fill {

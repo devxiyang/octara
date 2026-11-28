@@ -1,17 +1,19 @@
 use octara_model::geometry::{Point, Rect, Size, Vec2, WindowViewport};
 use octara_model::identity::{NativeId, TreeId};
-use octara_model::input::HostReply;
+use octara_model::input::{Button, HostReply, InteractionEvent, Modifiers, PointerId, PointerKind};
 use octara_model::motion::{Curve, Motion};
 use octara_model::native::{NativeChange, NativeSlot};
 use octara_model::paint::Item;
 use octara_model::semantics::Role;
-use octara_model::style::{FlexDirection, Length, Overflow, Position, Radius, State, StyleProp, When};
+use octara_model::style::{FlexDirection, Length, Overflow, Position, Radius, State, StyleProp, Transform3D, When};
 use octara_model::theme::{Color, ColorValue, Fill};
 use octara_pipeline::{NativeEngine, NativeEngineConfig, NativePublication, a11y::node_identity};
-use octara_runtime::HostEngine;
 use octara_runtime::engine::AccessibilityConsumer;
-use octara_tree::tables::{AuthoredStyle, SemanticsSlot};
+use octara_runtime::{AppRuntime, HandlerEvent, HostEngine, Input, WindowOptions};
+use octara_tree::tables::{AuthoredStyle, HandlerKind, SemanticsSlot};
 use octara_tree::{NodeChange, NodeContent, NodeFlags, NodeSpec, RetiredNode, Retirement, RuntimeOp, Tree, TreeDelta};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 fn tree() -> Tree {
     Tree::new(TreeId::new([17, 33], 1), Default::default())
@@ -23,6 +25,212 @@ fn viewport() -> WindowViewport {
 
 fn engine() -> NativeEngine {
     NativeEngine::new(NativeEngineConfig { check_paint_cache: true, check_a11y_cache: true, ..Default::default() })
+}
+
+#[test]
+fn projected_buttons_deliver_press_positions_in_their_local_plane() {
+    fn bounds(x: i32, y: i32, w: i32, h: i32) -> [StyleProp; 5] {
+        [
+            StyleProp::Position(Position::Absolute),
+            StyleProp::Left(x.into()),
+            StyleProp::Top(y.into()),
+            StyleProp::Width(w.into()),
+            StyleProp::Height(h.into()),
+        ]
+    }
+
+    fn style(props: impl IntoIterator<Item = StyleProp>) -> NodeChange {
+        NodeChange::Style(Box::new(AuthoredStyle { base: props.into_iter().collect(), ..Default::default() }))
+    }
+
+    fn project(transform: Transform3D, rect: Rect, point: Point) -> Point {
+        let matrix = transform.device_matrix(rect, 1.0);
+        let [x, y, _, w] = std::array::from_fn(|row| matrix[0][row] * point.x + matrix[1][row] * point.y + matrix[3][row]);
+        Point::new(x / w, y / w)
+    }
+
+    let shift = Transform3D::default().translate(100.0, 0.0, 0.0);
+    let outer_transform = Transform3D::default().perspective(180.0).translate(100.0, 0.0, 0.0).rotate_y(38.0);
+    let inner_transform = Transform3D::default().perspective(150.0).translate(22.0, 3.0, 30.0).rotate_x(35.0);
+    let pressed = Rc::new(RefCell::new(Vec::new()));
+    let mut app = AppRuntime::with_namespace([6, 2], |_, _| Box::new(engine()));
+    let events = pressed.clone();
+    let window = app
+        .open_window(WindowOptions { viewport: viewport(), ..Default::default() }, move |cx| {
+            let button = |cx: &mut octara_runtime::MountCx<'_>, name| {
+                let node = cx.create(NodeSpec::new(NodeContent::Box));
+                cx.change(node, NodeChange::TestId(Some(name)));
+                let events = events.clone();
+                cx.on(node, HandlerKind::Press, move |_, event| {
+                    if let HandlerEvent::Interaction { local_pos, .. } = event {
+                        events.borrow_mut().push(*local_pos);
+                    }
+                });
+                node
+            };
+            let clip = [StyleProp::OverflowX(Overflow::Hidden), StyleProp::OverflowY(Overflow::Hidden)];
+            let shifted = button(cx, "shifted".into());
+            cx.change(shifted, style(bounds(0, 0, 40, 40).into_iter().chain([StyleProp::Transform3D(Some(shift))])));
+            cx.place(cx.root(), 0, shifted);
+            let window_clip = cx.create(NodeSpec::new(NodeContent::Box));
+            cx.change(window_clip, style(bounds(0, 80, 183, 55).into_iter().chain(clip)));
+            cx.place(cx.root(), 1, window_clip);
+            let outer = cx.create(NodeSpec::new(NodeContent::Box));
+            cx.change(outer, style(bounds(0, 0, 100, 80).into_iter().chain(clip).chain([StyleProp::Transform3D(Some(outer_transform))])));
+            cx.place(window_clip, 0, outer);
+            let inner = button(cx, "nested".into());
+            cx.change(inner, style(bounds(35, 20, 40, 40).into_iter().chain([StyleProp::Transform3D(Some(inner_transform))])));
+            cx.place(outer, 0, inner);
+        })
+        .unwrap();
+
+    let runtime = app.window(window).unwrap();
+    let shifted = runtime.tree().test_ids("shifted")[0];
+    let nested = runtime.tree().test_ids("nested")[0];
+    let hit = |app: &AppRuntime, point| app.window(window).unwrap().hit_test(point).and_then(|target| target.hit.node());
+    assert_eq!(runtime.geometry(shifted).unwrap().rect, Rect::new(0.0, 0.0, 40.0, 40.0));
+    assert_eq!(runtime.geometry(nested).unwrap().rect, Rect::new(35.0, 20.0, 40.0, 40.0));
+    assert_ne!(hit(&app, Point::new(8.0, 12.0)), Some(shifted));
+    assert_eq!(hit(&app, Point::new(108.0, 12.0)), Some(shifted));
+
+    let nested_position = |local: Point| {
+        let inner = project(inner_transform, Rect::new(35.0, 100.0, 40.0, 40.0), Point::new(35.0 + local.x, 100.0 + local.y));
+        let screen = project(outer_transform, Rect::new(0.0, 80.0, 100.0, 80.0), inner);
+        (inner, screen)
+    };
+    let (_, nested_hit) = nested_position(Point::new(4.0, 8.0));
+    let (inner, outside_window_clip) = nested_position(Point::new(18.0, 33.0));
+    assert!(inner.x < 100.0 && outside_window_clip.y >= 135.0);
+    let (inner, outside_layer_clip) = nested_position(Point::new(39.0, 8.0));
+    assert!(inner.x >= 100.0 && Rect::new(0.0, 80.0, 183.0, 55.0).contains(outside_layer_clip));
+    assert_eq!(hit(&app, nested_hit), Some(nested));
+    assert_ne!(hit(&app, outside_window_clip), Some(nested));
+    assert_ne!(hit(&app, outside_layer_clip), Some(nested));
+    assert_ne!(hit(&app, Point::new(39.0, 108.0)), Some(nested));
+
+    for pos in [Point::new(8.0, 12.0), Point::new(108.0, 12.0), nested_hit, outside_window_clip, outside_layer_clip] {
+        let target = app.window(window).unwrap().hit_test(pos);
+        if let Some(target) = target {
+            app.dispatch(
+                window,
+                Input::Interaction(InteractionEvent::PointerDown {
+                    id: PointerId(1),
+                    kind: PointerKind::Mouse,
+                    target,
+                    pos,
+                    button: Button::Primary,
+                    mods: Modifiers::empty(),
+                }),
+            )
+            .unwrap();
+            app.dispatch(
+                window,
+                Input::Interaction(InteractionEvent::PointerUp { id: PointerId(1), target: Some(target), pos, mods: Modifiers::empty() }),
+            )
+            .unwrap();
+        }
+    }
+    let pressed = pressed.borrow();
+    assert_eq!(pressed.len(), 2);
+    assert_eq!(pressed[0], Some(Point::new(8.0, 12.0)));
+    let local = pressed[1].unwrap();
+    assert!((local.x - 4.0).abs() < 0.001 && (local.y - 8.0).abs() < 0.001, "nested local point: {local:?}");
+}
+
+#[test]
+fn paint_only_transform_changes_stage_and_rollback_projected_hits() {
+    let mut tree = tree();
+    let style = |transform| {
+        NodeChange::Style(Box::new(AuthoredStyle {
+            base: [
+                StyleProp::Position(Position::Absolute),
+                StyleProp::Width(40.into()),
+                StyleProp::Height(40.into()),
+                StyleProp::Transform3D(transform),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        }))
+    };
+    let mut tx = tree.transaction();
+    let node = tx.create(NodeSpec::new(NodeContent::Box));
+    tx.change(node, style(Some(Transform3D::default().translate(100.0, 0.0, 0.0))));
+    tx.place(tree.node_ref(tree.root()), 0, node);
+    let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+    let node = receipt.node(node).unwrap();
+    let mut initial = tree.initial_delta();
+    initial.merge(mounted);
+    let mut engine = NativeEngine::new(NativeEngineConfig { check_layout_cache: true, ..Default::default() });
+    engine.project(&tree, &initial, viewport(), 0.0).unwrap();
+    engine.commit();
+    let hits_node =
+        |engine: &NativeEngine, tree: &Tree, x| engine.hit_test(tree, Point::new(x, 10.0)).and_then(|hit| hit.hit.node()) == Some(node);
+    assert!(hits_node(&engine, &tree, 110.0));
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(node), style(None));
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    assert!(delta.layout_dirty.is_empty());
+    engine.project(&tree, &delta, viewport(), 1.0).unwrap();
+    assert!(hits_node(&engine, &tree, 10.0));
+    assert!(!hits_node(&engine, &tree, 110.0));
+    engine.rollback();
+    assert!(!hits_node(&engine, &tree, 10.0));
+    assert!(hits_node(&engine, &tree, 110.0));
+
+    engine.project(&tree, &delta, viewport(), 2.0).unwrap();
+    engine.commit();
+    assert!(hits_node(&engine, &tree, 10.0));
+    assert!(!hits_node(&engine, &tree, 110.0));
+}
+
+#[test]
+fn projected_controls_use_the_rendered_scroll_placement_for_local_points() {
+    let mut tree = tree();
+    let style =
+        |base: Vec<StyleProp>| NodeChange::Style(Box::new(AuthoredStyle { base: base.into_iter().collect(), ..Default::default() }));
+    let mut tx = tree.transaction();
+    let port = tx.create(NodeSpec::new(NodeContent::Box));
+    let button = tx.create(NodeSpec::new(NodeContent::Box));
+    tx.change(
+        port,
+        style(vec![
+            StyleProp::Position(Position::Relative),
+            StyleProp::Width(60.into()),
+            StyleProp::Height(40.into()),
+            StyleProp::OverflowY(Overflow::Scroll),
+        ]),
+    );
+    tx.change(
+        button,
+        style(vec![
+            StyleProp::Position(Position::Absolute),
+            StyleProp::Left(4.into()),
+            StyleProp::Top(20.into()),
+            StyleProp::Width(40.into()),
+            StyleProp::Height(40.into()),
+            StyleProp::Transform3D(Some(Transform3D::default().translate(10.0, 0.0, 0.0))),
+        ]),
+    );
+    tx.place(tree.node_ref(tree.root()), 0, port);
+    tx.place(port, 0, button);
+    let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+    let [port, button] = [port, button].map(|node| receipt.node(node).unwrap());
+    let mut initial = tree.initial_delta();
+    initial.merge(mounted);
+    let mut engine = engine();
+    engine.project(&tree, &initial, viewport(), 0.0).unwrap();
+    engine.commit();
+
+    let delta = tree.apply_runtime(RuntimeOp::RequestScroll { node: port, target: Vec2::new(0.0, 0.3) });
+    engine.project(&tree, &delta, viewport(), 1.0).unwrap();
+    engine.commit();
+    let pos = Point::new(20.0, 19.6);
+    assert_eq!(engine.hit_test(&tree, pos).and_then(|hit| hit.hit.node()), Some(button));
+    let local = engine.interaction_local_point(button, pos).unwrap();
+    assert_eq!(local.x, 6.0);
+    assert!((local.y - 0.1).abs() < 0.001, "local point: {local:?}");
 }
 
 #[test]

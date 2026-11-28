@@ -21,6 +21,7 @@ const IMAGE: u32 = 0u;
 const PATH: u32 = 1u;
 const LAYER: u32 = 2u;
 const CANVAS: u32 = 3u;
+const EXTERNAL: u32 = 4u;
 
 fn image_sample(p: vec2f, image: ImageInst) -> vec4f {
     let footprint = image.uv.zw / image.rect.zw;
@@ -89,6 +90,63 @@ fn fs(v: VsOut) -> @location(0) vec4f {
             let color = textureSampleLevel(layer, image_sampler, quad_uv(p, image.rect), 0.0);
             return color * (outer * image.fill.a * clip);
         }
+        case EXTERNAL: {
+            let edge = coverage(sd_round_rect(p, image.rect, vec4f(0.0)));
+            let inside = coverage(sd_round_rect(p, image.image_bounds, image.radius));
+            let alpha = edge * inside * image.fill.a * clip;
+            if alpha <= 0.0 {
+                return vec4f(0.0);
+            }
+            let color = textureSampleLevel(layer, image_sampler, quad_uv(p, image.rect), 0.0);
+            return color * alpha;
+        }
         default: { return vec4f(0.0); }
     }
+}
+
+struct LayerProjection {
+    matrix: mat4x4f,
+    source: vec4f,
+};
+
+@group(0) @binding(9) var<uniform> projection: LayerProjection;
+
+const PROJECTIVE_NEAR_W: f32 = 0.00001;
+
+struct ProjectedLayerVertex {
+    @builtin(position) pos: vec4f,
+    @location(0) @interpolate(flat) inst_id: u32,
+    @location(1) source: vec2f,
+};
+
+@vertex
+fn vs_projected_layer(@builtin(vertex_index) vi: u32, @builtin(instance_index) id: u32) -> ProjectedLayerVertex {
+    let corner = vec2f(f32(vi & 1u), f32(vi >> 1u));
+    let source = corner * projection.source.zw;
+    let pos = projection.matrix * vec4f(projection.source.xy + source, 0.0, 1.0);
+    let local = (pos.xy - globals.origin * pos.w) / globals.size;
+    // Keep the painter depth constant after the perspective divide.
+    let clip = vec4f(2.0 * local.x - pos.w, pos.w - 2.0 * local.y, draws[id].depth * pos.w, pos.w);
+    return ProjectedLayerVertex(clip, id, source);
+}
+
+@fragment
+fn fs_projected_layer(v: ProjectedLayerVertex) -> @location(0) vec4f {
+    // The rasterizer clips the eye plane. Apply the planner's positive-W guard as well.
+    if v.pos.w * PROJECTIVE_NEAR_W > 1.0 {
+        discard;
+    }
+    let world = v.pos.xy + globals.origin;
+    let draw_inst = draws[v.inst_id];
+    // A projected quad cannot clamp its vertices to a clip in the parent's pixel space.
+    if (draw_inst.flags & (FRACTIONAL_CLIP | SPATIAL_CLIP)) == 0u &&
+        (any(world < draw_inst.clip.xy) || any(world >= draw_inst.clip.xy + draw_inst.clip.zw)) {
+        discard;
+    }
+    let clip = clip_coverage(world, draw_inst);
+    let image = images[draw_inst.payload];
+    // The sample footprint stops at the source raster even when the pooled texture is larger.
+    let pixel = clamp(v.source, vec2f(0.5), projection.source.zw - vec2f(0.5));
+    let color = textureSampleLevel(layer, image_sampler, pixel / vec2f(textureDimensions(layer)), 0.0);
+    return color * (image.fill.a * clip);
 }

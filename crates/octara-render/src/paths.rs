@@ -123,14 +123,13 @@ fn outline(p: &PathPaint, t: &Transform) -> (Vec<zeno::Command>, zeno::Fill) {
 
 /// The visible window in device pixels: the target, limited to the innermost clip's rect.
 pub fn window(target: (u32, u32), clip: Option<(f32, f32, f32, f32)>) -> (f32, f32, f32, f32) {
-    let (mut x0, mut y0, mut x1, mut y1) = (0.0f32, 0.0f32, target.0 as f32, target.1 as f32);
-    if let Some((x, y, w, h)) = clip {
-        x0 = x0.max(x.floor());
-        y0 = y0.max(y.floor());
-        x1 = x1.min((x + w).ceil());
-        y1 = y1.min((y + h).ceil());
-    }
-    (x0, y0, x1, y1)
+    use octara_model::geometry::Rect;
+    raster_window(Rect::new(0.0, 0.0, target.0 as f32, target.1 as f32), clip.map(|(x, y, w, h)| Rect::new(x, y, w, h)))
+}
+
+pub(crate) fn raster_window(target: octara_model::geometry::Rect, clip: Option<octara_model::geometry::Rect>) -> (f32, f32, f32, f32) {
+    let (x0, y0, x1, y1) = (target.x, target.y, target.right(), target.bottom());
+    clip.map_or((x0, y0, x1, y1), |c| (x0.max(c.x.floor()), y0.max(c.y.floor()), x1.min(c.right().ceil()), y1.min(c.bottom().ceil())))
 }
 
 /// Where `p`'s mask goes at `scale` within `window` (device pixels `x0, y0, x1, y1`), or `None`

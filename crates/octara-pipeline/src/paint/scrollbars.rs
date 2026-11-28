@@ -197,7 +197,6 @@ pub(super) fn hit(tree: &Tree, layout: &LayoutKernel, node: NodeId, pos: Point) 
     if tree.visual(node).scrollbar == ScrollbarVisibility::Hidden
         || tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::POINTER_EVENTS_NONE))
         || !tree.is_interactive(node)
-        || layout.child_clip(node).is_some_and(|clip| !clip.contains(pos))
     {
         return None;
     }
