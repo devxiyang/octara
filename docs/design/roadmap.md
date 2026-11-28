@@ -59,7 +59,22 @@
 
 ---
 
-### `0.0.11` — High-Frequency System Modules & WebView Persistence
+### `0.0.11` — Direct Apple Metal Renderer (`octara-render-metal`), Ultra-Low-Latency Presentation & 2.5D / Zero-Copy 3D Compositor *(In Progress)*
+- **Spec**: [21 — Direct Apple Metal Renderer (`octara-render-metal`), Ultra-Low-Latency Presentation & 2.5D / Zero-Copy 3D Compositor](v2/21-direct-metal-renderer-and-25d-compositor.md)
+- **Scope**:
+  1. **Wave E1 — Empirical 144 Hz Clock, Zero-Stall Resize, Precision Wheel Coalescing & Backend-Agnostic `octara-gpu`**:
+     - Resolve M4 dual-display 144 Hz clocking empirically (`NSView` vs `NSScreen` vs `CAMetalDisplayLink` vs `CVDisplayLink`) + `NSWindowDidChangeScreenNotification` re-bind.
+     - VSync-coalesced zero-stall live resize (`pending_resize`, never abandon valid in-flight drawables, `inLiveResize` `presentsWithTransaction` + `kCAGravityTopLeft`).
+     - Precision `WindowRuntime::can_coalesce_wheel()` so 120 Hz wheel bursts on `virtual_each`/transcripts coalesce cleanly per VSync.
+     - Split `octara-render` into device-free `plan` + optional `wgpu`; introduce backend-polymorphic `GpuBackend` in `octara-gpu`.
+  2. **Wave E2 — First-Party `octara-render-metal` (Apple 0 `wgpu` / 0 `naga` + Single-CB Zero-Bounce Present)**:
+     - Direct `objc2-metal` 4 micro-pipelines + `MTLStorageModeMemoryless` Early-Z depth + 5K `DamageRect` single-CB blit + zero main-thread bounce `presentDrawable` + `maximumDrawableCount = 2` + hardware `FrameStageTimings` telemetry (opt-in `custom-wgsl`).
+  3. **Wave E3 — 2.5D `Mat4` Layer Transforms & Zero-Copy `ExternalTexture` Bridge**:
+     - `Transform3D` (`Mat4` in `SpatialTable` + 1:1 Web CSS `matrix3d`) and zero-copy `ExternalTexture` (`MTLTexture`/`IOSurface`/`CVPixelBuffer`, `wgpu::Texture`, Web `<canvas>`) compositing.
+
+---
+
+### `0.0.12` — High-Frequency System Modules & WebView Persistence
 - **Spec**: [16 — High-Frequency System Modules & WebView Depth](v2/16-high-frequency-modules.md)
 - **Scope (Tier-1 Platforms: macOS, iOS, Web, Linux + Headless `mock()`)**:
   1. **`modules/octara-notifications`**: Local notifications, permission state machine, remote push token registration, tap/action deep-link wake (`UNUserNotificationCenter`, Linux `org.freedesktop.Notifications` D-Bus, Web Notification API).
@@ -72,21 +87,19 @@
 
 ---
 
-### `0.0.12` — Direct Apple Metal Renderer, 2.5D/3D Compositor, Complex Components, `WebKitGTK` & Hardware Modules
-- **Specs**: [21 — Direct Apple Metal Renderer (`octara-render-metal`) & 2.5D / Zero-Copy 3D Compositor](v2/21-direct-metal-renderer-and-25d-compositor.md) & planned `v2/22-components-and-hardware-modules.md`
+### `0.0.13` — Complex Components, Backdrop Blur, Motion/PDF, `WebKitGTK` & Hardware Modules
+- **Planned Spec**: `v2/22-components-and-hardware-modules.md`
 - **Scope**:
-  1. **Direct Apple Metal Backend & 2.5D / Zero-Copy 3D Compositor**:
-     - First-party `octara-render-metal` (`objc2-metal` + MSL implementing `SPI-1` `SurfaceRenderer`, **0 `wgpu` / 0 `naga`** on macOS & iOS, memoryless TBDR depth, `-4–8 MB` iOS binary).
-     - `Mat4` 2.5D perspective layer transforms (1:1 CSS `matrix3d` parity), GPU real-time `backdrop-filter` / Liquid Glass blur, and zero-copy `ExternalTexture` bridge (`MTLTexture`/`IOSurface`/`CVPixelBuffer` on Apple, `wgpu::Texture` on Linux/Windows/WebGPU, `<canvas>` on Web).
-  2. **Complex Components (`octara-headless` + `octara-kit`)**:
+  1. **Complex Components (`octara-headless` + `octara-kit`)**:
      - Virtualized `DataTable` (sticky headers/columns, resizable columns, sorting, multi-select), `TreeView`, `SplitPane` (draggable & collapsible).
      - Gesture-driven `BottomSheet` / `Drawer` (velocity snap & rubber-band dismiss), `Toast` queue stack, `DatePicker` / `TimePicker` / `ColorPicker`, `CommandPalette`, and declarative `Form` validation with `aria-invalid` / error summary bindings.
-  3. **Motion & Export**:
+  2. **Graphics, Motion & Export**:
+     - GPU real-time `backdrop-filter` / Liquid Glass frosted blur container.
      - Spring physics curves & FLIP layout transitions in `MotionEngine`; 120Hz frame pacing telemetry.
      - Vector PDF / print export directly from `DisplayList`.
-  4. **Linux WebView Backend**:
+  3. **Linux WebView Backend**:
      - Add **`WebKitGTK`** backend inside `modules/octara-webview` (matching the typed navigation, scheme handler, script injection, and Promise RPC surface of Apple `WKWebView`).
-  5. **Advanced Hardware Modules (`modules/*`)**:
+  4. **Advanced Hardware Modules (`modules/*`)**:
      - `modules/octara-biometrics` (Touch ID / Face ID / Linux Polkit-fprint / WebAuthn).
      - `modules/octara-audio` (recording, playback, level metering stream, audio session management).
      - `modules/octara-camera` (`NativeViewFactory` live preview + photo capture + QR/barcode scanning).
