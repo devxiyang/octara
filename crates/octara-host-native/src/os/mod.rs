@@ -321,6 +321,7 @@ pub trait WindowPresentation {
     fn externally_paced(&self) -> bool;
     fn set_frame_clock_activity(&mut self, activity: FrameClockActivity);
     fn surface_will_reconfigure(&mut self) -> bool;
+    /// Resizing this surface would retire drawable storage still queued for display.
     fn resize_waits_for_display(&self) -> bool {
         false
     }

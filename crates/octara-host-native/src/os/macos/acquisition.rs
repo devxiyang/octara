@@ -8,7 +8,7 @@ use block2::RcBlock;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::sel;
-use objc2_metal::{MTLDrawable, MTLPixelFormat};
+use objc2_metal::{MTLDrawable, MTLPixelFormat, MTLTexture};
 use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer, CATransaction, kCAGravityResize, kCAGravityTopLeft};
 use octara_gpu::SurfaceSession;
 use octara_render::OutputColor;
@@ -161,6 +161,11 @@ impl Acquisition {
             // surface texture does not expose. A subsequent configure can replace its storage.
             set_transactional(layer, transactional);
             let Some(drawable) = layer.nextDrawable() else { return DrawableAcquisition::WaitingForClock };
+            let size = layer.drawableSize();
+            let texture = drawable.texture();
+            if texture.width() != size.width as usize || texture.height() != size.height as usize {
+                return DrawableAcquisition::WaitingForClock;
+            }
             if !drawable.respondsToSelector(sel!(addPresentedHandler:)) {
                 return DrawableAcquisition::Ready(drawable_target(drawable, layer, color, transactional));
             }

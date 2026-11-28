@@ -199,15 +199,16 @@ impl HostWindow {
         if let Some(target) = display_target {
             self.resize_tick = Some(target);
         }
+        let size = self.os.physical_size();
         if (self.resize_tick.is_none() && self.externally_paced())
             || self.draw.is_some()
             || self.presentation.awaiting_present()
-            || self.os.presentation().is_some_and(|present| present.resize_waits_for_display())
+            || (size != self.requested_size && self.resize_waits_for_display())
         {
             return false;
         }
         self.pending_resize = false;
-        self.requested_size = self.os.physical_size();
+        self.requested_size = size;
         self.resize_draw_at = self.resize_tick.take().filter(|_| self.configure_needed());
         true
     }
@@ -431,6 +432,16 @@ impl HostWindow {
         if externally_paced && !from_clock {
             return Ok(());
         }
+        // Once a display tick sees a real size change, stop acquiring old-size
+        // frames. A presentation callback can arrive after resize_for_frame checked
+        // its fence. The wake must be able to configure without a newer submission.
+        if self.pending_resize
+            && self.resize_tick.is_some()
+            && !self.presentation.awaiting_present()
+            && self.os.physical_size() != self.requested_size
+        {
+            return Ok(());
+        }
         let Some(surface) = self.surface_info.filter(|info| self.presentation.ready([info.width, info.height])) else { return Ok(()) };
         // Freeze the native deltas accumulated through this publication before admitting the draw.
         let Some(frame) = self.publication.latest().filter(|frame| self.synchronized == Some(frame.number)) else { return Ok(()) };
@@ -580,6 +591,10 @@ impl HostWindow {
             return true;
         }
         false
+    }
+
+    fn resize_waits_for_display(&mut self) -> bool {
+        self.os.presentation().is_some_and(|present| present.resize_waits_for_display())
     }
 
     pub fn retire(&mut self) {
